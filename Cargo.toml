@@ -1,0 +1,28 @@
+[package]
+name = "rustane"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT"
+
+[dependencies]
+# High-level safe wrappers (added in later phases)
+half = "2.4"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Python bindings (optional, feature-gated)
+pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
+numpy = { version = "0.23", optional = true }
+
+[build-dependencies]
+bindgen = "0.70"
+cc = "1.0"
+
+[features]
+default = []
+python = ["pyo3/extension-module", "numpy"]
+
+[dev-dependencies]
+tempfile = "3.0"

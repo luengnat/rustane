@@ -1,0 +1,57 @@
+name: Release Validation
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-release:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout Rustane
+        uses: actions/checkout@v4
+
+      - name: Checkout ANE bridge
+        uses: actions/checkout@v4
+        with:
+          repository: maderix/ANE
+          ref: main
+          path: ANE
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Build ANE bridge
+        working-directory: ANE/bridge
+        run: make
+
+      - name: Configure bridge paths
+        run: |
+          echo "ANE_BRIDGE_LIB_PATH=${GITHUB_WORKSPACE}/ANE/bridge" >> "$GITHUB_ENV"
+          echo "ANE_BRIDGE_INCLUDE_PATH=${GITHUB_WORKSPACE}/ANE/bridge" >> "$GITHUB_ENV"
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run library and integration tests
+        run: cargo test --locked --lib --tests
+
+      - name: Run simple inference example
+        run: cargo run --example simple_inference --quiet
+
+      - name: Run packed matmul benchmark
+        run: cargo run --example ane_dynamic_matmul_benchmark --quiet
+
+      - name: Run tiled rectangular benchmark
+        run: cargo run --example ane_tiled_rectangular_matmul_benchmark --quiet
+
+      - name: Dry-run package publish
+        run: cargo publish --dry-run --allow-dirty
