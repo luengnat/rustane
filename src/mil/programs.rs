@@ -185,6 +185,80 @@ pub fn linear_matmul_mil(seq_len: usize, in_dim: usize, out_dim: usize) -> Strin
     mil
 }
 
+/// RMSNorm forward MIL program (program 1.3 format)
+///
+/// Implements the upstream ANE pattern:
+/// `x * x -> reduce_sum(axis=1) -> * invd -> + eps -> pow(-0.5) -> * gamma`
+///
+/// Input shape:
+/// - `[1, dim, 1, seq_len]` fp16
+///
+/// Output shape:
+/// - `[1, dim, 1, seq_len]` fp16
+///
+/// # Example
+///
+/// ```
+/// # use rustane::mil::programs::rmsnorm_mil;
+/// let mil = rmsnorm_mil(64, 256);
+/// assert!(mil.contains("reduce_sum"));
+/// assert!(mil.contains("pow"));
+/// ```
+pub fn rmsnorm_mil(seq_len: usize, dim: usize) -> String {
+    let invd = 1.0f32 / dim as f32;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> sq = mul(x=x,y=x)[name = string(\"sq\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [1]> rax = const()[name = string(\"rax\"), val=tensor<int32, [1]>([1])];\n");
+    mil.push_str("        bool kd = const()[name = string(\"kd\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,1,{}]> ss = reduce_sum(x=sq,axes=rax,keep_dims=kd)[name = string(\"ss\")];\n",
+        seq_len
+    ));
+    mil.push_str(&format!(
+        "        fp16 invd = const()[name = string(\"invd\"), val=fp16({:.8})];\n",
+        invd
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,1,{}]> ss2 = mul(x=ss,y=invd)[name = string(\"ss2\")];\n",
+        seq_len
+    ));
+    mil.push_str("        fp16 eps = const()[name = string(\"eps\"), val=fp16(0.00001)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,1,{}]> ss3 = add(x=ss2,y=eps)[name = string(\"ss3\")];\n",
+        seq_len
+    ));
+    mil.push_str("        fp16 nhalf = const()[name = string(\"nhalf\"), val=fp16(-0.5)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,1,{}]> rrms = pow(x=ss3,y=nhalf)[name = string(\"rrms\")];\n",
+        seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, 1]> w = const()[name = string(\"w\"), val = tensor<fp16, [1, {}, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/rms_w.bin\"), offset = uint64(64)))];\n",
+        dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> xr = mul(x=x,y=rrms)[name = string(\"xr\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> y16 = mul(x=xr,y=w)[name = string(\"y16\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("    } -> (y16);\n");
+    mil.push_str("}\n");
+    mil
+}
+
 /// GQA (Grouped Query Attention) SDPA kernel (program 1.3 format)
 ///
 /// Handles GQA where q_heads > kv_heads by tiling K/V.
@@ -342,5 +416,14 @@ mod tests {
         let mil = pg_attention_mil(256, 512, 8, 4, 64);
         assert!(mil.contains("program(1.3)"));
         assert!(mil.contains("mb.matmul"));
+    }
+
+    #[test]
+    fn test_rmsnorm_mil() {
+        let mil = rmsnorm_mil(64, 256);
+        assert!(mil.contains("program(1.3)"));
+        assert!(mil.contains("reduce_sum"));
+        assert!(mil.contains("pow"));
+        assert!(mil.contains("rms_w.bin"));
     }
 }

@@ -51,7 +51,7 @@ pub use layers::{LayerInfo, Model, ModelSummary, Sequential, SequentialBuilder};
 pub use layers::{
     MultiHeadAttention, MultiHeadAttentionBuilder, SelfAttention, SelfAttentionBuilder,
 };
-pub use mil::{total_leaked_bytes, LinearLayer, MILBuilder, WeightBlob};
+pub use mil::{rmsnorm_mil, total_leaked_bytes, LinearLayer, MILBuilder, WeightBlob};
 pub use platform::ANEAvailability;
 pub use training::{GradAccumulator, LossScaler};
 pub use wrapper::{ANECompiler, ANEExecutor, ANERuntime, ANETensor, KernelCache};
