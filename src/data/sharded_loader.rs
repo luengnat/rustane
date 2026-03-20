@@ -237,7 +237,7 @@ impl ShardedDataLoader {
     ///
     /// # Returns
     /// Iterator that yields (shard_idx, shard_path) tuples for each shard file
-    pub fn iter_shards(&mut self) -> ShardIterator<'_> {
+    pub fn iter_shards(&self) -> ShardIterator<'_> {
         ShardIterator {
             parent: self,
             current_idx: 0,
@@ -249,12 +249,12 @@ impl ShardedDataLoader {
 ///
 /// Yields (shard_idx, shard_path) tuples for each discovered shard.
 pub struct ShardIterator<'a> {
-    parent: &'a mut ShardedDataLoader,
+    parent: &'a ShardedDataLoader,
     current_idx: usize,
 }
 
 impl<'a> Iterator for ShardIterator<'a> {
-    type Item = Result<(usize, PathBuf)>;
+    type Item = (usize, PathBuf);
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.current_idx >= self.parent.shard_files.len() {
@@ -265,7 +265,7 @@ impl<'a> Iterator for ShardIterator<'a> {
         let shard_idx = self.current_idx;
         self.current_idx += 1;
 
-        Some(Ok((shard_idx, shard_path)))
+        Some((shard_idx, shard_path))
     }
 }
 
@@ -515,14 +515,14 @@ mod tests {
             50257,
         ).unwrap();
         
-        let mut loader = ShardedDataLoader::new(&config).unwrap();
+        let loader = ShardedDataLoader::new(&config).unwrap();
         assert_eq!(loader.shard_count(), 1);
 
         let mut shard_iter = loader.iter_shards();
         let first_shard = shard_iter.next();
         assert!(first_shard.is_some());
 
-        let (shard_idx, shard_path) = first_shard.unwrap().unwrap();
+        let (shard_idx, shard_path) = first_shard.unwrap();
         assert_eq!(shard_idx, 0);
         assert!(shard_path.to_string_lossy().contains("sharded_loader.rs"));
 
