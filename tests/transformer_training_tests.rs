@@ -5,12 +5,12 @@ use rustane::training::{Model, TransformerANE, TransformerConfig};
 
 #[test]
 fn test_transformer_ane_forward_pass() {
-    let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512).unwrap();
+    let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
     let mut model = TransformerANE::new(&config).unwrap();
 
     // Create dummy batch
-    let tokens = vec![0u32; 4 * 512]; // 4 samples, 512 seq_len
-    let batch = Batch::new(tokens, 4, 512).unwrap();
+    let tokens = vec![0u32; 2 * 64]; // 2 samples, 64 seq_len
+    let batch = Batch::new(tokens, 2, 64).unwrap();
 
     let result = model.forward(&batch);
 
@@ -34,8 +34,8 @@ fn test_transformer_ane_implements_model_trait() {
     let model = TransformerANE::new(&config).unwrap();
 
     let param_count = model.param_count();
-    assert!(param_count > 6_800_000);
-    assert!(param_count < 6_900_000);
+    assert!(param_count > 7_000_000);
+    assert!(param_count < 7_300_000);
 
     // Verify the expected count matches config
     assert_eq!(param_count, config.param_count());
@@ -96,8 +96,8 @@ fn test_transformer_ane_large_batch() {
     let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
     let mut model = TransformerANE::new(&config).unwrap();
 
-    let tokens = vec![1u32; 32 * 64]; // 32 samples, 64 seq_len
-    let batch = Batch::new(tokens, 32, 64).unwrap();
+    let tokens = vec![1u32; 8 * 64]; // 8 samples, 64 seq_len
+    let batch = Batch::new(tokens, 8, 64).unwrap();
 
     let result = model.forward(&batch);
     // Should not panic

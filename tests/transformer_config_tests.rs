@@ -13,18 +13,18 @@ mod transformer_config_tests {
             512,   // seq_len
         ).expect("config should be valid");
 
-        // Verify parameter count: ~6.8M
+        // Verify parameter count: ~7.2M
         let embedding_params = 4096 * 256;
         let classifier_params = 256 * 4096;
-        let per_layer_params = 3 * 256 * 256 +  // attention: qkv
+        let per_layer_params = 4 * 256 * 256 +  // attention: qkv + output
                                256 * 768 * 2 +  // ffn: w1, w3
                                768 * 256 +      // ffn: w2
                                2 * 256;         // layer norms
         let layer_params = per_layer_params * 6;
-        let total = embedding_params + classifier_params + layer_params;
+        let total = embedding_params + classifier_params + layer_params + 256;
 
-        assert!(config.param_count() > 6_000_000);
-        assert!(config.param_count() < 7_000_000);
+        assert!(config.param_count() > 7_000_000);
+        assert!(config.param_count() < 7_300_000);
         assert_eq!(config.param_count(), total);
         
         // Print for debugging
@@ -106,8 +106,8 @@ mod transformer_config_tests {
         // Calculate expected params
         let embedding = 512 * 128;
         let classifier = 128 * 512;
-        let per_layer = 3 * 128 * 128 + 128 * 384 * 2 + 384 * 128 + 2 * 128;
-        let expected = embedding + classifier + per_layer * 3;
+        let per_layer = 4 * 128 * 128 + 128 * 384 * 2 + 384 * 128 + 2 * 128;
+        let expected = embedding + classifier + per_layer * 3 + 128;
         
         assert_eq!(config.param_count(), expected);
     }

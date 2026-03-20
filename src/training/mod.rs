@@ -248,6 +248,6 @@ pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
 pub use loss_scale::LossScaler;
 pub use model::Model;
 pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
-pub use trainer::{Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
+pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
 pub use transformer_config::TransformerConfig;
 pub use transformer_model::TransformerANE;

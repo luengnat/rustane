@@ -1,245 +1,491 @@
-//! Example: Training with Parameter-Golf tokenized data
+//! Train Rustane on Parameter Golf FineWeb shards.
 //!
-//! This example demonstrates how to use rustane's sharded training with
-//! data tokenized by parameter-golf's SentencePiece tokenizer.
-//!
-//! Prerequisites:
-//! 1. Download parameter-golf FineWeb dataset:
-//!    python3 ~/dev/parameter-golf/data/cached_challenge_fineweb.py --variant sp1024 --train-shards 10
-//!
-//! 2. The tokenized shards will be at:
-//!    ~/dev/parameter-golf/data/datasets/fineweb10B_sp1024/
+//! This example mirrors the `train_gpt.py` data contract:
+//! - `fineweb_train_*.bin` / `fineweb_val_*.bin` shard files
+//! - 256-int32 header
+//! - little-endian `u16` token payload
+//! - SentencePiece BPB accounting from the tokenizer model
 
-use rustane::data::{Batch, Dataset, DataLoader, RandomSampler};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use glob::glob;
+use rustane::data::{Batch, Dataset, DataLoader, SequentialSampler};
 use rustane::error::Result;
-use rustane::training::{CrossEntropyLoss, Model, TrainerBuilder};
-use rustane::wrapper::ANETensor;
-use rustane::{ConstantScheduler, Optimizer};
+use rustane::training::{
+    AdamOptimizer, ConstantScheduler, CrossEntropyLoss, LossFn, Model, Optimizer,
+    WarmupCosineScheduler, WarmupLinearScheduler,
+};
+use rustane::training::{TransformerANE, TransformerConfig};
+use sentencepiece_model::SentencePieceModel;
 
 fn main() -> Result<()> {
-    println!("Rustane + Parameter-Golf Training Example");
-    println!("=========================================\n");
+    let data_path = std::env::var("DATA_PATH")
+        .unwrap_or_else(|_| "/Users/nat/dev/parameter-golf/data/datasets/fineweb10B_sp1024".to_string());
+    let tokenizer_path = std::env::var("TOKENIZER_PATH")
+        .unwrap_or_else(|_| "/Users/nat/dev/parameter-golf/data/tokenizers/fineweb_1024_bpe.model".to_string());
 
-    // Configuration matching parameter-golf's standard setup
-    let vocab_size = 1024u32;  // SentencePiece sp1024 tokenizer
-    let seq_len = 512;         // Sequence length (parameter-golf standard)
-    let batch_tokens = 8192;   // Tokens per batch (parameter-golf standard)
-    let chunk_tokens = 2048;   // Tokens per accumulation chunk
-    let accum_steps = (batch_tokens / chunk_tokens) as u32;
-    let num_train_steps = 20;
-    let batch_size = batch_tokens / seq_len; // batch_size * seq_len = batch_tokens
+    let vocab_size = std::env::var("VOCAB_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1024);
+    let seq_len = std::env::var("TRAIN_SEQ_LEN")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(512);
+    let batch_size = std::env::var("BATCH_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(16);
+    let chunk_tokens = std::env::var("CHUNK_TOKENS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2048);
+    let train_steps = std::env::var("TRAIN_STEPS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(20);
+    let train_log_every = std::env::var("TRAIN_LOG_EVERY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1);
+    let val_loss_every = std::env::var("VAL_LOSS_EVERY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1);
+    let max_shards = std::env::var("MAX_SHARDS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(2);
+    let val_max_shards = std::env::var("VAL_MAX_SHARDS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(1);
+    let val_max_batches = std::env::var("VAL_MAX_BATCHES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(8);
+    let val_batch_size = std::env::var("VAL_BATCH_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(batch_size);
+    let grad_clip_norm = std::env::var("GRAD_CLIP_NORM")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.0);
+    let lr_scheduler = std::env::var("LR_SCHEDULER").unwrap_or_else(|_| "cosine".to_string());
+    let peak_lr = std::env::var("PEAK_LR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.001);
+    let min_lr = std::env::var("MIN_LR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(1e-5);
+    let warmup_steps = std::env::var("WARMUP_STEPS")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or((train_steps / 10).max(1) as u32);
 
+    let train_pattern = format!("{}/fineweb_train_*.bin", data_path);
+    let val_pattern = format!("{}/fineweb_val_*.bin", data_path);
+    let accum_steps = (batch_size * seq_len).div_ceil(chunk_tokens).max(1);
+
+    println!("Rustane + Parameter-Golf FineWeb Training Example");
+    println!("==================================================\n");
     println!("Configuration:");
-    println!("  Vocab Size:     {}", vocab_size);
-    println!("  Sequence Length: {}", seq_len);
-    println!("  Batch Tokens:    {}", batch_tokens);
-    println!("  Batch Size:      {}", batch_size);
-    println!("  Chunk Tokens:    {}", chunk_tokens);
-    println!("  Accum Steps:     {}", accum_steps);
-    println!("  Train Steps:     {}\n", num_train_steps);
+    println!("  Data path:      {}", data_path);
+    println!("  Train pattern:  {}", train_pattern);
+    println!("  Val pattern:    {}", val_pattern);
+    println!("  Tokenizer:      {}", tokenizer_path);
+    println!("  Vocab size:     {}", vocab_size);
+    println!("  Sequence len:   {}", seq_len);
+    println!("  Batch size:     {}", batch_size);
+    println!("  Chunk tokens:   {}", chunk_tokens);
+    println!("  Accum steps:    {}", accum_steps);
+    println!("  Train steps:    {}", train_steps);
+    println!("  Train log every: {}", train_log_every);
+    println!("  Val loss every:  {}", val_loss_every);
+    println!("  Max shards:      {}", max_shards);
+    println!("  Val shards:      {}", val_max_shards);
+    println!("  Val batch size:  {}", val_batch_size);
+    println!("  Val batches:     {}\n", val_max_batches);
+    println!("  LR scheduler:    {}", lr_scheduler);
+    println!("  Peak LR:         {}", peak_lr);
+    println!("  Min LR:          {}", min_lr);
+    println!("  Warmup steps:    {}", warmup_steps);
+    println!("  Grad clip norm:  {}\n", grad_clip_norm);
 
-    // Create dataset and loader
-    // In production, this would read from parameter-golf's shard files:
-    // let dataset = load_fineweb_shards("/path/to/fineweb10B_sp1024/train_*.jsonl");
-    let dataset = SyntheticParameterGolfDataset::new(
-        100,  // num_sequences
-        seq_len,
-        vocab_size,
+    let tokenizer_stats = SentencePieceStats::load(&tokenizer_path)?;
+    let train_dataset = FineWebSequenceDataset::load(&train_pattern, seq_len, max_shards)?;
+    let val_dataset = FineWebSequenceDataset::load(&val_pattern, seq_len, val_max_shards)?;
+
+    println!(
+        "Loaded {} training sequences and {} validation sequences\n",
+        train_dataset.len(),
+        val_dataset.len()
     );
 
-    let sampler = RandomSampler::new(dataset.len(), 42);
-    let mut loader = DataLoader::new(dataset, sampler, batch_size)?;
+    let train_sampler = SequentialSampler::new(train_dataset.len());
+    let mut train_iter = DataLoader::new(train_dataset.clone(), train_sampler, batch_size)?.iter();
 
-    // Initialize model and trainer
-    let mut model = SimpleParameterGolfModel::new(vocab_size as usize, 256);  // 256-dim hidden
-    let mut trainer = TrainerBuilder::new(&mut model)
-        .with_optimizer(SimpleOptimizer::new(0.001))
-        .with_scheduler(ConstantScheduler::new(0.001))
-        .with_loss_fn(CrossEntropyLoss::new())
-        .build()?;
+    let config = TransformerConfig::new(vocab_size, 256, 512, 4, 2, seq_len)?;
+    let mut model = TransformerANE::new(&config)?;
+    let param_count = model.param_count();
+    let mut optimizer = AdamOptimizer::new(param_count);
+    let scheduler = build_scheduler(
+        &lr_scheduler,
+        peak_lr,
+        warmup_steps,
+        train_steps as u32,
+        min_lr,
+    );
+    let loss_fn = CrossEntropyLoss::new();
 
-    println!("Starting training with gradient accumulation");
-    println!("Step | Loss    | Grad Norm | LR       | Batches");
-    println!("-----|---------|-----------|----------|--------");
+    println!("Step | Train Loss | Grad Norm  | LR       | Validation");
+    println!("-----|------------|------------|----------|----------------");
 
-    let mut total_batches = 0u64;
-    let mut batch_iter = loader.iter();
+    let mut total_train_batches = 0usize;
+    let mut last_val_loss = None;
+    let mut last_val_bpb = None;
 
-    for step in 0..num_train_steps {
-        // Try to get a batch
-        if let Some(Ok(batch)) = batch_iter.next() {
-            total_batches += 1;
+    for step in 0..train_steps {
+        let batch = match train_iter.next() {
+            Some(batch) => batch?,
+            None => {
+                train_iter = DataLoader::new(
+                    train_dataset.clone(),
+                    SequentialSampler::new(train_dataset.len()),
+                    batch_size,
+                )?
+                .iter();
+                train_iter
+                    .next()
+                    .ok_or_else(|| rustane::Error::Other("training dataset produced no batch".to_string()))??
+            }
+        };
 
-            // Split into chunks for gradient accumulation
-            let chunks = batch.into_chunks(chunk_tokens)?;
+        let mut total_loss = 0.0f32;
+        let mut total_grad_norm = 0.0f32;
+        let mut chunk_count = 0usize;
+        let scale = 1.0 / accum_steps as f32;
+        let mut accum_grads = vec![0.0f32; param_count];
+        for chunk_result in batch.into_chunks(chunk_tokens)? {
+            let chunk = chunk_result;
+            let logits = model.forward(&chunk)?;
+            let loss = loss_fn.compute(&logits, &chunk)?;
+            let grads = model.backward_with_batch(&chunk, loss)?;
+            if grads.len() != param_count {
+                return Err(rustane::Error::Other(format!(
+                    "gradient count {} != param count {}",
+                    grads.len(),
+                    param_count
+                )));
+            }
+            let grad_norm = l2_norm(&grads);
+            if !grad_norm.is_finite() {
+                return Err(rustane::Error::Other(format!("invalid grad norm: {grad_norm}")));
+            }
+            let mut clipped = grads;
+            if grad_clip_norm > 0.0 && grad_norm > grad_clip_norm {
+                let clip_scale = grad_clip_norm / grad_norm;
+                for g in &mut clipped {
+                    *g *= clip_scale;
+                }
+            }
+            for (dst, src) in accum_grads.iter_mut().zip(clipped.iter()) {
+                *dst += src * scale;
+            }
+            total_loss += loss * scale;
+            total_grad_norm = grad_norm;
+            chunk_count += 1;
+        }
+        if chunk_count != accum_steps {
+            return Err(rustane::Error::Other(format!(
+                "expected {} chunks, got {}",
+                accum_steps, chunk_count
+            )));
+        }
+        let learning_rate = scheduler.get_lr(step as u32);
+        optimizer.step(&accum_grads, model.parameters(), learning_rate)?;
+        let metrics = SimpleStepMetrics {
+            loss: total_loss,
+            grad_norm: total_grad_norm,
+            learning_rate,
+        };
+        total_train_batches += 1;
 
-            // Train with accumulated gradients
-            let metrics = trainer.train_accumulated_steps(
-                chunks.into_iter().map(Ok),
-                accum_steps,
+        let should_validate = val_loss_every > 0 && (step == 0 || (step + 1) % val_loss_every == 0 || step + 1 == train_steps);
+        let mut val_note = String::from("-");
+        if should_validate {
+            let (val_loss, val_bpb, val_tokens) = evaluate_validation(
+                &mut model,
+                &val_dataset,
+                val_max_batches,
+                val_batch_size,
+                chunk_tokens,
+                &tokenizer_stats,
             )?;
+            last_val_loss = Some(val_loss);
+            last_val_bpb = Some(val_bpb);
+            val_note = format!("val_loss:{:.4} val_bpb:{:.4} tokens:{}", val_loss, val_bpb, val_tokens);
+        }
 
+        if train_log_every > 0 && (step < 10 || (step + 1) % train_log_every == 0 || step + 1 == train_steps) {
             println!(
-                "{:4} | {:.5} | {:.5}    | {:.6} | {}",
-                step, metrics.loss, metrics.grad_norm, metrics.learning_rate, total_batches
+                "{:>4} | {:>10.6} | {:>10.6} | {:>8.6} | {}",
+                step, metrics.loss, metrics.grad_norm, metrics.learning_rate, val_note
             );
-        } else {
-            // Reset iterator if we run out of batches
-            let sampler = RandomSampler::new(100, 42);
-            let new_loader = DataLoader::new(
-                SyntheticParameterGolfDataset::new(100, seq_len, vocab_size),
-                sampler,
-                batch_size
-            )?;
-            batch_iter = new_loader.iter();
         }
     }
 
-    println!("\n✓ Training completed!");
-    println!("  Total batches processed: {}", total_batches);
-
-    // In a real scenario, you would:
-    // 1. Save the model weights
-    // 2. Evaluate on parameter-golf's validation set
-    // 3. Compute bits-per-byte (BPB) metric
-    // 4. Compare against parameter-golf leaderboard
+    println!("\n✓ Training completed successfully");
+    println!("  Training batches: {}", total_train_batches);
+    if let Some(loss) = last_val_loss {
+        println!("  Final val loss:   {:.6}", loss);
+    }
+    if let Some(bpb) = last_val_bpb {
+        println!("  Final val BPB:    {:.6}", bpb);
+    }
 
     Ok(())
 }
 
-// ===== Model =====
+fn evaluate_validation(
+    model: &mut TransformerANE,
+    dataset: &FineWebSequenceDataset,
+    max_batches: usize,
+    batch_size: usize,
+    chunk_tokens: usize,
+    tokenizer_stats: &SentencePieceStats,
+) -> Result<(f32, f32, usize)> {
+    let sampler = SequentialSampler::new(dataset.len());
+    let val_loader = DataLoader::new(dataset.clone(), sampler, batch_size)?;
+    let mut val_iter = val_loader.iter();
+    let loss_fn = CrossEntropyLoss::new();
+    let mut total_loss = 0.0f32;
+    let mut total_positions = 0usize;
+    let mut total_targets = 0usize;
+    let mut total_bytes = 0usize;
 
-struct SimpleParameterGolfModel {
-    // Embedding layer: [vocab_size, hidden_dim]
-    embed_weight: Vec<f32>,
-    // Output layer: [hidden_dim, vocab_size]
-    output_weight: Vec<f32>,
-    // Parameters for gradient computation
-    vocab_size: usize,
-    hidden_dim: usize,
-}
+    for _ in 0..max_batches {
+        let batch = match val_iter.next() {
+            Some(batch) => batch?,
+            None => break,
+        };
 
-impl SimpleParameterGolfModel {
-    fn new(vocab_size: usize, hidden_dim: usize) -> Self {
-        let embed_size = vocab_size * hidden_dim;
-        let output_size = hidden_dim * vocab_size;
-
-        SimpleParameterGolfModel {
-            embed_weight: vec![0.01; embed_size],
-            output_weight: vec![0.01; output_size],
-            vocab_size,
-            hidden_dim,
+        for chunk in batch.into_chunks(chunk_tokens)? {
+            let logits = model.forward(&chunk)?;
+            let loss = loss_fn.compute(&logits, &chunk)?;
+            let chunk_targets = chunk.batch_size() * chunk.seq_len().saturating_sub(1);
+            let chunk_bytes = tokenizer_stats.byte_count_for_batch(&chunk)?;
+            total_loss += loss * chunk_targets as f32;
+            total_positions += chunk_targets;
+            total_targets += chunk_targets;
+            total_bytes += chunk_bytes;
         }
     }
 
-    fn param_count(&self) -> usize {
-        self.embed_weight.len() + self.output_weight.len()
+    if total_positions == 0 || total_bytes == 0 {
+        return Err(rustane::Error::Other(
+            "validation produced zero positions".to_string(),
+        ));
+    }
+
+    let avg_loss = total_loss / total_positions as f32;
+    let tokens_per_byte = total_targets as f32 / total_bytes as f32;
+    let val_bpb = (avg_loss / std::f32::consts::LN_2) * tokens_per_byte;
+    Ok((avg_loss, val_bpb, total_targets))
+}
+
+fn build_scheduler(
+    name: &str,
+    peak_lr: f32,
+    warmup_steps: u32,
+    total_steps: u32,
+    min_lr: f32,
+) -> Box<dyn rustane::training::LRScheduler> {
+    match name.to_ascii_lowercase().as_str() {
+        "linear" => Box::new(WarmupLinearScheduler::new(peak_lr, warmup_steps, total_steps)),
+        "constant" => Box::new(ConstantScheduler::new(peak_lr)),
+        _ => Box::new(WarmupCosineScheduler::new(peak_lr, warmup_steps, total_steps, min_lr)),
     }
 }
 
-impl Model for SimpleParameterGolfModel {
-    fn forward(&mut self, _batch: &Batch) -> Result<ANETensor> {
-        // Simulate embedding lookup + output projection
-        // In reality, this would be a transformer layer
-        let logits_size = 1024; // Simplified: fixed output size
-        let logits = vec![0.0f32; logits_size];
-
-        Ok(ANETensor::from_fp32(logits))
-    }
-
-    fn backward(&mut self, loss: f32) -> Result<Vec<f32>> {
-        // Simple gradient computation: loss * parameter_scale
-        let grads = vec![loss * 0.001; self.param_count()];
-
-        // In real implementation:
-        // - Compute gradients through embedding and output layers
-        // - Use chain rule for proper gradient flow
-        // - Handle attention mechanisms (for transformer)
-
-        Ok(grads)
-    }
-
-    fn parameters(&mut self) -> &mut [f32] {
-        // In practice, would concatenate embed_weight and output_weight
-        // For this example, just return embed_weight
-        &mut self.embed_weight
-    }
-
-    fn param_count(&self) -> usize {
-        self.param_count()
-    }
+struct SimpleStepMetrics {
+    loss: f32,
+    grad_norm: f32,
+    learning_rate: f32,
 }
 
-// ===== Dataset =====
-
-struct SyntheticParameterGolfDataset {
-    sequences: Vec<Vec<u32>>,
+fn l2_norm(grads: &[f32]) -> f32 {
+    grads.iter().map(|g| g * g).sum::<f32>().sqrt()
 }
 
-impl SyntheticParameterGolfDataset {
-    fn new(num_sequences: usize, seq_len: usize, vocab_size: u32) -> Self {
-        let sequences = (0..num_sequences)
-            .map(|_| {
-                (0..seq_len)
-                    .map(|i| (i as u32) % vocab_size)
-                    .collect()
-            })
+#[derive(Clone)]
+struct FineWebSequenceDataset {
+    samples: Vec<Vec<u32>>,
+}
+
+impl FineWebSequenceDataset {
+    fn load(pattern: &str, seq_len: usize, max_shards: usize) -> Result<Self> {
+        let mut shard_paths: Vec<PathBuf> = glob(pattern)
+            .map_err(|e| rustane::Error::Other(format!("invalid glob pattern: {e}")))?
+            .filter_map(|entry| entry.ok())
             .collect();
+        shard_paths.sort();
 
-        SyntheticParameterGolfDataset { sequences }
+        if shard_paths.is_empty() {
+            return Err(rustane::Error::Other(format!(
+                "no shard files found matching pattern: {}",
+                pattern
+            )));
+        }
+
+        let mut tokens = Vec::new();
+        for path in shard_paths.into_iter().take(max_shards) {
+            tokens.extend(load_fineweb_shard_tokens(&path)?);
+        }
+
+        let usable = (tokens.len() / seq_len) * seq_len;
+        if usable == 0 {
+            return Err(rustane::Error::Other(format!(
+                "FineWeb shards did not contain enough tokens for seq_len={seq_len}"
+            )));
+        }
+
+        let samples = tokens[..usable]
+            .chunks(seq_len)
+            .map(|chunk| chunk.to_vec())
+            .collect();
+        Ok(Self { samples })
     }
 }
 
-impl Dataset for SyntheticParameterGolfDataset {
+impl Dataset for FineWebSequenceDataset {
     fn len(&self) -> usize {
-        self.sequences.len()
+        self.samples.len()
     }
 
     fn get(&self, idx: usize) -> Result<Vec<u32>> {
-        Ok(self.sequences[idx].clone())
+        self.samples.get(idx).cloned().ok_or_else(|| {
+            rustane::Error::InvalidParameter(format!(
+                "dataset index out of bounds: {} >= {}",
+                idx,
+                self.samples.len()
+            ))
+        })
     }
 }
 
-// ===== Optimizer =====
+fn load_fineweb_shard_tokens(path: &Path) -> Result<Vec<u32>> {
+    let mut file = File::open(path).map_err(|e| rustane::Error::Io(e.to_string()))?;
 
-struct SimpleOptimizer {
-    _lr: f32,
-}
+    let mut header_buf = [0u8; 256 * 4];
+    file.read_exact(&mut header_buf)
+        .map_err(|e| rustane::Error::Io(e.to_string()))?;
 
-impl SimpleOptimizer {
-    fn new(lr: f32) -> Self {
-        SimpleOptimizer { _lr: lr }
+    let mut header = [0i32; 256];
+    for (idx, chunk) in header_buf.chunks_exact(4).enumerate() {
+        header[idx] = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
     }
+    if header[0] != 20240520 || header[1] != 1 {
+        return Err(rustane::Error::Other(format!(
+            "unexpected FineWeb shard header for {}",
+            path.display()
+        )));
+    }
+
+    let num_tokens = header[2].max(0) as usize;
+    let mut token_buf = vec![0u8; num_tokens * 2];
+    file.seek(SeekFrom::Start((256 * 4) as u64))
+        .map_err(|e| rustane::Error::Io(e.to_string()))?;
+    file.read_exact(&mut token_buf)
+        .map_err(|e| rustane::Error::Io(e.to_string()))?;
+
+    let mut tokens = Vec::with_capacity(num_tokens);
+    for chunk in token_buf.chunks_exact(2) {
+        tokens.push(u16::from_le_bytes([chunk[0], chunk[1]]) as u32);
+    }
+    Ok(tokens)
 }
 
-impl Optimizer for SimpleOptimizer {
-    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
-        // SGD: params -= lr * grads
-        for (param, grad) in params.iter_mut().zip(grads.iter()) {
-            *param -= lr * grad;
+struct SentencePieceStats {
+    base_bytes: Vec<u32>,
+    has_leading_space: Vec<bool>,
+    is_boundary_token: Vec<bool>,
+}
+
+impl SentencePieceStats {
+    fn load(path: &str) -> Result<Self> {
+        let model = SentencePieceModel::from_file(path)
+            .map_err(|e| rustane::Error::Other(format!("failed to load tokenizer model {}: {}", path, e)))?;
+
+        let vocab_size = model.pieces().len();
+        let mut base_bytes = vec![0u32; vocab_size];
+        let mut has_leading_space = vec![false; vocab_size];
+        let mut is_boundary_token = vec![true; vocab_size];
+
+        for (idx, piece) in model.pieces().iter().enumerate() {
+            let text = piece
+                .piece
+                .as_ref()
+                .ok_or_else(|| rustane::Error::Other(format!("token {} missing piece string", idx)))?;
+            let ty = piece.r#type.unwrap_or(1);
+            let is_control = ty == 3 || ty == 2 || ty == 5;
+            let is_byte = ty == 6;
+            let is_unknown = ty == 2;
+            let is_unused = ty == 5;
+
+            if is_control || is_unknown || is_unused {
+                is_boundary_token[idx] = true;
+                continue;
+            }
+
+            is_boundary_token[idx] = false;
+            if is_byte {
+                base_bytes[idx] = 1;
+                continue;
+            }
+
+            let mut piece_text = text.clone();
+            if let Some(stripped) = piece_text.strip_prefix('▁') {
+                has_leading_space[idx] = true;
+                piece_text = stripped.to_string();
+            }
+            base_bytes[idx] = piece_text.as_bytes().len() as u32;
         }
-        Ok(())
+
+        Ok(Self {
+            base_bytes,
+            has_leading_space,
+            is_boundary_token,
+        })
+    }
+
+    fn byte_count_for_batch(&self, batch: &Batch) -> Result<usize> {
+        let mut bytes = 0usize;
+        let batch_size = batch.batch_size();
+        let seq_len = batch.seq_len();
+
+        for sample_idx in 0..batch_size {
+            let sample_offset = sample_idx * seq_len;
+            for pos in 0..seq_len.saturating_sub(1) {
+                let prev_id = batch.tokens()[sample_offset + pos] as usize;
+                let tgt_id = batch.tokens()[sample_offset + pos + 1] as usize;
+                let base = *self.base_bytes.get(tgt_id).ok_or_else(|| {
+                    rustane::Error::Other(format!("token id {} out of bounds for tokenizer", tgt_id))
+                })? as usize;
+                let has_space = *self.has_leading_space.get(tgt_id).ok_or_else(|| {
+                    rustane::Error::Other(format!("token id {} out of bounds for tokenizer", tgt_id))
+                })?;
+                let boundary = *self.is_boundary_token.get(prev_id).ok_or_else(|| {
+                    rustane::Error::Other(format!("token id {} out of bounds for tokenizer", prev_id))
+                })?;
+                bytes += base + if has_space && !boundary { 1 } else { 0 };
+            }
+        }
+        Ok(bytes)
     }
 }
-
-// ===== Notes =====
-
-// To use with real parameter-golf data:
-//
-// 1. Download the SentencePiece tokenizer (sp1024) and vocabulary
-// 2. Tokenize the FineWeb dataset using parameter-golf's script
-// 3. Create a JsonlDataset or similar to read the sharded .jsonl files
-// 4. Use ShardedDataLoader to stream shards from disk
-//
-// Example with real data:
-//   use rustane::data::{ShardedDataLoader, ShardConfig};
-//
-//   let config = ShardConfig::new(
-//       "data/fineweb10B_sp1024/train_*.bin".to_string(),
-//       1024,  // vocab_size
-//   )?;
-//
-//   let mut loader = ShardedDataLoader::new(&config)?;
-//   for shard in loader.iter_shards()? {
-//       // Process shard
-//   }

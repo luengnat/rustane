@@ -93,21 +93,23 @@ impl TransformerConfig {
     /// - Classifier/output layer: `dim * vocab_size`
     /// - Per transformer layer (x n_layers):
     ///   - Query, Key, Value projections: `3 * dim * dim`
+    ///   - Attention output projection: `dim * dim`
     ///   - Feed-forward w1 and w3: `2 * dim * hidden_dim`
     ///   - Feed-forward w2: `hidden_dim * dim`
-    ///   - Two layer normalizations: `2 * dim`
+    ///   - Two RMSNorms: `2 * dim`
+    /// - Final RMSNorm: `dim`
     pub fn param_count(&self) -> usize {
         // Embedding and classifier layers
         let embedding = self.vocab_size * self.dim;
         let classifier = self.dim * self.vocab_size;
 
         // Per-layer parameters
-        let per_layer = 3 * self.dim * self.dim         // QKV projections
+        let per_layer = 4 * self.dim * self.dim         // QKV + attention output projection
             + self.dim * self.hidden_dim * 2            // w1, w3 in FFN
             + self.hidden_dim * self.dim                // w2 in FFN
-            + 2 * self.dim;                             // layer norms
+            + 2 * self.dim;                             // RMSNorms
 
-        embedding + classifier + per_layer * self.n_layers
+        embedding + classifier + per_layer * self.n_layers + self.dim
     }
 }
 
@@ -123,14 +125,15 @@ mod tests {
         // Manual calculation:
         // embedding: 4096 * 256 = 1,048,576
         // classifier: 256 * 4096 = 1,048,576
-        // per_layer: 3 * 256 * 256 + 256 * 768 * 2 + 768 * 256 + 2 * 256
-        //          = 196,608 + 393,216 + 196,608 + 512
-        //          = 786,944
-        // total: 1,048,576 + 1,048,576 + 786,944 * 6
-        //      = 2,097,152 + 4,721,664
-        //      = 6,818,816
+        // per_layer: 4 * 256 * 256 + 256 * 768 * 2 + 768 * 256 + 2 * 256
+        //          = 262,144 + 393,216 + 196,608 + 512
+        //          = 852,480
+        // final_norm: 256
+        // total: 1,048,576 + 1,048,576 + 852,480 * 6 + 256
+        //      = 2,097,152 + 5,114,880 + 256
+        //      = 7,212,288
 
-        let expected = 1_048_576 + 1_048_576 + 786_944 * 6;
+        let expected = 1_048_576 + 1_048_576 + 852_480 * 6 + 256;
         assert_eq!(config.param_count(), expected);
     }
 

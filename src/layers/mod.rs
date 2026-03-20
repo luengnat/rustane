@@ -1,6 +1,20 @@
 //! Transformer Layer Components and Backward Propagation
 //!
-//! This module provides MIL code generation and CPU-based gradient computation for transformer layers.
+//! This module provides MIL code generation and gradient computation for transformer layers.
+//!
+//! # Phase 2: Forward MIL Generation
+//!
+//! Generates Model Intermediate Language (MIL) code for ANE-optimized transformer operations:
+//! - Scaled dot-product attention
+//! - SiLU-gated feed-forward networks
+//!
+//! # Phase 3: Backward MIL Generation
+//!
+//! Generates MIL code for ANE backward propagation (gradient computation):
+//! - RMSNorm backward
+//! - Multi-head attention backward
+//! - FFN (SwiGLU) backward
+//! - Cross-entropy loss backward
 //!
 //! # Components
 //!
@@ -132,6 +146,9 @@ pub mod sequential;
 pub mod swiglu;
 pub mod traits;
 pub mod transformer_backward;
+
+// Phase 3: ANE backward MIL generators
+pub mod backward;
 
 pub use activations::{ReLU, SiLU, GELU};
 pub use attention::{

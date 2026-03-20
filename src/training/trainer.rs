@@ -114,12 +114,78 @@ pub trait Optimizer: Send {
     fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()>;
 }
 
+/// Adam optimizer with bias correction.
+///
+/// This is a simple CPU implementation intended for training examples and
+/// small-to-medium model experiments.
+pub struct AdamOptimizer {
+    m: Vec<f32>,
+    v: Vec<f32>,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    step: usize,
+}
+
+impl AdamOptimizer {
+    /// Create a new Adam optimizer for a parameter vector of the given size.
+    pub fn new(param_count: usize) -> Self {
+        Self::with_hyperparams(param_count, 0.9, 0.999, 1e-8)
+    }
+
+    /// Create Adam with custom hyperparameters.
+    pub fn with_hyperparams(param_count: usize, beta1: f32, beta2: f32, eps: f32) -> Self {
+        Self {
+            m: vec![0.0; param_count],
+            v: vec![0.0; param_count],
+            beta1,
+            beta2,
+            eps,
+            step: 0,
+        }
+    }
+}
+
+impl Optimizer for AdamOptimizer {
+    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+        use crate::Error;
+
+        if grads.len() != params.len() || grads.len() != self.m.len() || grads.len() != self.v.len() {
+            return Err(Error::Other(format!(
+                "adam optimizer state mismatch: grads={}, params={}, m={}, v={}",
+                grads.len(),
+                params.len(),
+                self.m.len(),
+                self.v.len()
+            )));
+        }
+
+        self.step += 1;
+        let step = self.step as f32;
+        let beta1_correction = 1.0 - self.beta1.powf(step);
+        let beta2_correction = 1.0 - self.beta2.powf(step);
+
+        for i in 0..params.len() {
+            let g = grads[i];
+            self.m[i] = self.beta1 * self.m[i] + (1.0 - self.beta1) * g;
+            self.v[i] = self.beta2 * self.v[i] + (1.0 - self.beta2) * g * g;
+
+            let m_hat = self.m[i] / beta1_correction.max(1e-12);
+            let v_hat = self.v[i] / beta2_correction.max(1e-12);
+            params[i] -= lr * m_hat / (v_hat.sqrt() + self.eps);
+        }
+
+        Ok(())
+    }
+}
+
 /// Builder for Trainer (ensures all required components are set)
 pub struct TrainerBuilder<'a, M: Model> {
     model: &'a mut M,
     optimizer: Option<Box<dyn Optimizer>>,
     scheduler: Option<Box<dyn LRScheduler>>,
     loss_fn: Option<Box<dyn LossFn>>,
+    grad_clip_norm: Option<f32>,
 }
 
 impl<'a, M: Model> TrainerBuilder<'a, M> {
@@ -130,6 +196,7 @@ impl<'a, M: Model> TrainerBuilder<'a, M> {
             optimizer: None,
             scheduler: None,
             loss_fn: None,
+            grad_clip_norm: None,
         }
     }
 
@@ -145,9 +212,21 @@ impl<'a, M: Model> TrainerBuilder<'a, M> {
         self
     }
 
+    /// Set the learning rate scheduler from a boxed trait object.
+    pub fn with_scheduler_box(mut self, sch: Box<dyn LRScheduler>) -> Self {
+        self.scheduler = Some(sch);
+        self
+    }
+
     /// Set the loss function
     pub fn with_loss_fn<L: LossFn + 'static>(mut self, loss: L) -> Self {
         self.loss_fn = Some(Box::new(loss));
+        self
+    }
+
+    /// Set an optional global gradient norm clipping threshold.
+    pub fn with_grad_clip_norm(mut self, grad_clip_norm: f32) -> Self {
+        self.grad_clip_norm = Some(grad_clip_norm);
         self
     }
 
@@ -173,6 +252,7 @@ impl<'a, M: Model> TrainerBuilder<'a, M> {
             optimizer,
             scheduler,
             loss_fn,
+            grad_clip_norm: self.grad_clip_norm,
             current_step: 0,
         })
     }
@@ -184,6 +264,7 @@ pub struct Trainer<'a, M: Model> {
     optimizer: Box<dyn Optimizer>,
     scheduler: Box<dyn LRScheduler>,
     loss_fn: Box<dyn LossFn>,
+    grad_clip_norm: Option<f32>,
     current_step: u32,
 }
 
@@ -238,11 +319,21 @@ impl<'a, M: Model> Trainer<'a, M> {
             }
         }
 
+        let mut clipped_grads = grads;
+        if let Some(max_norm) = self.grad_clip_norm {
+            if max_norm > 0.0 && grad_norm > max_norm {
+                let scale = max_norm / grad_norm;
+                for g in &mut clipped_grads {
+                    *g *= scale;
+                }
+            }
+        }
+
         // 5. LR: lr = scheduler.get_lr(current_step)
         let learning_rate = self.scheduler.get_lr(self.current_step);
 
         // 6. Optimize: optimizer.step(&grads, model.parameters(), learning_rate)
-        self.optimizer.step(&grads, self.model.parameters(), learning_rate)
+        self.optimizer.step(&clipped_grads, self.model.parameters(), learning_rate)
             .map_err(|_| crate::Error::Other(
                 TrainerError::OptimizerStepFailed("optimizer step failed".to_string()).to_string()
             ))?;
@@ -344,17 +435,25 @@ impl<'a, M: Model> Trainer<'a, M> {
             ));
         }
 
+        let mut clipped_grads = accum.gradients().to_vec();
+        let grad_norm = compute_l2_norm(&clipped_grads);
+        if let Some(max_norm) = self.grad_clip_norm {
+            if max_norm > 0.0 && grad_norm > max_norm {
+                let scale = max_norm / grad_norm;
+                for g in &mut clipped_grads {
+                    *g *= scale;
+                }
+            }
+        }
+
         // Apply accumulated gradients
         let learning_rate = self.scheduler.get_lr(self.current_step);
-        self.optimizer.step(accum.gradients(), self.model.parameters(), learning_rate)
+        self.optimizer.step(&clipped_grads, self.model.parameters(), learning_rate)
             .map_err(|_| crate::Error::Other(
                 TrainerError::OptimizerStepFailed("optimizer step failed".to_string()).to_string()
             ))?;
 
         self.current_step += 1;
-
-        // Compute L2 norm of accumulated gradients
-        let grad_norm = compute_l2_norm(accum.gradients());
 
         // Return aggregated metrics
         Ok(StepMetrics::new(
