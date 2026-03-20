@@ -44,9 +44,9 @@
 //! d_X = d_X_up + d_X_gate
 //! ```
 
-use crate::training::TransformerConfig;
-use crate::ane::Result;
 use super::BackwardMILGenerator;
+use crate::ane::Result;
+use crate::training::TransformerConfig;
 
 /// MIL generator for feed-forward network backward pass
 #[derive(Debug)]
@@ -80,7 +80,8 @@ impl FFNBackwardGen {
         let hidden_dim = config.dim;
         let ffn_hidden_dim = config.hidden_dim;
 
-        format!(r#"
+        format!(
+            r#"
 #!irms6
 schema ffn_backward_schema {{
     input d_out: tensor<batch_sizexseq_lenx{hidden_dim}xf32> = Input()
@@ -168,7 +169,8 @@ main ffn_backward(
     // Return all gradients
     return (d_X, d_W_gate_accum, d_W_up_accum, d_W_down_accum)
 }}
-"#)
+"#
+        )
     }
 }
 
@@ -183,8 +185,52 @@ impl BackwardMILGenerator for FFNBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
-        // TODO: Implement validation in Phase 3b
+    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+        use super::validate_mil_structure;
+
+        // Step 1: Generate MIL code
+        let mil_code = self.generate(config)?;
+
+        // Step 2: Validate MIL code structure
+        validate_mil_structure(
+            &mil_code,
+            "ffn_backward",
+            &[
+                "d_out",
+                "X",
+                "hidden_gate",
+                "hidden_up",
+                "W_gate",
+                "W_up",
+                "W_down",
+            ],
+            &["d_X", "d_W_gate", "d_W_up", "d_W_down"],
+        )?;
+
+        // Step 3: Validate SiLU activation derivative is present
+        if !mil_code.contains("silu") && !mil_code.contains("sigmoid") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "FFN backward MIL missing SiLU/sigmoid activation".into(),
+            )
+            .into());
+        }
+
+        // Step 4: Validate gating operation is present
+        if !mil_code.contains("hidden_gate") || !mil_code.contains("hidden_up") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "FFN backward MIL missing gating structure".into(),
+            )
+            .into());
+        }
+
+        // Step 5: Validate matmul operations for weight gradients
+        if !mil_code.contains("matmul") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "FFN backward MIL missing matmul operations".into(),
+            )
+            .into());
+        }
+
         Ok(())
     }
 

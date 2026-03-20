@@ -26,14 +26,14 @@
 //! assert!(report.loss_passed);
 //! ```
 
-pub mod rmsnorm_backward_gen;
 pub mod attention_backward_gen;
 pub mod ffn_backward_gen;
 pub mod loss_backward_gen;
+pub mod rmsnorm_backward_gen;
 pub mod validation;
 
-use crate::training::TransformerConfig;
 use crate::ane::Result;
+use crate::training::TransformerConfig;
 
 /// Trait for ANE backward MIL generators
 ///
@@ -81,10 +81,86 @@ pub trait BackwardMILGenerator {
 }
 
 // Re-export generators
-pub use rmsnorm_backward_gen::RMSNormBackwardGen;
 pub use attention_backward_gen::AttentionBackwardGen;
 pub use ffn_backward_gen::FFNBackwardGen;
 pub use loss_backward_gen::LossBackwardGen;
+pub use rmsnorm_backward_gen::RMSNormBackwardGen;
 
 // Re-export validation
 pub use validation::{BackwardValidationSuite, ValidationReport};
+
+/// Helper function to validate MIL code structure
+///
+/// Checks that generated MIL code contains required elements:
+/// - Function declaration with correct name
+/// - All expected inputs
+/// - All expected outputs
+/// - Return statement
+///
+/// # Arguments
+/// * `mil_code` - The generated MIL code string
+/// * `func_name` - Expected function name
+/// * `expected_inputs` - List of expected input variable names
+/// * `expected_outputs` - List of expected output variable names
+///
+/// # Returns
+/// Ok(()) if all checks pass, error with details otherwise
+pub fn validate_mil_structure(
+    mil_code: &str,
+    func_name: &str,
+    expected_inputs: &[&str],
+    expected_outputs: &[&str],
+) -> Result<()> {
+    // Check function declaration
+    if !mil_code.contains(&format!("main {}", func_name))
+        && !mil_code.contains(&format!("func {}", func_name))
+    {
+        return Err(crate::ane::ANEError::CompileFailed(format!(
+            "MIL missing function declaration for '{}'",
+            func_name
+        ))
+        .into());
+    }
+
+    // Check inputs
+    for &input in expected_inputs {
+        if !mil_code.contains(input) {
+            return Err(crate::ane::ANEError::CompileFailed(format!(
+                "MIL for '{}' missing input '{}'",
+                func_name, input
+            ))
+            .into());
+        }
+    }
+
+    // Check outputs
+    for &output in expected_outputs {
+        if !mil_code.contains(output) {
+            return Err(crate::ane::ANEError::CompileFailed(format!(
+                "MIL for '{}' missing output '{}'",
+                func_name, output
+            ))
+            .into());
+        }
+    }
+
+    // Check return statement
+    if !mil_code.contains("return") {
+        return Err(crate::ane::ANEError::CompileFailed(format!(
+            "MIL for '{}' missing return statement",
+            func_name
+        ))
+        .into());
+    }
+
+    // Check for IR schema declaration (#!irms6)
+    if !mil_code.contains("#!irms6") {
+        return Err(crate::ane::ANEError::CompileFailed(format!(
+            "MIL for '{}' missing IR schema declaration",
+            func_name
+        ))
+        .into());
+    }
+
+    Ok(())
+}

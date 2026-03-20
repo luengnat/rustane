@@ -42,9 +42,9 @@
 //! d_X = d_Q @ W_Q^T + d_K @ W_K^T + d_V @ W_V^T
 //! ```
 
-use crate::training::TransformerConfig;
-use crate::ane::Result;
 use super::BackwardMILGenerator;
+use crate::ane::Result;
+use crate::training::TransformerConfig;
 
 /// MIL generator for multi-head attention backward pass
 #[derive(Debug)]
@@ -81,7 +81,8 @@ impl AttentionBackwardGen {
         let d_k = config.head_dim;
         let scale = 1.0 / (d_k as f32).sqrt();
 
-        format!(r#"
+        format!(
+            r#"
 #!irms6
 schema attention_backward_schema {{
     input d_out: tensor<batch_sizexseq_lenx{hidden_dim}xf32> = Input()
@@ -204,7 +205,8 @@ main attention_backward(
     // Return all gradients
     return (d_X, d_W_Q_final, d_W_K_final, d_W_V_final, d_W_O_final)
 }}
-"#)
+"#
+        )
     }
 }
 
@@ -219,9 +221,53 @@ impl BackwardMILGenerator for AttentionBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
-        // TODO: Implement validation in Phase 3b
-        // For now, return Ok to allow compilation to proceed
+    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+        use super::validate_mil_structure;
+
+        // Step 1: Generate MIL code
+        let mil_code = self.generate(config)?;
+
+        // Step 2: Validate MIL code structure
+        validate_mil_structure(
+            &mil_code,
+            "attention_backward",
+            &[
+                "d_out", "X", "Q", "K", "V", "attn", "W_Q", "W_K", "W_V", "W_O",
+            ],
+            &["d_X", "d_W_Q", "d_W_K", "d_W_V", "d_W_O"],
+        )?;
+
+        // Step 3: Validate mathematical operations are present
+        if !mil_code.contains("matmul") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "Attention backward MIL missing matmul operations".into(),
+            )
+            .into());
+        }
+
+        if !mil_code.contains("transpose") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "Attention backward MIL missing transpose operations".into(),
+            )
+            .into());
+        }
+
+        if !mil_code.contains("softmax") || !mil_code.contains("reduce_sum") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "Attention backward MIL missing softmax/reduce_sum operations".into(),
+            )
+            .into());
+        }
+
+        // Step 4: Validate scaling factor is present
+        let expected_scale = 1.0 / (config.head_dim as f32).sqrt();
+        if !mil_code.contains(&format!("{:.6}", expected_scale)) && !mil_code.contains("sqrt") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "Attention backward MIL missing scale factor".into(),
+            )
+            .into());
+        }
+
         Ok(())
     }
 

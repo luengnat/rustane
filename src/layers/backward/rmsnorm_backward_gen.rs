@@ -29,9 +29,9 @@
 //!           (sum_over_j(dL/dy_j * w_j * x_j / rms) * x_i) / (rms^3 * dim)
 //! ```
 
-use crate::training::TransformerConfig;
+use super::{validate_mil_structure, BackwardMILGenerator};
 use crate::ane::Result;
-use super::BackwardMILGenerator;
+use crate::training::TransformerConfig;
 
 /// MIL generator for RMSNorm backward pass
 #[derive(Debug)]
@@ -60,7 +60,8 @@ impl RMSNormBackwardGen {
         let dim = config.hidden_dim;
         let eps = 1e-6f32;
 
-        format!(r#"
+        format!(
+            r#"
 #!irms6
 schema rmsnorm_backward_schema {{
     input d_out: tensor<seq_lenxdimxf32> = Input()
@@ -127,7 +128,8 @@ main rmsnorm_backward(d_out: tensor<seq_lenxdimxf32>,
     // Return gradients
     return (d_x_flat, dw_accum)
 }}
-"#)
+"#
+        )
     }
 }
 
@@ -142,15 +144,79 @@ impl BackwardMILGenerator for RMSNormBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
-        // TODO: Implement validation in Phase 3b
-        // For now, return Ok to allow compilation to proceed
-        // Validation will:
-        // 1. Generate MIL code
-        // 2. Compile to ANE kernel
-        // 3. Run on tiny reference batch
-        // 4. Compare against CPU reference from transformer_backward.rs
-        // 5. Verify 1e-6 relative tolerance
+    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+        // Phase 3b validation implementation
+        // Validates MIL code structure and prepares for ANE execution
+
+        use crate::layers::transformer_backward;
+
+        // Step 1: Generate MIL code
+        let mil_code = self.generate(config)?;
+
+        // Step 2: Validate MIL code structure
+        validate_mil_structure(
+            &mil_code,
+            "rmsnorm_backward",
+            &["d_out", "x", "w"],
+            &["d_x", "dw"],
+        )?;
+
+        // Step 3: Generate reference test data
+        let seq_len = 4usize;
+        let dim = config.hidden_dim.min(64); // Use smaller dim for fast validation
+
+        let x: Vec<f32> = (0..(seq_len * dim)).map(|i| (i as f32) * 0.01).collect();
+        let w: Vec<f32> = (0..dim).map(|i| 1.0 + (i as f32) * 0.001).collect();
+        let d_out: Vec<f32> = (0..(seq_len * dim)).map(|i| (i as f32) * 0.001).collect();
+
+        // Step 4: Run CPU reference backward pass
+        let (cpu_d_x, cpu_dw) = transformer_backward::rmsnorm_backward(&d_out, &x, &w);
+
+        // Step 5: Validate output shapes
+        if cpu_d_x.len() != seq_len * dim {
+            return Err(crate::ane::ANEError::InvalidShape {
+                expected: format!("{} elements", seq_len * dim),
+                got: format!("{} elements", cpu_d_x.len()),
+            }
+            .into());
+        }
+
+        if cpu_dw.len() != dim {
+            return Err(crate::ane::ANEError::InvalidShape {
+                expected: format!("{} elements", dim),
+                got: format!("{} elements", cpu_dw.len()),
+            }
+            .into());
+        }
+
+        // Step 6: Validate gradients are finite
+        for (i, &g) in cpu_d_x.iter().enumerate() {
+            if !g.is_finite() {
+                return Err(crate::ane::ANEError::ConfigError(format!(
+                    "CPU d_x[{}] is non-finite: {}",
+                    i, g
+                ))
+                .into());
+            }
+        }
+
+        for (i, &g) in cpu_dw.iter().enumerate() {
+            if !g.is_finite() {
+                return Err(crate::ane::ANEError::ConfigError(format!(
+                    "CPU dw[{}] is non-finite: {}",
+                    i, g
+                ))
+                .into());
+            }
+        }
+
+        // Step 7: ANE execution (when available)
+        // TODO: When ANE eval() is implemented:
+        // - Compile MIL code to ANE kernel
+        // - Write inputs to ANE IOSurfaces
+        // - Execute kernel on ANE
+        // - Read outputs from ANE
+        // - Compare ANE vs CPU with 1e-6 tolerance
 
         Ok(())
     }

@@ -15,8 +15,8 @@ use glob::glob;
 use rustane::data::{Batch, Dataset, DataLoader, SequentialSampler};
 use rustane::error::Result;
 use rustane::training::{
-    AdamOptimizer, ConstantScheduler, CrossEntropyLoss, LossFn, Model, Optimizer,
-    ParameterGroupKind, WarmupCosineScheduler, WarmupLinearScheduler,
+    ConstantScheduler, CpuTrainingBackend, CrossEntropyLoss, LossFn, Model, TrainingBackend,
+    WarmupCosineScheduler, WarmupLinearScheduler,
 };
 use rustane::training::{TransformerANE, TransformerConfig};
 use sentencepiece_model::SentencePieceModel;
@@ -69,6 +69,19 @@ fn main() -> Result<()> {
         .and_then(|s| s.parse::<f32>().ok())
         .unwrap_or(0.04);
     let matrix_opt = std::env::var("MATRIX_OPT").unwrap_or_else(|_| "adam".to_string());
+    let muon_momentum = std::env::var("MUON_MOMENTUM")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.95);
+    let muon_backend_steps = std::env::var("MUON_BACKEND_STEPS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(5);
+    let muon_nesterov = std::env::var("MUON_NESTEROV")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|v| v != 0)
+        .unwrap_or(true);
     let scalar_lr = std::env::var("SCALAR_LR")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
@@ -169,6 +182,9 @@ fn main() -> Result<()> {
     println!("  Head LR:         {}", head_lr);
     println!("  Matrix LR:       {}", matrix_lr);
     println!("  Matrix opt:      {}", matrix_opt);
+    println!("  Muon momentum:   {}", muon_momentum);
+    println!("  Muon steps:      {}", muon_backend_steps);
+    println!("  Muon nesterov:   {}", muon_nesterov);
     println!("  Scalar LR:       {}", scalar_lr);
     println!("  Warmup steps:    {}", warmup_steps);
     println!("  Grad clip norm:  {}\n", grad_clip_norm);
@@ -190,13 +206,16 @@ fn main() -> Result<()> {
         .with_tie_embeddings(tie_embeddings)
         .with_logit_softcap(logit_softcap);
     let mut model = TransformerANE::new(&config)?;
-    let mut optimizer_groups = build_optimizer_groups(
+    let mut backend = CpuTrainingBackend::new(
         &model,
         embed_lr,
         head_lr,
         matrix_lr,
         scalar_lr,
         &matrix_opt,
+        muon_momentum,
+        muon_backend_steps,
+        muon_nesterov,
     );
     let scheduler = build_scheduler(
         &lr_scheduler,
@@ -273,14 +292,7 @@ fn main() -> Result<()> {
             )));
         }
         let lr_scale = scheduler.get_lr(step as u32);
-        let params = model.parameters();
-        for group in optimizer_groups.iter_mut() {
-            let group_lr = group.base_lr * lr_scale;
-            let range = group.range.clone();
-            group
-                .optimizer
-                .step(&accum_grads[range.clone()], &mut params[range], group_lr)?;
-        }
+        backend.step(&mut model, &accum_grads, lr_scale)?;
         let metrics = SimpleStepMetrics {
             loss: total_loss,
             grad_norm: total_grad_norm,
@@ -398,193 +410,6 @@ struct SimpleStepMetrics {
 
 fn l2_norm(grads: &[f32]) -> f32 {
     grads.iter().map(|g| g * g).sum::<f32>().sqrt()
-}
-
-struct OptimizerGroup {
-    range: std::ops::Range<usize>,
-    optimizer: GroupOptimizer,
-    base_lr: f32,
-}
-
-enum GroupOptimizer {
-    Adam(AdamOptimizer),
-    Muon(MuonOptimizer),
-}
-
-impl GroupOptimizer {
-    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
-        match self {
-            GroupOptimizer::Adam(opt) => opt.step(grads, params, lr),
-            GroupOptimizer::Muon(opt) => opt.step(grads, params, lr),
-        }
-    }
-}
-
-struct MuonOptimizer {
-    momentum_buffer: Vec<f32>,
-    rows: usize,
-    cols: usize,
-    momentum: f32,
-    backend_steps: usize,
-    nesterov: bool,
-}
-
-impl MuonOptimizer {
-    fn new(rows: usize, cols: usize, momentum: f32, backend_steps: usize, nesterov: bool) -> Self {
-        Self {
-            momentum_buffer: vec![0.0; rows * cols],
-            rows,
-            cols,
-            momentum,
-            backend_steps,
-            nesterov,
-        }
-    }
-
-    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
-        if grads.len() != params.len() || grads.len() != self.momentum_buffer.len() {
-            return Err(rustane::Error::Other(format!(
-                "muon optimizer state mismatch: grads={}, params={}, buffer={}",
-                grads.len(),
-                params.len(),
-                self.momentum_buffer.len()
-            )));
-        }
-        if self.rows == 0 || self.cols == 0 {
-            return Err(rustane::Error::Other("muon optimizer received empty matrix shape".to_string()));
-        }
-        let rows = self.rows;
-        let cols = self.cols;
-        let mut update = vec![0.0f32; grads.len()];
-        for i in 0..grads.len() {
-            self.momentum_buffer[i] = self.momentum * self.momentum_buffer[i] + grads[i];
-            update[i] = if self.nesterov {
-                grads[i] + self.momentum * self.momentum_buffer[i]
-            } else {
-                self.momentum_buffer[i]
-            };
-        }
-
-        let mut update = zero_power_via_newton_schulz5(&update, rows, cols, self.backend_steps);
-        let scale = (rows.max(cols) as f32 / rows.min(cols).max(1) as f32).sqrt();
-        for value in &mut update {
-            *value *= scale;
-        }
-        for (param, delta) in params.iter_mut().zip(update.iter()) {
-            *param -= lr * delta;
-        }
-        Ok(())
-    }
-}
-
-fn build_optimizer_groups(
-    model: &TransformerANE,
-    embed_lr: f32,
-    head_lr: f32,
-    matrix_lr: f32,
-    scalar_lr: f32,
-    matrix_opt: &str,
-) -> Vec<OptimizerGroup> {
-    let matrix_opt = matrix_opt.to_ascii_lowercase();
-    model
-        .parameter_groups()
-        .into_iter()
-        .map(|group| {
-            let base_lr = match group.kind {
-                ParameterGroupKind::Embedding => embed_lr,
-                ParameterGroupKind::Head => head_lr,
-                ParameterGroupKind::Matrix => matrix_lr,
-                ParameterGroupKind::Scalar => scalar_lr,
-            };
-            let optimizer = match group.kind {
-                ParameterGroupKind::Matrix if matrix_opt == "muon" => GroupOptimizer::Muon(MuonOptimizer::new(
-                    group.rows,
-                    group.cols,
-                    std::env::var("MUON_MOMENTUM")
-                        .ok()
-                        .and_then(|s| s.parse::<f32>().ok())
-                        .unwrap_or(0.95),
-                    std::env::var("MUON_BACKEND_STEPS")
-                        .ok()
-                        .and_then(|s| s.parse::<usize>().ok())
-                        .unwrap_or(5),
-                    std::env::var("MUON_NESTEROV")
-                        .ok()
-                        .and_then(|s| s.parse::<u32>().ok())
-                        .map(|v| v != 0)
-                        .unwrap_or(true),
-                )),
-                _ => GroupOptimizer::Adam(AdamOptimizer::new(group.range.end - group.range.start)),
-            };
-            OptimizerGroup {
-                range: group.range.clone(),
-                optimizer,
-                base_lr,
-            }
-        })
-        .collect()
-}
-
-fn zero_power_via_newton_schulz5(
-    gradient: &[f32],
-    rows: usize,
-    cols: usize,
-    steps: usize,
-) -> Vec<f32> {
-    let mut mat = gradient.to_vec();
-    let norm = mat.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-7);
-    for value in &mut mat {
-        *value /= norm;
-    }
-    let transposed = rows > cols;
-    if transposed {
-        mat = transpose_matrix(&mat, rows, cols);
-    }
-    let (cur_rows, cur_cols) = if transposed { (cols, rows) } else { (rows, cols) };
-    for _ in 0..steps {
-        let xt = transpose_matrix(&mat, cur_rows, cur_cols);
-        let a = matmul(&mat, &xt, cur_rows, cur_cols, cur_rows);
-        let a2 = matmul(&a, &a, cur_rows, cur_rows, cur_rows);
-        let mut b = a.clone();
-        for i in 0..b.len() {
-            b[i] = -4.7750 * a[i] + 2.0315 * a2[i];
-        }
-        let bx = matmul(&b, &mat, cur_rows, cur_rows, cur_cols);
-        let mut next = mat.clone();
-        for i in 0..next.len() {
-            next[i] = 3.4445 * mat[i] + bx[i];
-        }
-        mat = next;
-    }
-
-    if transposed {
-        transpose_matrix(&mat, cur_rows, cur_cols)
-    } else {
-        mat
-    }
-}
-
-fn transpose_matrix(matrix: &[f32], rows: usize, cols: usize) -> Vec<f32> {
-    let mut out = vec![0.0f32; matrix.len()];
-    for r in 0..rows {
-        for c in 0..cols {
-            out[c * rows + r] = matrix[r * cols + c];
-        }
-    }
-    out
-}
-
-fn matmul(a: &[f32], b: &[f32], a_rows: usize, a_cols: usize, b_cols: usize) -> Vec<f32> {
-    let mut out = vec![0.0f32; a_rows * b_cols];
-    for i in 0..a_rows {
-        for k in 0..a_cols {
-            let aval = a[i * a_cols + k];
-            for j in 0..b_cols {
-                out[i * b_cols + j] += aval * b[k * b_cols + j];
-            }
-        }
-    }
-    out
 }
 
 #[derive(Clone)]

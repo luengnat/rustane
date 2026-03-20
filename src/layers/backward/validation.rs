@@ -4,9 +4,9 @@
 //! CPU reference implementations with 1e-6 relative error tolerance.
 
 use super::*;
-use crate::training::TransformerConfig;
-use crate::ane::Result;
 use crate::ane::ANEError;
+use crate::ane::Result;
+use crate::training::TransformerConfig;
 
 /// Report from backward validation suite
 #[derive(Debug, Clone)]
@@ -34,10 +34,18 @@ impl ValidationReport {
     /// Count of passed validations
     pub fn pass_count(&self) -> usize {
         let mut count = 0;
-        if self.rmsnorm_passed { count += 1; }
-        if self.attention_passed { count += 1; }
-        if self.ffn_passed { count += 1; }
-        if self.loss_passed { count += 1; }
+        if self.rmsnorm_passed {
+            count += 1;
+        }
+        if self.attention_passed {
+            count += 1;
+        }
+        if self.ffn_passed {
+            count += 1;
+        }
+        if self.loss_passed {
+            count += 1;
+        }
         count
     }
 
@@ -93,8 +101,14 @@ impl BackwardValidationSuite {
         report.ffn_passed = self.ffn_gen.validate(&ref_config).is_ok();
         report.loss_passed = self.loss_gen.validate(&ref_config).is_ok();
 
-        if !(report.rmsnorm_passed && report.attention_passed && report.ffn_passed && report.loss_passed) {
-            return Err(ANEError::ConfigError("One or more backward kernels failed validation".into()));
+        if !(report.rmsnorm_passed
+            && report.attention_passed
+            && report.ffn_passed
+            && report.loss_passed)
+        {
+            return Err(ANEError::ConfigError(
+                "One or more backward kernels failed validation".into(),
+            ));
         }
 
         Ok(report)
@@ -108,10 +122,7 @@ impl BackwardValidationSuite {
     ///
     /// # Returns
     /// Ok(()) if relative error < 1e-6, error otherwise
-    pub fn validate_against_reference(
-        ane_gradients: &[f32],
-        cpu_gradients: &[f32],
-    ) -> Result<()> {
+    pub fn validate_against_reference(ane_gradients: &[f32], cpu_gradients: &[f32]) -> Result<()> {
         if ane_gradients.len() != cpu_gradients.len() {
             return Err(ANEError::InvalidShape {
                 expected: format!("{} elements", cpu_gradients.len()),

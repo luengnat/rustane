@@ -32,9 +32,9 @@
 //!
 //! This is numerically stable because we compute softmax using max-logit subtraction.
 
-use crate::training::TransformerConfig;
-use crate::ane::Result;
 use super::BackwardMILGenerator;
+use crate::ane::Result;
+use crate::training::TransformerConfig;
 
 /// MIL generator for cross-entropy loss backward pass
 #[derive(Debug)]
@@ -71,7 +71,8 @@ impl LossBackwardGen {
         let _seq_len = config.seq_len;
         let vocab_size = config.vocab_size;
 
-        format!(r#"
+        format!(
+            r#"
 #!irms6
 schema loss_backward_schema {{
     input logits: tensor<batch_sizexseq_lenx{vocab_size}xf32> = Input()
@@ -117,7 +118,8 @@ main loss_backward(
 const_0_to_{vocab_size}(): tensor<{vocab_size}xi32> {{
     return range(0, {vocab_size}, 1)
 }}
-"#)
+"#
+        )
     }
 }
 
@@ -132,8 +134,85 @@ impl BackwardMILGenerator for LossBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
-        // TODO: Implement validation in Phase 3b
+    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+        use super::validate_mil_structure;
+        use crate::layers::transformer_backward;
+
+        // Step 1: Generate MIL code
+        let mil_code = self.generate(config)?;
+
+        // Step 2: Validate MIL code structure
+        validate_mil_structure(
+            &mil_code,
+            "loss_backward",
+            &["logits", "targets"],
+            &["d_logits"],
+        )?;
+
+        // Step 3: Validate softmax is present
+        if !mil_code.contains("softmax") && !mil_code.contains("exp") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "Loss backward MIL missing softmax operations".into(),
+            )
+            .into());
+        }
+
+        // Step 4: Validate numerical stability (max subtraction)
+        if !mil_code.contains("max") && !mil_code.contains("reduce_max") {
+            return Err(crate::ane::ANEError::CompileFailed(
+                "Loss backward MIL missing numerical stability (max subtraction)".into(),
+            )
+            .into());
+        }
+
+        // Step 5: Generate reference test data
+        let seq_len = 4usize;
+        let vocab_size = config.vocab_size.min(256); // Use smaller vocab for fast validation
+
+        let logits: Vec<f32> = (0..(seq_len * vocab_size))
+            .map(|i| (i as f32) * 0.1)
+            .collect();
+        let targets: Vec<u32> = (0..seq_len)
+            .map(|i| (i as u32) % (vocab_size as u32))
+            .collect();
+
+        // Step 6: Run CPU reference backward pass
+        let cpu_grads = transformer_backward::cross_entropy_backward(&logits, &targets, vocab_size);
+
+        // Step 7: Validate output shape
+        if cpu_grads.len() != seq_len * vocab_size {
+            return Err(crate::ane::ANEError::InvalidShape {
+                expected: format!("{} elements", seq_len * vocab_size),
+                got: format!("{} elements", cpu_grads.len()),
+            }
+            .into());
+        }
+
+        // Step 8: Validate gradients are finite
+        for (i, &g) in cpu_grads.iter().enumerate() {
+            if !g.is_finite() {
+                return Err(crate::ane::ANEError::ConfigError(format!(
+                    "CPU d_logits[{}] is non-finite: {}",
+                    i, g
+                ))
+                .into());
+            }
+        }
+
+        // Step 9: Validate each position sums to ~0 (softmax - onehot property)
+        for pos in 0..seq_len {
+            let pos_sum: f32 = cpu_grads[pos * vocab_size..(pos + 1) * vocab_size]
+                .iter()
+                .sum();
+            if pos_sum.abs() > 1e-4 {
+                return Err(crate::ane::ANEError::ConfigError(format!(
+                    "Position {} gradient sum {} should be ~0",
+                    pos, pos_sum
+                ))
+                .into());
+            }
+        }
+
         Ok(())
     }
 
