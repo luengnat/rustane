@@ -1,18 +1,36 @@
 //! Tensor sharding utilities for distributed training across multiple ANEs
+//!
+//! Provides tools for partitioning tensors and gradients across multiple devices:
+//! - `TensorShard`: Describes a shard's device assignment and data range
+//! - `ShardStrategy`: Defines sharding strategy (batch, sequence, hidden, model)
+//! - `TensorSharder`: Manages sharding operations across devices
+//! - `ShardedMILGenerator`: Generates MIL code for sharded operations
 
 use crate::{Error, Result};
 use std::ops::Range;
 
 /// Tensor shard descriptor
+///
+/// Represents a portion of a tensor assigned to a specific device.
+/// Contains the device index, byte range, offset, and size information.
 #[derive(Clone, Debug)]
 pub struct TensorShard {
+    /// Index of the device this shard is assigned to
     pub device_index: usize,
+    /// Range of indices in the original tensor
     pub range: Range<usize>,
+    /// Byte offset in the original tensor
     pub offset: usize,
+    /// Size of this shard in elements
     pub size: usize,
 }
 
 impl TensorShard {
+    /// Create a new tensor shard descriptor.
+    ///
+    /// # Arguments
+    /// * `device_index` - Index of the device this shard is assigned to
+    /// * `range` - Range of indices in the original tensor
     pub fn new(device_index: usize, range: Range<usize>) -> Self {
         let size = range.end - range.start;
         Self {
@@ -23,10 +41,22 @@ impl TensorShard {
         }
     }
 
+    /// Extract shard data from a tensor.
+    ///
+    /// # Arguments
+    /// * `tensor` - The full tensor to extract from
     pub fn extract_from(&self, tensor: &[f32]) -> Vec<f32> {
         tensor[self.range.clone()].to_vec()
     }
 
+    /// Place shard data into a tensor at the correct offset.
+    ///
+    /// # Arguments
+    /// * `tensor` - The full tensor to place data into
+    /// * `shard_data` - The shard data to place
+    ///
+    /// # Errors
+    /// Returns error if shard_data size doesn't match shard size
     pub fn place_into(&self, tensor: &mut [f32], shard_data: &[f32]) -> Result<()> {
         if shard_data.len() != self.size {
             return Err(Error::InvalidParameter(format!(
@@ -41,21 +71,39 @@ impl TensorShard {
 }
 
 /// Tensor sharding strategy
+///
+/// Defines how tensors are partitioned across devices:
+/// - `Batch`: Split along batch dimension
+/// - `Sequence`: Split along sequence length dimension
+/// - `Hidden`: Split along hidden dimension
+/// - `Model`: Split by model layers (model parallelism)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShardStrategy {
+    /// Batch parallelism - split batch dimension across devices
     Batch,
+    /// Sequence parallelism - split sequence length across devices
     Sequence,
+    /// Hidden dimension parallelism - split hidden dimension across devices
     Hidden,
+    /// Model parallelism - split model layers across devices
     Model,
 }
 
 /// Tensor sharder for distributed computation
+///
+/// Manages sharding operations across multiple devices.
+/// Supports multiple sharding strategies via `ShardStrategy`.
 pub struct TensorSharder {
     num_devices: usize,
     strategy: ShardStrategy,
 }
 
 impl TensorSharder {
+    /// Create a new tensor sharder.
+    ///
+    /// # Arguments
+    /// * `num_devices` - Number of devices to shard across
+    /// * `strategy` - Sharding strategy to use
     pub fn new(num_devices: usize, strategy: ShardStrategy) -> Self {
         Self {
             num_devices,
@@ -63,10 +111,20 @@ impl TensorSharder {
         }
     }
 
+    /// Create a batch-parallel tensor sharder.
+    ///
+    /// # Arguments
+    /// * `num_devices` - Number of devices to shard across
     pub fn batch_parallelism(num_devices: usize) -> Self {
         Self::new(num_devices, ShardStrategy::Batch)
     }
 
+    /// Calculate shard sizes for even distribution across devices.
+    ///
+    /// Handles non-divisible sizes by distributing remainder to first devices.
+    ///
+    /// # Arguments
+    /// * `total_size` - Total size of the tensor to shard
     pub fn calculate_shard_sizes(&self, total_size: usize) -> Vec<usize> {
         let base_size = total_size / self.num_devices;
         let remainder = total_size % self.num_devices;
@@ -82,6 +140,13 @@ impl TensorSharder {
             .collect()
     }
 
+    /// Shard a tensor across devices based on the configured strategy.
+    ///
+    /// # Arguments
+    /// * `tensor` - The tensor to shard
+    ///
+    /// # Returns
+    /// Vector of `TensorShard` descriptors, one per device
     pub fn shard_tensor(&self, tensor: &[f32]) -> Result<Vec<TensorShard>> {
         let shard_sizes = self.calculate_shard_sizes(tensor.len());
         let mut shards = Vec::new();
@@ -96,6 +161,18 @@ impl TensorSharder {
         Ok(shards)
     }
 
+    /// Shard a batch of data across devices.
+    ///
+    /// # Arguments
+    /// * `batch_size` - Total batch size (must be divisible by num_devices)
+    /// * `seq_len` - Sequence length per sample
+    /// * `hidden_dim` - Hidden dimension size
+    ///
+    /// # Returns
+    /// Vector of (offset, per_device_batch) tuples for each device
+    ///
+    /// # Errors
+    /// Returns error if batch_size is not divisible by num_devices
     pub fn shard_batch(
         &self,
         batch_size: usize,
@@ -120,6 +197,15 @@ impl TensorSharder {
         Ok(shards)
     }
 
+    /// Gather shards from multiple devices back into a single tensor.
+    ///
+    /// # Arguments
+    /// * `shards` - Slice of shard data from each device
+    /// * `total_size` - Expected total size after gathering
+    ///
+    /// # Errors
+    /// Returns error if number of shards doesn't match num_devices,
+    /// or if shards exceed total_size
     pub fn gather_shards(&self, shards: &[Vec<f32>], total_size: usize) -> Result<Vec<f32>> {
         if shards.len() != self.num_devices {
             return Err(Error::InvalidParameter(format!(
@@ -145,25 +231,40 @@ impl TensorSharder {
         Ok(result)
     }
 
+    /// Get the number of devices.
     pub fn num_devices(&self) -> usize {
         self.num_devices
     }
 
+    /// Get the configured sharding strategy.
     pub fn strategy(&self) -> ShardStrategy {
         self.strategy
     }
 }
 
 /// Sharded MIL code generator
+///
+/// Generates MIL (Metal Intermediate Language) code for sharded operations
+/// across multiple ANE devices.
 pub struct ShardedMILGenerator {
     num_devices: usize,
 }
 
 impl ShardedMILGenerator {
+    /// Create a new sharded MIL generator.
+    ///
+    /// # Arguments
+    /// * `num_devices` - Number of devices to generate sharded code for
     pub fn new(num_devices: usize) -> Self {
         Self { num_devices }
     }
 
+    /// Generate MIL code for a sharded linear layer.
+    ///
+    /// # Arguments
+    /// * `name` - Name of the layer
+    /// * `input_dim` - Input dimension (currently unused in template)
+    /// * `output_dim` - Output dimension (currently unused in template)
     pub fn sharded_linear_mil(&self, name: &str, _input_dim: usize, _output_dim: usize) -> String {
         format!(
             r#"//! Sharded linear layer for {name}
@@ -173,6 +274,11 @@ builtin linear_out = linear{{i4, o4}}(input: tensor<*xi32>, weight: tensor<*xf32
         )
     }
 
+    /// Generate MIL code for a sharded layer normalization.
+    ///
+    /// # Arguments
+    /// * `name` - Name of the normalization layer
+    /// * `dim` - Normalization dimension (currently unused in template)
     pub fn sharded_layer_norm_mil(&self, name: &str, _dim: usize) -> String {
         format!(
             r#"//! Sharded layer norm for {name}
@@ -182,6 +288,14 @@ builtin layer_norm_out = layer_norm{{i4, epsilon}}(input: tensor<*xi32>, weight:
         )
     }
 
+    /// Generate MIL code for an all-reduce operation.
+    ///
+    /// # Arguments
+    /// * `name` - Name of the operation
+    /// * `size` - Size of the tensor to reduce
+    ///
+    /// # Note
+    /// This is a placeholder - actual all-reduce requires inter-device communication
     pub fn all_reduce_mil(&self, name: &str, size: usize) -> String {
         format!(
             r#"//! All-reduce for {name} (placeholder)
@@ -192,6 +306,7 @@ builtin allreduce_out = identity(x: tensor<{size}xf32>) -> (reduced: tensor<{siz
         )
     }
 
+    /// Get the number of devices.
     pub fn num_devices(&self) -> usize {
         self.num_devices
     }

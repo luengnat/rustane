@@ -305,6 +305,241 @@ impl AdamOptimizer {
     }
 }
 
+/// AdamW optimizer with decoupled weight decay
+///
+/// AdamW modifies Adam by applying weight decay directly to parameters
+/// rather than adding it to the gradient. This is the recommended approach
+/// for training transformers and has been shown to improve generalization.
+///
+/// # Difference from Adam
+///
+/// - **Adam**: `grad = grad + wd * param` (L2 regularization in gradient)
+/// - **AdamW**: `param = param - lr * wd * param` (direct weight decay on parameter)
+///
+/// # References
+///
+/// - [Decoupled Weight Decay Regularization](https://arxiv.org/abs/1711.05101)
+pub struct AdamWOptimizer {
+    m: Vec<f32>,
+    v: Vec<f32>,
+    beta1: f32,
+    beta2: f32,
+    eps: f32,
+    weight_decay: f32,
+    step: usize,
+}
+
+impl AdamWOptimizer {
+    /// Create a new AdamW optimizer for a parameter vector of the given size.
+    ///
+    /// # Arguments
+    ///
+    /// * `param_count` - Number of parameters to optimize
+    ///
+    /// Uses default hyperparameters: β₁=0.9, β₂=0.999, ε=1e-8, wd=0.01
+    pub fn new(param_count: usize) -> Self {
+        Self::with_hyperparams(param_count, 0.9, 0.999, 1e-8, 0.01)
+    }
+
+    /// Create AdamW with custom hyperparameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `param_count` - Number of parameters to optimize
+    /// * `beta1` - Exponential decay rate for first moment estimate (default: 0.9)
+    /// * `beta2` - Exponential decay rate for second moment estimate (default: 0.999)
+    /// * `eps` - Small constant for numerical stability (default: 1e-8)
+    /// * `weight_decay` - Weight decay coefficient (default: 0.01)
+    pub fn with_hyperparams(
+        param_count: usize,
+        beta1: f32,
+        beta2: f32,
+        eps: f32,
+        weight_decay: f32,
+    ) -> Self {
+        Self {
+            m: vec![0.0; param_count],
+            v: vec![0.0; param_count],
+            beta1,
+            beta2,
+            eps,
+            weight_decay,
+            step: 0,
+        }
+    }
+
+    /// Get the current weight decay coefficient
+    pub fn weight_decay(&self) -> f32 {
+        self.weight_decay
+    }
+
+    /// Set the weight decay coefficient
+    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+}
+
+impl Optimizer for AdamWOptimizer {
+    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+        use crate::Error;
+
+        if grads.len() != params.len() || grads.len() != self.m.len() || grads.len() != self.v.len()
+        {
+            return Err(Error::Other(format!(
+                "adamw optimizer state mismatch: grads={}, params={}, m={}, v={}",
+                grads.len(),
+                params.len(),
+                self.m.len(),
+                self.v.len()
+            )));
+        }
+
+        self.step += 1;
+        let step = self.step as f32;
+        let beta1_correction = 1.0 - self.beta1.powf(step);
+        let beta2_correction = 1.0 - self.beta2.powf(step);
+
+        for i in 0..params.len() {
+            let g = grads[i];
+            // Update moments (same as Adam)
+            self.m[i] = self.beta1 * self.m[i] + (1.0 - self.beta1) * g;
+            self.v[i] = self.beta2 * self.v[i] + (1.0 - self.beta2) * g * g;
+
+            let m_hat = self.m[i] / beta1_correction.max(1e-12);
+            let v_hat = self.v[i] / beta2_correction.max(1e-12);
+
+            // Apply Adam update with decoupled weight decay
+            // param = param - lr * (m_hat / sqrt(v_hat) + eps) - lr * wd * param
+            let adam_step = lr * m_hat / (v_hat.sqrt() + self.eps);
+            let wd_step = lr * self.weight_decay * params[i];
+            params[i] -= adam_step + wd_step;
+        }
+
+        Ok(())
+    }
+}
+
+/// Lion optimizer with sign-based updates
+///
+/// Lion (Symbolic Optimizer) is a simpler optimizer that only uses the sign of gradients
+/// rather than their magnitude. It maintains a single momentum vector and applies updates
+/// based on the sign of the momentum.
+///
+/// # Difference from Adam
+///
+/// - **Adam**: Uses gradient magnitude with adaptive learning rates (m / sqrt(v))
+/// - **Lion**: Uses only gradient sign: `update = lr * sign(momentum) + wd * param`
+///
+/// # Advantages
+///
+/// - Less memory (single momentum vector vs two for Adam)
+/// - Often better generalization
+/// - More stable training for large models
+///
+/// # References
+///
+/// - [Symbolic Discovery of Optimization Algorithms](https://arxiv.org/abs/2302.06675)
+pub struct LionOptimizer {
+    m: Vec<f32>,
+    beta1: f32,
+    weight_decay: f32,
+    step: usize,
+}
+
+impl LionOptimizer {
+    /// Create a new Lion optimizer for a parameter vector of the given size.
+    ///
+    /// # Arguments
+    ///
+    /// * `param_count` - Number of parameters to optimize
+    ///
+    /// Uses default hyperparameters: β₁=0.9, wd=0.01
+    pub fn new(param_count: usize) -> Self {
+        Self::with_hyperparams(param_count, 0.9, 0.01)
+    }
+
+    /// Create Lion with custom hyperparameters.
+    ///
+    /// # Arguments
+    ///
+    /// * `param_count` - Number of parameters to optimize
+    /// * `beta1` - Exponential decay rate for momentum (default: 0.9)
+    /// * `weight_decay` - Weight decay coefficient (default: 0.01)
+    pub fn with_hyperparams(param_count: usize, beta1: f32, weight_decay: f32) -> Self {
+        Self {
+            m: vec![0.0; param_count],
+            beta1,
+            weight_decay,
+            step: 0,
+        }
+    }
+
+    /// Get the current momentum coefficient
+    pub fn beta1(&self) -> f32 {
+        self.beta1
+    }
+
+    /// Get the current weight decay coefficient
+    pub fn weight_decay(&self) -> f32 {
+        self.weight_decay
+    }
+
+    /// Set the weight decay coefficient
+    pub fn with_weight_decay(mut self, weight_decay: f32) -> Self {
+        self.weight_decay = weight_decay;
+        self
+    }
+
+    /// Set the momentum coefficient
+    pub fn with_beta1(mut self, beta1: f32) -> Self {
+        self.beta1 = beta1;
+        self
+    }
+
+    /// Compute sign of a float value
+    #[inline]
+    fn sign(x: f32) -> f32 {
+        if x > 0.0 {
+            1.0
+        } else if x < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    }
+}
+
+impl Optimizer for LionOptimizer {
+    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+        use crate::Error;
+
+        if grads.len() != params.len() || grads.len() != self.m.len() {
+            return Err(Error::Other(format!(
+                "lion optimizer state mismatch: grads={}, params={}, m={}",
+                grads.len(),
+                params.len(),
+                self.m.len()
+            )));
+        }
+
+        self.step += 1;
+
+        for i in 0..params.len() {
+            let g = grads[i];
+
+            // Update momentum: m = β₁ * m + (1 - β₁) * g
+            self.m[i] = self.beta1 * self.m[i] + (1.0 - self.beta1) * g;
+
+            // Lion update: param = param - lr * sign(m) - lr * wd * param
+            let update = lr * Self::sign(self.m[i]) + lr * self.weight_decay * params[i];
+            params[i] -= update;
+        }
+
+        Ok(())
+    }
+}
+
 impl Optimizer for AdamOptimizer {
     fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
         use crate::Error;
@@ -1070,6 +1305,463 @@ mod accumulated_steps_tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod optimizer_tests {
+    use super::*;
+
+    #[test]
+    fn test_adam_optimizer_creation() {
+        let opt = AdamOptimizer::new(100);
+        assert_eq!(opt.m.len(), 100);
+        assert_eq!(opt.v.len(), 100);
+        assert_eq!(opt.step, 0);
+    }
+
+    #[test]
+    fn test_adam_optimizer_custom_hyperparams() {
+        let opt = AdamOptimizer::with_hyperparams(50, 0.99, 0.9999, 1e-7);
+        assert_eq!(opt.m.len(), 50);
+        assert_eq!(opt.v.len(), 50);
+        assert_eq!(opt.beta1, 0.99);
+        assert_eq!(opt.beta2, 0.9999);
+        assert_eq!(opt.eps, 1e-7);
+    }
+
+    #[test]
+    fn test_adam_optimizer_step() -> Result<()> {
+        let mut opt = AdamOptimizer::new(3);
+        let mut params = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2, 0.3];
+        let lr = 0.001;
+
+        opt.step(&grads, &mut params, lr)?;
+
+        // Parameters should have changed
+        assert_ne!(params[0], 1.0);
+        assert_ne!(params[1], 2.0);
+        assert_ne!(params[2], 3.0);
+
+        // Moments should have been updated
+        assert!(opt.m.iter().any(|&x| x != 0.0));
+        assert!(opt.v.iter().any(|&x| x != 0.0));
+        assert_eq!(opt.step, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adam_optimizer_multiple_steps() -> Result<()> {
+        let mut opt = AdamOptimizer::new(2);
+        let mut params = vec![1.0, 1.0];
+        let grads = vec![0.1, 0.1];
+        let lr = 0.01;
+
+        // First step
+        opt.step(&grads, &mut params, lr)?;
+        let params_after_step1 = params.clone();
+
+        // Second step with same gradients
+        opt.step(&grads, &mut params, lr)?;
+
+        // Parameters should continue to change (due to bias correction)
+        assert_ne!(params, params_after_step1);
+        assert_eq!(opt.step, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adam_optimizer_size_mismatch() {
+        let mut opt = AdamOptimizer::new(5);
+        let mut params = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2]; // Wrong size
+        let lr = 0.001;
+
+        let result = opt.step(&grads, &mut params, lr);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_adamw_optimizer_creation() {
+        let opt = AdamWOptimizer::new(100);
+        assert_eq!(opt.m.len(), 100);
+        assert_eq!(opt.v.len(), 100);
+        assert_eq!(opt.weight_decay, 0.01);
+        assert_eq!(opt.step, 0);
+    }
+
+    #[test]
+    fn test_adamw_optimizer_custom_hyperparams() {
+        let opt = AdamWOptimizer::with_hyperparams(50, 0.99, 0.9999, 1e-7, 0.001);
+        assert_eq!(opt.m.len(), 50);
+        assert_eq!(opt.v.len(), 50);
+        assert_eq!(opt.beta1, 0.99);
+        assert_eq!(opt.beta2, 0.9999);
+        assert_eq!(opt.eps, 1e-7);
+        assert_eq!(opt.weight_decay, 0.001);
+    }
+
+    #[test]
+    fn test_adamw_weight_decay_getter() {
+        let opt = AdamWOptimizer::new(100);
+        assert_eq!(opt.weight_decay(), 0.01);
+    }
+
+    #[test]
+    fn test_adamw_with_weight_decay_builder() {
+        let opt = AdamWOptimizer::new(100).with_weight_decay(0.05);
+        assert_eq!(opt.weight_decay(), 0.05);
+    }
+
+    #[test]
+    fn test_adamw_optimizer_step() -> Result<()> {
+        let mut opt = AdamWOptimizer::new(3);
+        let mut params = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2, 0.3];
+        let lr = 0.001;
+
+        opt.step(&grads, &mut params, lr)?;
+
+        // Parameters should have changed
+        assert_ne!(params[0], 1.0);
+        assert_ne!(params[1], 2.0);
+        assert_ne!(params[2], 3.0);
+
+        // Moments should have been updated
+        assert!(opt.m.iter().any(|&x| x != 0.0));
+        assert!(opt.v.iter().any(|&x| x != 0.0));
+        assert_eq!(opt.step, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adamw_multiple_steps() -> Result<()> {
+        let mut opt = AdamWOptimizer::new(2);
+        let mut params = vec![1.0, 1.0];
+        let grads = vec![0.1, 0.1];
+        let lr = 0.01;
+
+        // First step
+        opt.step(&grads, &mut params, lr)?;
+        let params_after_step1 = params.clone();
+
+        // Second step with same gradients
+        opt.step(&grads, &mut params, lr)?;
+
+        // Parameters should continue to change (due to bias correction + weight decay)
+        assert_ne!(params, params_after_step1);
+        assert_eq!(opt.step, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adamw_size_mismatch() {
+        let mut opt = AdamWOptimizer::new(5);
+        let mut params = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2]; // Wrong size
+        let lr = 0.001;
+
+        let result = opt.step(&grads, &mut params, lr);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_adam_vs_adamw_difference() -> Result<()> {
+        // Adam and AdamW should produce different results due to decoupled weight decay
+        let mut adam = AdamOptimizer::new(3);
+        let mut adamw = AdamWOptimizer::with_hyperparams(3, 0.9, 0.999, 1e-8, 0.01);
+
+        let mut params_adam = vec![1.0, 2.0, 3.0];
+        let mut params_adamw = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2, 0.3];
+        let lr = 0.001;
+
+        adam.step(&grads, &mut params_adam, lr)?;
+        adamw.step(&grads, &mut params_adamw, lr)?;
+
+        // AdamW should have smaller parameters due to direct weight decay
+        // (params are directly reduced by lr * wd * param)
+        for i in 0..3 {
+            assert!(params_adamw[i] < params_adam[i],
+                "AdamW param {} should be smaller than Adam param due to weight decay", i);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adamw_zero_weight_decay() -> Result<()> {
+        // With zero weight decay, AdamW should behave like Adam (approximately)
+        let mut adam = AdamOptimizer::new(3);
+        let mut adamw_zero_wd = AdamWOptimizer::with_hyperparams(3, 0.9, 0.999, 1e-8, 0.0);
+
+        let mut params_adam = vec![1.0, 2.0, 3.0];
+        let mut params_adamw = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2, 0.3];
+        let lr = 0.001;
+
+        adam.step(&grads, &mut params_adam, lr)?;
+        adamw_zero_wd.step(&grads, &mut params_adamw, lr)?;
+
+        // With zero weight decay, results should be nearly identical
+        for i in 0..3 {
+            assert!((params_adam[i] - params_adamw[i]).abs() < 1e-6,
+                "AdamW with wd=0 should match Adam");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adamw_weight_decay_effect_accumulates() -> Result<()> {
+        // Weight decay effect should compound over multiple steps
+        let mut opt = AdamWOptimizer::with_hyperparams(2, 0.9, 0.999, 1e-8, 0.1); // High WD
+        let mut params = vec![1.0, 1.0];
+        let grads = vec![0.0, 0.0]; // Zero gradients
+        let lr = 0.01;
+
+        let initial_param = params[0];
+
+        // Multiple steps with zero gradients but weight decay
+        for _ in 0..10 {
+            opt.step(&grads, &mut params, lr)?;
+        }
+
+        // Parameters should shrink due to weight decay even with zero gradients
+        assert!(params[0] < initial_param,
+            "Weight decay should reduce parameters even with zero gradients");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_adam_bias_correction() -> Result<()> {
+        // Test that bias correction makes a difference
+        let mut opt = AdamOptimizer::new(1);
+        let mut params = vec![1.0];
+        let grads = vec![1.0];
+        let lr = 0.1;
+
+        // First step - significant correction
+        opt.step(&grads, &mut params, lr)?;
+        let step1_param = params[0];
+
+        // Reset
+        let mut opt2 = AdamOptimizer::new(1);
+        let mut params2 = vec![1.0];
+
+        // Many steps later - correction diminishes
+        for _ in 0..100 {
+            opt2.step(&grads, &mut params2, lr)?;
+        }
+
+        // Later steps should have different effective learning rates
+        // due to bias correction approaching 1.0
+        assert_ne!(step1_param, params2[0]);
+
+        Ok(())
+    }
+
+    // ===== Lion Optimizer Tests =====
+
+    #[test]
+    fn test_lion_optimizer_creation() {
+        let opt = LionOptimizer::new(100);
+        assert_eq!(opt.m.len(), 100);
+        assert_eq!(opt.step, 0);
+        assert_eq!(opt.beta1(), 0.9);
+        assert_eq!(opt.weight_decay(), 0.01);
+    }
+
+    #[test]
+    fn test_lion_optimizer_custom_hyperparams() {
+        let opt = LionOptimizer::with_hyperparams(50, 0.99, 0.001);
+        assert_eq!(opt.m.len(), 50);
+        assert_eq!(opt.beta1(), 0.99);
+        assert_eq!(opt.weight_decay(), 0.001);
+    }
+
+    #[test]
+    fn test_lion_optimizer_step() -> Result<()> {
+        let mut opt = LionOptimizer::new(3);
+        let mut params = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2, 0.3];
+        let lr = 0.001;
+
+        opt.step(&grads, &mut params, lr)?;
+
+        // Parameters should have changed
+        assert_ne!(params[0], 1.0);
+        assert_ne!(params[1], 2.0);
+        assert_ne!(params[2], 3.0);
+
+        // Momentum should have been updated
+        assert!(opt.m.iter().any(|&x| x != 0.0));
+        assert_eq!(opt.step, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lion_optimizer_multiple_steps() -> Result<()> {
+        let mut opt = LionOptimizer::new(2);
+        let mut params = vec![1.0, 1.0];
+        let grads = vec![0.1, 0.1];
+        let lr = 0.01;
+
+        // First step
+        opt.step(&grads, &mut params, lr)?;
+        let params_after_step1 = params.clone();
+
+        // Second step with same gradients
+        opt.step(&grads, &mut params, lr)?;
+
+        // Parameters should continue to change (due to momentum)
+        assert_ne!(params, params_after_step1);
+        assert_eq!(opt.step, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lion_optimizer_size_mismatch() {
+        let mut opt = LionOptimizer::new(5);
+        let mut params = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2]; // Wrong size
+        let lr = 0.001;
+
+        let result = opt.step(&grads, &mut params, lr);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lion_sign_function() {
+        // Test positive, negative, and zero
+        assert_eq!(LionOptimizer::sign(1.5), 1.0);
+        assert_eq!(LionOptimizer::sign(-0.5), -1.0);
+        assert_eq!(LionOptimizer::sign(0.0), 0.0);
+        assert_eq!(LionOptimizer::sign(f32::INFINITY), 1.0);
+        assert_eq!(LionOptimizer::sign(f32::NEG_INFINITY), -1.0);
+    }
+
+    #[test]
+    fn test_lion_weight_decay_getter() {
+        let opt = LionOptimizer::new(100);
+        assert_eq!(opt.weight_decay(), 0.01);
+    }
+
+    #[test]
+    fn test_lion_beta1_getter() {
+        let opt = LionOptimizer::new(100);
+        assert_eq!(opt.beta1(), 0.9);
+    }
+
+    #[test]
+    fn test_lion_with_weight_decay_builder() {
+        let opt = LionOptimizer::new(100).with_weight_decay(0.05);
+        assert_eq!(opt.weight_decay(), 0.05);
+    }
+
+    #[test]
+    fn test_lion_with_beta1_builder() {
+        let opt = LionOptimizer::new(100).with_beta1(0.95);
+        assert_eq!(opt.beta1(), 0.95);
+    }
+
+    #[test]
+    fn test_lion_weight_decay_effect_with_zero_grads() -> Result<()> {
+        // Lion should apply weight decay even with zero gradients
+        let mut opt = LionOptimizer::with_hyperparams(3, 0.9, 0.1); // High WD
+        let mut params = vec![1.0, 1.0, 1.0];
+        let zero_grads = vec![0.0, 0.0, 0.0];
+        let lr = 0.01;
+
+        let initial_param = params[0];
+
+        // Multiple steps with zero gradients
+        for _ in 0..10 {
+            opt.step(&zero_grads, &mut params, lr)?;
+        }
+
+        // Parameters should shrink due to weight decay
+        assert!(params[0] < initial_param);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lion_vs_adam_difference() -> Result<()> {
+        // Lion and Adam should produce different results
+        let mut lion = LionOptimizer::new(3);
+        let mut adam = AdamOptimizer::new(3);
+
+        let mut params_lion = vec![1.0, 2.0, 3.0];
+        let mut params_adam = vec![1.0, 2.0, 3.0];
+        let grads = vec![0.1, 0.2, 0.3];
+        let lr = 0.001;
+
+        lion.step(&grads, &mut params_lion, lr)?;
+        adam.step(&grads, &mut params_adam, lr)?;
+
+        // Lion uses sign-based updates, Adam uses magnitude
+        // Results should be different
+        assert_ne!(params_lion, params_adam);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lion_zero_weight_decay_no_reduction() -> Result<()> {
+        // With zero weight decay, parameters shouldn't shrink from zero gradients
+        let mut opt = LionOptimizer::with_hyperparams(2, 0.9, 0.0);
+        let mut params = vec![1.0, 1.0];
+        let zero_grads = vec![0.0, 0.0];
+        let lr = 0.01;
+
+        let initial_params = params.clone();
+
+        // Multiple steps with zero gradients but no weight decay
+        for _ in 0..5 {
+            opt.step(&zero_grads, &mut params, lr)?;
+        }
+
+        // Parameters should remain very close to initial
+        // (only minor changes from momentum decay)
+        for i in 0..2 {
+            assert!((params[i] - initial_params[i]).abs() < 0.01);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_lion_momentum_accumulation() -> Result<()> {
+        // Test that momentum accumulates correctly
+        let mut opt = LionOptimizer::with_hyperparams(2, 0.9, 0.0);
+        let mut params = vec![0.0, 0.0];
+        let grads = vec![1.0, 1.0];
+        let lr = 0.1;
+
+        // First step
+        opt.step(&grads, &mut params, lr)?;
+        let momentum_after_step1 = opt.m[0];
+
+        // m = 0.9 * 0 + 0.1 * 1 = 0.1
+        assert!((momentum_after_step1 - 0.1).abs() < 1e-6);
+
+        // Second step with same gradient
+        opt.step(&grads, &mut params, lr)?;
+        let momentum_after_step2 = opt.m[0];
+
+        // m = 0.9 * 0.1 + 0.1 * 1 = 0.19
+        assert!((momentum_after_step2 - 0.19).abs() < 1e-6);
+
         Ok(())
     }
 }

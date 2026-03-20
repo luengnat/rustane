@@ -1,5 +1,7 @@
 # Phase 2 Week 2: MVP Trainer Implementation Plan
 
+> **STATUS:** ✅ **COMPLETE** - All tasks implemented and verified (March 20, 2026)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement a minimal orchestrating Trainer that coordinates forward pass → loss computation → backward pass → optimizer step, enabling efficient token-based training with gradient accumulation.
@@ -34,7 +36,7 @@
 **Files:**
 - Create: `src/training/model.rs`
 
-- [ ] **Step 1: Create model.rs with Model trait stub**
+- [x] **Step 1: Create model.rs with Model trait stub**
 
 ```rust
 //! Model trait for training orchestration
@@ -83,12 +85,12 @@ pub trait Model: Send {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it compiles**
+- [x] **Step 2: Run test to verify it compiles**
 
 Run: `cd /Users/nat/dev/rustane && cargo check`
 Expected: No errors
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/training/model.rs
@@ -102,7 +104,7 @@ git commit -m "feat: add Model trait for training orchestration"
 **Files:**
 - Create: `src/training/loss.rs`
 
-- [ ] **Step 1: Create loss.rs with LossFn trait and CrossEntropyLoss**
+- [x] **Step 1: Create loss.rs with LossFn trait and CrossEntropyLoss**
 
 ```rust
 //! Loss functions for model training
@@ -209,17 +211,17 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they pass**
+- [x] **Step 2: Run tests to verify they pass**
 
 Run: `cargo test --lib training::loss`
 Expected: 2 tests pass
 
-- [ ] **Step 3: Run cargo check**
+- [x] **Step 3: Run cargo check**
 
 Run: `cargo check`
 Expected: No errors
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/training/loss.rs
@@ -233,7 +235,7 @@ git commit -m "feat: add LossFn trait with CrossEntropyLoss and MSELoss"
 **Files:**
 - Create: `src/training/trainer.rs` (part 1: types and errors)
 
-- [ ] **Step 1: Create trainer.rs with error types and StepMetrics**
+- [x] **Step 1: Create trainer.rs with error types and StepMetrics**
 
 ```rust
 //! Training orchestration for models
@@ -340,12 +342,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test --lib training::trainer::tests`
 Expected: 2 tests pass
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/training/trainer.rs
@@ -359,7 +361,7 @@ git commit -m "feat: add TrainerError and StepMetrics types"
 **Files:**
 - Modify: `src/training/trainer.rs` (part 2: builder pattern)
 
-- [ ] **Step 1: Add TrainerBuilder struct and impl**
+- [x] **Step 1: Add TrainerBuilder struct and impl**
 
 ```rust
 use crate::training::optimizer::Optimizer;
@@ -557,17 +559,17 @@ mod builder_tests {
 }
 ```
 
-- [ ] **Step 2: Run builder tests**
+- [x] **Step 2: Run builder tests**
 
 Run: `cargo test --lib training::trainer::builder_tests`
 Expected: 2 tests pass
 
-- [ ] **Step 3: Run full cargo check**
+- [x] **Step 3: Run full cargo check**
 
 Run: `cargo check`
 Expected: May need to import Optimizer trait, fix and re-run
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/training/trainer.rs
@@ -582,7 +584,7 @@ git commit -m "feat: add TrainerBuilder and Trainer struct with train_step"
 - Modify: `src/training/mod.rs`
 - Modify: `src/lib.rs`
 
-- [ ] **Step 1: Update src/training/mod.rs**
+- [x] **Step 1: Update src/training/mod.rs**
 
 ```rust
 //! Training utilities for FP16 models
@@ -608,7 +610,7 @@ pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, Warmu
 pub use trainer::{StepMetrics, Trainer, TrainerBuilder, TrainerError};
 ```
 
-- [ ] **Step 2: Update src/lib.rs exports**
+- [x] **Step 2: Update src/lib.rs exports**
 
 Find the training module exports section (around line 61-64) and update:
 
@@ -620,12 +622,12 @@ pub use training::{
 };
 ```
 
-- [ ] **Step 3: Run cargo check**
+- [x] **Step 3: Run cargo check**
 
 Run: `cargo check`
 Expected: No errors
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/training/mod.rs src/lib.rs
@@ -639,7 +641,7 @@ git commit -m "feat: export Model, LossFn, Trainer, and StepMetrics from trainin
 **Files:**
 - Create: `tests/trainer_integration.rs`
 
-- [ ] **Step 1: Create integration test file with ToyModel**
+- [x] **Step 1: Create integration test file with ToyModel**
 
 ```rust
 //! Integration tests for Trainer with realistic training loop
@@ -815,12 +817,12 @@ impl rustane::training::grad_accum::Optimizer for SimpleOptimizer {
 }
 ```
 
-- [ ] **Step 2: Check for Optimizer trait location and add impl**
+- [x] **Step 2: Check for Optimizer trait location and add impl**
 
 Run: `cargo check 2>&1 | head -20`
 Expected: Error about Optimizer trait location. Find correct path in codebase.
 
-- [ ] **Step 3: Fix imports and implement correctly**
+- [x] **Step 3: Fix imports and implement correctly**
 
 Once we locate the correct Optimizer trait, update imports. For now, assume it's in `src/training/optimizer.rs` or similar. If it doesn't exist, create a minimal stub:
 
@@ -831,12 +833,12 @@ pub trait Optimizer: Send {
 }
 ```
 
-- [ ] **Step 4: Run integration test**
+- [x] **Step 4: Run integration test**
 
 Run: `cargo test --test trainer_integration --lib`
 Expected: At least 1 test passes
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add tests/trainer_integration.rs
@@ -850,7 +852,7 @@ git commit -m "test: add integration test with ToyModel"
 **Files:**
 - Create: `examples/train_toy_model.rs`
 
-- [ ] **Step 1: Create example showing full training loop**
+- [x] **Step 1: Create example showing full training loop**
 
 ```rust
 //! Example: Training a toy model with the Trainer
@@ -993,12 +995,12 @@ impl rustane::training::grad_accum::Optimizer for SimpleOptimizer {
 }
 ```
 
-- [ ] **Step 2: Run example to verify it works**
+- [x] **Step 2: Run example to verify it works**
 
 Run: `cargo run --example train_toy_model`
 Expected: Training loop runs, prints metrics
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add examples/train_toy_model.rs
@@ -1012,7 +1014,7 @@ git commit -m "example: add full training loop with ToyModel"
 **Files:**
 - Modify: `src/training/trainer.rs` (add unit tests section)
 
-- [ ] **Step 1: Add comprehensive unit tests**
+- [x] **Step 1: Add comprehensive unit tests**
 
 ```rust
 #[cfg(test)]
@@ -1069,12 +1071,12 @@ mod trainer_tests {
 }
 ```
 
-- [ ] **Step 2: Run all trainer tests**
+- [x] **Step 2: Run all trainer tests**
 
 Run: `cargo test --lib training::trainer`
 Expected: All tests pass (builder_tests + trainer_tests)
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add src/training/trainer.rs
@@ -1088,27 +1090,27 @@ git commit -m "test: add comprehensive unit tests for Trainer"
 **Files:**
 - All files
 
-- [ ] **Step 1: Run full test suite**
+- [x] **Step 1: Run full test suite**
 
 Run: `cargo test --lib`
 Expected: All tests pass, new trainer tests included
 
-- [ ] **Step 2: Check test count**
+- [x] **Step 2: Check test count**
 
 Run: `cargo test --lib 2>&1 | grep "test result"`
 Expected: Should show 190+ tests passing
 
-- [ ] **Step 3: Run integration tests**
+- [x] **Step 3: Run integration tests**
 
 Run: `cargo test --test trainer_integration`
 Expected: Integration tests pass
 
-- [ ] **Step 4: Run example**
+- [x] **Step 4: Run example**
 
 Run: `cargo run --example train_toy_model`
 Expected: Example completes without errors
 
-- [ ] **Step 5: Final commit**
+- [x] **Step 5: Final commit**
 
 ```bash
 git add -A

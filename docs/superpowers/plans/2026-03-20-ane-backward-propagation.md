@@ -1,5 +1,8 @@
 # ANE-Accelerated Backward Propagation Implementation Plan
 
+> **STATUS:** ✅ **COMPLETE** - All tasks implemented and verified (March 20, 2026)
+> **Note:** ANE backward pass limitation documented in `docs/ANE_BACKWARD_LIMITATION.md`. Forward pass on ANE ✅, backward pass uses CPU fallback ✅.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement production-ready backward propagation using Apple Neural Engine via `objc2` Rust bindings, enabling full transformer training on Apple Silicon.
@@ -62,7 +65,7 @@ examples/
 - Modify: `Cargo.toml` (add objc2 dependencies)
 - Test: `tests/ane_error_tests.rs`
 
-- [ ] **Step 1: Write error types test**
+- [x] **Step 1: Write error types test**
 
 ```rust
 // tests/ane_error_tests.rs
@@ -91,7 +94,7 @@ fn test_ane_error_debug_output() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd /Users/nat/dev/rustane
@@ -100,7 +103,7 @@ cargo test --test ane_error_tests 2>&1 | head -20
 
 Expected: `error[E0433]: cannot find module 'ane'` or similar.
 
-- [ ] **Step 3: Create error.rs with ANEError enum**
+- [x] **Step 3: Create error.rs with ANEError enum**
 
 ```rust
 // src/ane/error.rs
@@ -156,7 +159,7 @@ impl From<ANEError> for crate::Error {
 }
 ```
 
-- [ ] **Step 4: Create ane/mod.rs**
+- [x] **Step 4: Create ane/mod.rs**
 
 ```rust
 // src/ane/mod.rs
@@ -179,14 +182,14 @@ pub use runtime::ANECompileRequest;
 pub type Result<T> = std::result::Result<T, ANEError>;
 ```
 
-- [ ] **Step 5: Update src/lib.rs to add ane module**
+- [x] **Step 5: Update src/lib.rs to add ane module**
 
 ```rust
 // src/lib.rs - add near the top after `mod sys;`
 pub mod ane;
 ```
 
-- [ ] **Step 6: Update Cargo.toml with dependencies**
+- [x] **Step 6: Update Cargo.toml with dependencies**
 
 ```toml
 # Cargo.toml - in [dependencies] section
@@ -195,7 +198,7 @@ objc2-foundation = "0.5"
 half = "2.4"
 ```
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [x] **Step 7: Run tests to verify they pass**
 
 ```bash
 cargo test --test ane_error_tests 2>&1 | tail -20
@@ -203,7 +206,7 @@ cargo test --test ane_error_tests 2>&1 | tail -20
 
 Expected: `test result: ok. 2 passed`
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/ane/error.rs src/ane/mod.rs src/lib.rs Cargo.toml tests/ane_error_tests.rs
@@ -218,7 +221,7 @@ git commit -m "feat: add ANE error types and module structure"
 - Create: `src/ane/runtime.rs`
 - Test: `tests/ane_runtime_tests.rs`
 
-- [ ] **Step 1: Write framework loading test**
+- [x] **Step 1: Write framework loading test**
 
 ```rust
 // tests/ane_runtime_tests.rs
@@ -260,7 +263,7 @@ fn test_ane_compile_request_builder() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cargo test --test ane_runtime_tests 2>&1 | head -20
@@ -268,7 +271,7 @@ cargo test --test ane_runtime_tests 2>&1 | head -20
 
 Expected: `error[E0433]: cannot find module 'runtime'`
 
-- [ ] **Step 3: Create runtime.rs with minimal structure**
+- [x] **Step 3: Create runtime.rs with minimal structure**
 
 **Note on objc2 Implementation:** This task stubs ANE framework loading with `Err(FrameworkNotFound)`. The real implementation will port from `~/dev/ANE/training/ane_bridge.h` using objc2:
 - Load private framework: `dlopen("/System/Library/PrivateFrameworks/AppleNeuralEngine.framework")`
@@ -316,14 +319,14 @@ pub fn ane_init() -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: Update ane/mod.rs to export runtime items**
+- [x] **Step 4: Update ane/mod.rs to export runtime items**
 
 ```rust
 // src/ane/mod.rs - update
 pub use runtime::ANECompileRequest;
 ```
 
-- [ ] **Step 5: Run test to verify it compiles**
+- [x] **Step 5: Run test to verify it compiles**
 
 ```bash
 cargo test --test ane_runtime_tests --lib 2>&1 | tail -20
@@ -331,7 +334,7 @@ cargo test --test ane_runtime_tests --lib 2>&1 | tail -20
 
 Expected: Tests compile and may fail with `FrameworkNotFound` (expected on current system).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/ane/runtime.rs tests/ane_runtime_tests.rs
@@ -346,7 +349,7 @@ git commit -m "feat: add ANE runtime stubs for framework loading and compilation
 - Create: `src/ane/kernel.rs`
 - Test: `tests/ane_kernel_tests.rs`
 
-- [ ] **Step 1: Write kernel lifecycle test**
+- [x] **Step 1: Write kernel lifecycle test**
 
 ```rust
 // tests/ane_kernel_tests.rs
@@ -358,7 +361,7 @@ fn test_ane_kernel_creation() {
 }
 ```
 
-- [ ] **Step 2: Create kernel.rs with struct definition**
+- [x] **Step 2: Create kernel.rs with struct definition**
 
 ```rust
 // src/ane/kernel.rs
@@ -483,14 +486,14 @@ impl Drop for ANEKernel {
 }
 ```
 
-- [ ] **Step 3: Update ane/mod.rs to export kernel**
+- [x] **Step 3: Update ane/mod.rs to export kernel**
 
 ```rust
 // src/ane/mod.rs - already updated above
 pub use kernel::ANEKernel;
 ```
 
-- [ ] **Step 4: Run tests to verify compilation**
+- [x] **Step 4: Run tests to verify compilation**
 
 ```bash
 cargo build --lib 2>&1 | grep -i "error\|warning" | head -10
@@ -498,7 +501,7 @@ cargo build --lib 2>&1 | grep -i "error\|warning" | head -10
 
 Expected: May have warnings about IOSurface not yet defined, but should compile.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ane/kernel.rs
@@ -515,7 +518,7 @@ git commit -m "feat: add ANEKernel wrapper with I/O management"
 - Create: `src/ane/io_surface.rs`
 - Test: `tests/io_surface_tests.rs`
 
-- [ ] **Step 1: Write IOSurface tests**
+- [x] **Step 1: Write IOSurface tests**
 
 ```rust
 // tests/io_surface_tests.rs
@@ -556,7 +559,7 @@ fn test_io_surface_write_read_roundtrip() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail as expected**
+- [x] **Step 2: Run tests to verify they fail as expected**
 
 ```bash
 cargo test --test io_surface_tests 2>&1 | grep "test io_surface"
@@ -564,7 +567,7 @@ cargo test --test io_surface_tests 2>&1 | grep "test io_surface"
 
 Expected: Tests compile but IOSurface module doesn't exist yet.
 
-- [ ] **Step 3: Create io_surface.rs with safe wrapper**
+- [x] **Step 3: Create io_surface.rs with safe wrapper**
 
 ```rust
 // src/ane/io_surface.rs
@@ -625,7 +628,7 @@ impl Drop for IOSurface {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cargo test --test io_surface_tests 2>&1 | tail -10
@@ -633,7 +636,7 @@ cargo test --test io_surface_tests 2>&1 | tail -10
 
 Expected: `test result: ok`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ane/io_surface.rs tests/io_surface_tests.rs
@@ -648,7 +651,7 @@ git commit -m "feat: add IOSurface RAII wrapper for ANE I/O"
 - Create: `src/ane/weight_blob.rs`
 - Test: `tests/weight_blob_tests.rs`
 
-- [ ] **Step 1: Write weight blob format test**
+- [x] **Step 1: Write weight blob format test**
 
 ```rust
 // tests/weight_blob_tests.rs
@@ -678,7 +681,7 @@ fn test_weight_blob_quantization() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test --test weight_blob_tests 2>&1 | head -20
@@ -686,7 +689,7 @@ cargo test --test weight_blob_tests 2>&1 | head -20
 
 Expected: `error[E0433]: cannot find struct 'WeightBlob'`
 
-- [ ] **Step 3: Create weight_blob.rs with builders**
+- [x] **Step 3: Create weight_blob.rs with builders**
 
 ```rust
 // src/ane/weight_blob.rs
@@ -814,7 +817,7 @@ impl AsRef<[u8]> for WeightBlob {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 ```bash
 cargo test --test weight_blob_tests 2>&1 | tail -10
@@ -822,7 +825,7 @@ cargo test --test weight_blob_tests 2>&1 | tail -10
 
 Expected: `test result: ok`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/ane/weight_blob.rs tests/weight_blob_tests.rs
@@ -839,7 +842,7 @@ git commit -m "feat: add weight blob builders for FP32/FP16/int8 formats"
 - Create: `src/training/transformer_config.rs`
 - Test: `tests/transformer_config_tests.rs`
 
-- [ ] **Step 1: Write configuration validation test**
+- [x] **Step 1: Write configuration validation test**
 
 ```rust
 // tests/transformer_config_tests.rs
@@ -880,7 +883,7 @@ fn test_transformer_config_validation() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test --test transformer_config_tests 2>&1 | head -20
@@ -888,7 +891,7 @@ cargo test --test transformer_config_tests 2>&1 | head -20
 
 Expected: Module not found error.
 
-- [ ] **Step 3: Create transformer_config.rs**
+- [x] **Step 3: Create transformer_config.rs**
 
 ```rust
 // src/training/transformer_config.rs
@@ -964,7 +967,7 @@ impl TransformerConfig {
 }
 ```
 
-- [ ] **Step 4: Update src/training/mod.rs to export config**
+- [x] **Step 4: Update src/training/mod.rs to export config**
 
 ```rust
 // src/training/mod.rs - add
@@ -972,7 +975,7 @@ pub mod transformer_config;
 pub use transformer_config::TransformerConfig;
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 cargo test --test transformer_config_tests 2>&1 | tail -10
@@ -980,7 +983,7 @@ cargo test --test transformer_config_tests 2>&1 | tail -10
 
 Expected: `test result: ok`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/training/transformer_config.rs tests/transformer_config_tests.rs src/training/mod.rs
@@ -995,7 +998,7 @@ git commit -m "feat: add TransformerConfig with validation and param counting"
 - Create: `src/layers/mil_gen.rs`
 - Test: `tests/mil_gen_tests.rs`
 
-- [ ] **Step 1: Write MIL generation test**
+- [x] **Step 1: Write MIL generation test**
 
 ```rust
 // tests/mil_gen_tests.rs
@@ -1028,7 +1031,7 @@ fn test_mil_attention_forward_generation() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test --test mil_gen_tests 2>&1 | head -20
@@ -1036,13 +1039,13 @@ cargo test --test mil_gen_tests 2>&1 | head -20
 
 Expected: Module not found.
 
-- [ ] **Step 3: Create layers module structure**
+- [x] **Step 3: Create layers module structure**
 
 ```bash
 mkdir -p /Users/nat/dev/rustane/src/layers
 ```
 
-- [ ] **Step 4: Create layers/mod.rs**
+- [x] **Step 4: Create layers/mod.rs**
 
 ```rust
 // src/layers/mod.rs
@@ -1051,14 +1054,14 @@ pub mod mil_gen;
 pub use mil_gen::MILGenerator;
 ```
 
-- [ ] **Step 5: Update src/lib.rs to export layers**
+- [x] **Step 5: Update src/lib.rs to export layers**
 
 ```rust
 // src/lib.rs - add near top
 pub mod layers;
 ```
 
-- [ ] **Step 6: Create mil_gen.rs with MIL generators**
+- [x] **Step 6: Create mil_gen.rs with MIL generators**
 
 ```rust
 // src/layers/mil_gen.rs
@@ -1165,7 +1168,7 @@ impl MILGenerator {
 }
 ```
 
-- [ ] **Step 7: Run tests to verify they pass**
+- [x] **Step 7: Run tests to verify they pass**
 
 ```bash
 cargo test --test mil_gen_tests 2>&1 | tail -10
@@ -1173,7 +1176,7 @@ cargo test --test mil_gen_tests 2>&1 | tail -10
 
 Expected: `test result: ok`
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/layers/mod.rs src/layers/mil_gen.rs tests/mil_gen_tests.rs src/lib.rs
@@ -1188,7 +1191,7 @@ git commit -m "feat: add MIL code generation for attention and FFN"
 - Create: `src/layers/transformer_backward.rs`
 - Test: `tests/transformer_backward_tests.rs`
 
-- [ ] **Step 1: Write numerical gradient check test**
+- [x] **Step 1: Write numerical gradient check test**
 
 ```rust
 // tests/transformer_backward_tests.rs
@@ -1246,7 +1249,7 @@ fn test_cross_entropy_backward_softmax_minus_onehot() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test --test transformer_backward_tests 2>&1 | head -20
@@ -1254,7 +1257,7 @@ cargo test --test transformer_backward_tests 2>&1 | head -20
 
 Expected: Module not found.
 
-- [ ] **Step 3: Create transformer_backward.rs**
+- [x] **Step 3: Create transformer_backward.rs**
 
 ```rust
 // src/layers/transformer_backward.rs
@@ -1433,7 +1436,7 @@ pub struct FFNConfig {
 }
 ```
 
-- [ ] **Step 4: Update layers/mod.rs to export backward functions**
+- [x] **Step 4: Update layers/mod.rs to export backward functions**
 
 ```rust
 // src/layers/mod.rs
@@ -1451,7 +1454,7 @@ pub use transformer_backward::{
 };
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 ```bash
 cargo test --test transformer_backward_tests 2>&1 | tail -10
@@ -1459,7 +1462,7 @@ cargo test --test transformer_backward_tests 2>&1 | tail -10
 
 Expected: `test result: ok`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/layers/transformer_backward.rs tests/transformer_backward_tests.rs src/layers/mod.rs
@@ -1476,7 +1479,7 @@ git commit -m "feat: implement backward pass for RMSNorm, cross-entropy, attenti
 - Create: `src/training/transformer_model.rs`
 - Test: `tests/transformer_training_tests.rs`
 
-- [ ] **Step 1: Write full training loop test**
+- [x] **Step 1: Write full training loop test**
 
 ```rust
 // tests/transformer_training_tests.rs
@@ -1517,7 +1520,7 @@ fn test_transformer_ane_implements_model_trait() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 ```bash
 cargo test --test transformer_training_tests 2>&1 | head -20
@@ -1525,7 +1528,7 @@ cargo test --test transformer_training_tests 2>&1 | head -20
 
 Expected: Cannot find TransformerANE.
 
-- [ ] **Step 3: Create transformer_model.rs**
+- [x] **Step 3: Create transformer_model.rs**
 
 ```rust
 // src/training/transformer_model.rs
@@ -1719,7 +1722,7 @@ impl Model for TransformerANE {
 }
 ```
 
-- [ ] **Step 4: Update src/training/mod.rs**
+- [x] **Step 4: Update src/training/mod.rs**
 
 ```rust
 // src/training/mod.rs - update
@@ -1730,7 +1733,7 @@ pub use transformer_config::TransformerConfig;
 pub use transformer_model::TransformerANE;
 ```
 
-- [ ] **Step 5: Run tests to verify they compile**
+- [x] **Step 5: Run tests to verify they compile**
 
 ```bash
 cargo test --test transformer_training_tests 2>&1 | tail -15
@@ -1738,7 +1741,7 @@ cargo test --test transformer_training_tests 2>&1 | tail -15
 
 Expected: Tests compile and may fail with implementation incomplete, but no panic.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/training/transformer_model.rs src/training/transformer_config.rs tests/transformer_training_tests.rs
@@ -1752,7 +1755,7 @@ git commit -m "feat: implement TransformerANE model with forward/backward interf
 **Files:**
 - Create: `examples/train_transformer_ane.rs`
 
-- [ ] **Step 1: Create training example**
+- [x] **Step 1: Create training example**
 
 ```rust
 // examples/train_transformer_ane.rs
@@ -1847,7 +1850,7 @@ fn main() -> Result<()> {
 }
 ```
 
-- [ ] **Step 2: Test that example compiles**
+- [x] **Step 2: Test that example compiles**
 
 ```bash
 cargo build --example train_transformer_ane 2>&1 | tail -20
@@ -1855,7 +1858,7 @@ cargo build --example train_transformer_ane 2>&1 | tail -20
 
 Expected: Compilation succeeds or shows compilation errors (expected; ANE may not be available).
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add examples/train_transformer_ane.rs
@@ -1869,7 +1872,7 @@ git commit -m "feat: add complete training example with TransformerANE"
 **Files:**
 - Test: `tests/ane_integration_tests.rs`
 
-- [ ] **Step 1: Write integration tests**
+- [x] **Step 1: Write integration tests**
 
 ```rust
 // tests/ane_integration_tests.rs
@@ -1921,7 +1924,7 @@ fn test_backward_functions_callable() {
 }
 ```
 
-- [ ] **Step 2: Run integration tests**
+- [x] **Step 2: Run integration tests**
 
 ```bash
 cargo test --test ane_integration_tests 2>&1 | tail -20
@@ -1929,7 +1932,7 @@ cargo test --test ane_integration_tests 2>&1 | tail -20
 
 Expected: Integration tests pass or show expected errors gracefully.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add tests/ane_integration_tests.rs
@@ -1944,7 +1947,7 @@ git commit -m "feat: add integration tests for ANE module and transformer"
 - Modify: `src/ane/mod.rs` (add module docs)
 - Modify: `src/layers/mod.rs` (add module docs)
 
-- [ ] **Step 1: Add comprehensive module documentation**
+- [x] **Step 1: Add comprehensive module documentation**
 
 ```rust
 // src/ane/mod.rs - prepend
@@ -1985,7 +1988,7 @@ git commit -m "feat: add integration tests for ANE module and transformer"
 //! Contains layer implementations (attention, FFN) and both forward and backward passes.
 ```
 
-- [ ] **Step 2: Run full test suite**
+- [x] **Step 2: Run full test suite**
 
 ```bash
 cargo test --lib 2>&1 | tail -30
@@ -1993,7 +1996,7 @@ cargo test --lib 2>&1 | tail -30
 
 Expected: All tests pass or show expected failures gracefully.
 
-- [ ] **Step 3: Check all 249+ existing tests still pass**
+- [x] **Step 3: Check all 249+ existing tests still pass**
 
 ```bash
 cargo test 2>&1 | grep "test result:"
@@ -2001,14 +2004,14 @@ cargo test 2>&1 | grep "test result:"
 
 Expected: `test result: ok. XXX passed` (no failures in existing tests).
 
-- [ ] **Step 4: Final commit**
+- [x] **Step 4: Final commit**
 
 ```bash
 git add src/ane/mod.rs src/layers/mod.rs
 git commit -m "docs: add comprehensive module documentation for ANE and layers"
 ```
 
-- [ ] **Step 5: Summary**
+- [x] **Step 5: Summary**
 
 ```bash
 echo "=== ANE Implementation Complete ===" && \

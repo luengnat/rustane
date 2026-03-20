@@ -138,6 +138,7 @@ pub mod activations;
 pub mod attention;
 pub mod checkpoint;
 pub mod conv;
+pub mod flash_attention;
 pub mod linear;
 pub mod mil_gen;
 pub mod model;
@@ -156,6 +157,7 @@ pub use attention::{
 };
 pub use checkpoint::{Checkpoint, LayerWeights, ModelMetadata};
 pub use conv::Conv2d;
+pub use flash_attention::FlashAttention;
 pub use linear::Linear;
 pub use mil_gen::MILGenerator;
 pub use model::{LayerInfo, Model, ModelSummary};

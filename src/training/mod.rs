@@ -255,11 +255,17 @@ pub mod ane_persistent_buffer;
 pub mod backend;
 pub mod benchmark;
 pub mod checkpoint;
+pub mod chunked_backward;
 pub mod grad_accum;
+pub mod large_models;
 pub mod loss;
 pub mod loss_scale;
+pub mod metrics;
 pub mod model;
+pub mod model_parallel;
 pub mod scheduler;
+pub mod sequence_parallel;
+pub mod tensor_sharding;
 pub mod trainer;
 pub mod transformer_config;
 pub mod transformer_model;
@@ -275,9 +281,30 @@ pub use checkpoint::{
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
 pub use loss_scale::LossScaler;
+pub use metrics::{
+    JsonLogger, FileLogger, ConsoleLogger, MetricsAggregator, MetricsLogger, MetricsTracker,
+    MetricStats,
+};
 pub use model::Model;
+pub use model_parallel::{
+    CommunicationType, ModelParallelCommunication, ModelParallelConfig, ModelParallelError,
+    ModelParallelGradAccumulator, ModelParallelism, ModelShard, ParallelismType,
+};
 pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
-pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
+pub use chunked_backward::{
+    ActivationCache, BackwardChunk, ChunkedBackwardConfig, ChunkedBackwardError,
+    ChunkedBackwardExecutor, ChunkedBackwardStats, ChunkedExecutionPlan,
+};
+pub use sequence_parallel::{
+    DeviceCommunication, SequenceParallelConfig, SequenceParallelGradAccumulator,
+    SequenceParallelism, SequenceShard,
+};
+pub use large_models::{
+    InitializationStrategy, LargeModelConfig, LargeModelError, LargeModelInitializer,
+    LargeModelMemory, ModelPresets, ModelSizeCategory, ParameterSharding, ProgressiveInitialization,
+};
+pub use tensor_sharding::{ShardStrategy, ShardedMILGenerator, TensorShard, TensorSharder};
+pub use trainer::{AdamOptimizer, AdamWOptimizer, LionOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
 pub use transformer_config::{MixedPrecisionConfig, Precision, TransformerConfig};
 pub use transformer_model::{
     ane_forward_block_summary, ParameterGroup, ParameterGroupKind, TransformerANE,

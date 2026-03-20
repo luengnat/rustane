@@ -1,5 +1,7 @@
 # Phase 2 Week 3: Sharded Training Implementation Plan
 
+> **STATUS:** ✅ **COMPLETE** - All tasks implemented and verified (March 20, 2026)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement efficient training on 200+ disk-based data shards with gradient accumulation and token chunking.
@@ -35,7 +37,7 @@
 - Create: `src/data/sharded_loader.rs`
 - Modify: `src/data/mod.rs`
 
-- [ ] **Step 1: Write failing tests for ShardedDataLoader**
+- [x] **Step 1: Write failing tests for ShardedDataLoader**
 
 Create `src/data/sharded_loader.rs` with stub and write tests first:
 
@@ -78,12 +80,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --lib data::sharded_loader::tests 2>&1 | head -20`
 Expected: Tests fail (types don't exist yet)
 
-- [ ] **Step 3: Implement ShardConfig and ShardMetadata**
+- [x] **Step 3: Implement ShardConfig and ShardMetadata**
 
 ```rust
 //! Sharded data loading from disk
@@ -134,12 +136,12 @@ pub struct ShardBatch {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify basic types pass**
+- [x] **Step 4: Run tests to verify basic types pass**
 
 Run: `cargo test --lib data::sharded_loader::tests::test_shard_config_creation`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/data/sharded_loader.rs
@@ -153,7 +155,7 @@ git commit -m "feat: add ShardConfig, ShardMetadata, ShardBatch types"
 **Files:**
 - Modify: `src/data/sharded_loader.rs`
 
-- [ ] **Step 1: Write failing tests for ShardedDataLoader**
+- [x] **Step 1: Write failing tests for ShardedDataLoader**
 
 Add to sharded_loader.rs tests:
 
@@ -185,12 +187,12 @@ fn test_shard_count() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --lib data::sharded_loader::tests::test_sharded_loader_creation`
 Expected: FAIL (ShardedDataLoader not defined)
 
-- [ ] **Step 3: Implement ShardedDataLoader struct**
+- [x] **Step 3: Implement ShardedDataLoader struct**
 
 ```rust
 /// Loads tokenized data from multiple shard files on disk
@@ -302,24 +304,24 @@ impl<'a> Iterator for ShardIterator<'a> {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cargo check`
 Expected: May have errors about glob crate dependency - that's OK, we'll fix in next step
 
-- [ ] **Step 5: Add glob dependency to Cargo.toml**
+- [x] **Step 5: Add glob dependency to Cargo.toml**
 
 Find Cargo.toml `[dependencies]` section and add:
 ```toml
 glob = "0.3"
 ```
 
-- [ ] **Step 6: Run tests again**
+- [x] **Step 6: Run tests again**
 
 Run: `cargo test --lib data::sharded_loader::tests::test_sharded_loader_creation`
 Expected: PASS (though it will fail to find shards, the method exists now)
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/data/sharded_loader.rs Cargo.toml
@@ -334,7 +336,7 @@ git commit -m "feat: implement ShardedDataLoader with glob pattern discovery"
 - Modify: `src/data/batch.rs`
 - Modify: `src/data/mod.rs`
 
-- [ ] **Step 1: Write failing tests for batch chunking**
+- [x] **Step 1: Write failing tests for batch chunking**
 
 Create tests in `src/data/batch.rs`:
 
@@ -393,12 +395,12 @@ mod chunk_tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --lib data::batch::chunk_tests::test_batch_into_chunks`
 Expected: FAIL (into_chunks method doesn't exist)
 
-- [ ] **Step 3: Implement batch chunking**
+- [x] **Step 3: Implement batch chunking**
 
 Add to `src/data/batch.rs`:
 
@@ -522,12 +524,12 @@ fn compute_chunk_sizes(total_tokens: usize, seq_len: usize, max_chunk_tokens: us
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cargo test --lib data::batch::chunk_tests`
 Expected: All tests pass
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/data/batch.rs
@@ -541,7 +543,7 @@ git commit -m "feat: add batch chunking with seq_len alignment"
 **Files:**
 - Modify: `src/training/grad_accum.rs`
 
-- [ ] **Step 1: Write failing tests for GradAccumulator enhancements**
+- [x] **Step 1: Write failing tests for GradAccumulator enhancements**
 
 Add to `src/training/grad_accum.rs`:
 
@@ -603,12 +605,12 @@ mod accumulation_tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --lib training::grad_accum::accumulation_tests::test_grad_accumulator_creation`
 Expected: FAIL (new methods don't exist)
 
-- [ ] **Step 3: Implement GradAccumulator enhancements**
+- [x] **Step 3: Implement GradAccumulator enhancements**
 
 Modify `src/training/grad_accum.rs`:
 
@@ -698,12 +700,12 @@ impl GradAccumulator {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cargo test --lib training::grad_accum::accumulation_tests`
 Expected: All tests pass
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/training/grad_accum.rs
@@ -717,7 +719,7 @@ git commit -m "feat: enhance GradAccumulator with multi-step tracking"
 **Files:**
 - Modify: `src/training/trainer.rs`
 
-- [ ] **Step 1: Write failing test for train_accumulated_steps**
+- [x] **Step 1: Write failing test for train_accumulated_steps**
 
 Add to `src/training/trainer.rs` tests:
 
@@ -752,12 +754,12 @@ mod accumulated_steps_tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test --lib training::trainer::accumulated_steps_tests::test_train_accumulated_steps_basic`
 Expected: FAIL (train_accumulated_steps method doesn't exist)
 
-- [ ] **Step 3: Implement train_accumulated_steps**
+- [x] **Step 3: Implement train_accumulated_steps**
 
 Add to `src/training/trainer.rs` Trainer impl:
 
@@ -870,12 +872,12 @@ impl<'a, M: Model> Trainer<'a, M> {
 }
 ```
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `cargo test --lib training::trainer::accumulated_steps_tests`
 Expected: Tests pass
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/training/trainer.rs
@@ -890,7 +892,7 @@ git commit -m "feat: add train_accumulated_steps for gradient accumulation"
 - Modify: `src/data/mod.rs`
 - Modify: `src/lib.rs`
 
-- [ ] **Step 1: Add sharded_loader module to src/data/mod.rs**
+- [x] **Step 1: Add sharded_loader module to src/data/mod.rs**
 
 Find the module declarations and add:
 
@@ -900,11 +902,11 @@ pub mod sharded_loader;
 pub use sharded_loader::{ShardedDataLoader, ShardConfig, ShardMetadata, ShardBatch};
 ```
 
-- [ ] **Step 2: Export Batch chunking methods (already public, no change needed)**
+- [x] **Step 2: Export Batch chunking methods (already public, no change needed)**
 
 The `.into_chunks()` and `.chunks()` methods on Batch are automatically exported.
 
-- [ ] **Step 3: Update src/lib.rs to export new types**
+- [x] **Step 3: Update src/lib.rs to export new types**
 
 Add to lib.rs public exports:
 
@@ -912,12 +914,12 @@ Add to lib.rs public exports:
 pub use data::{ShardedDataLoader, ShardConfig, ShardMetadata};
 ```
 
-- [ ] **Step 4: Run cargo check**
+- [x] **Step 4: Run cargo check**
 
 Run: `cargo check`
 Expected: No errors
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/data/mod.rs src/lib.rs
@@ -931,11 +933,11 @@ git commit -m "feat: export ShardedDataLoader and related types"
 **Files:**
 - Create: `tests/sharded_training_integration.rs`
 
-- [ ] **Step 1: Create synthetic shard fixtures**
+- [x] **Step 1: Create synthetic shard fixtures**
 
 We'll create minimal test fixtures inline:
 
-- [ ] **Step 2: Write integration tests**
+- [x] **Step 2: Write integration tests**
 
 Create `tests/sharded_training_integration.rs`:
 
@@ -1086,12 +1088,12 @@ fn test_train_accumulated_steps() -> Result<()> {
 }
 ```
 
-- [ ] **Step 3: Run integration tests**
+- [x] **Step 3: Run integration tests**
 
 Run: `cargo test --test sharded_training_integration`
 Expected: All tests pass
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/sharded_training_integration.rs
@@ -1105,7 +1107,7 @@ git commit -m "test: add integration tests for sharded training"
 **Files:**
 - Create: `examples/train_with_shards.rs`
 
-- [ ] **Step 1: Create full working example**
+- [x] **Step 1: Create full working example**
 
 Create `examples/train_with_shards.rs`:
 
@@ -1242,12 +1244,12 @@ impl rustane::training::grad_accum::Optimizer for SimpleOptimizer {
 }
 ```
 
-- [ ] **Step 2: Run example**
+- [x] **Step 2: Run example**
 
 Run: `cargo run --example train_with_shards`
 Expected: Example completes, prints training table
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add examples/train_with_shards.rs
@@ -1261,32 +1263,32 @@ git commit -m "example: add full training example with sharding and chunking"
 **Files:**
 - All files
 
-- [ ] **Step 1: Run full test suite**
+- [x] **Step 1: Run full test suite**
 
 Run: `cargo test --lib 2>&1 | grep "test result"`
 Expected: 220+ tests passing
 
-- [ ] **Step 2: Run all new tests**
+- [x] **Step 2: Run all new tests**
 
 Run: `cargo test --lib data::sharded_loader && cargo test --lib data::batch::chunk_tests && cargo test --lib training::grad_accum::accumulation_tests && cargo test --lib training::trainer::accumulated_steps_tests`
 Expected: All pass
 
-- [ ] **Step 3: Run integration tests**
+- [x] **Step 3: Run integration tests**
 
 Run: `cargo test --test sharded_training_integration`
 Expected: All pass
 
-- [ ] **Step 4: Run example**
+- [x] **Step 4: Run example**
 
 Run: `cargo run --example train_with_shards`
 Expected: Completes without errors
 
-- [ ] **Step 5: Check for warnings**
+- [x] **Step 5: Check for warnings**
 
 Run: `cargo clippy --all-targets 2>&1 | grep -i warning`
 Expected: No warnings from new code
 
-- [ ] **Step 6: Final commit**
+- [x] **Step 6: Final commit**
 
 ```bash
 git add -A

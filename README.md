@@ -243,7 +243,49 @@ let model2 = Sequential::name("model2")
 // Both models share the same ReLU layer
 ```
 
-## Known Limitations
+## Memory Requirements
+
+### Development & Testing
+
+Rustane's comprehensive test suite (500+ tests) requires significant memory during compilation and execution.
+
+**Minimum requirements:**
+- **Debug builds**: 8GB RAM recommended
+- **Test execution**: 4GB+ RAM recommended
+- **Full test suite**: May require limiting concurrent threads
+
+**Reducing memory usage:**
+
+```bash
+# Run tests with limited concurrency (recommended)
+cargo test --lib -- --test-threads=2
+
+# Run specific test groups
+cargo test tensor_sharding --lib
+cargo test transformer --lib
+
+# Build with optimizations (reduces runtime memory)
+cargo test --release --lib
+
+# Clean build artifacts to free memory
+cargo clean
+```
+
+The `Cargo.toml` is configured with memory-efficient defaults:
+- `debug = 1` - Reduced debug info
+- `opt-level = 1` - Basic optimizations for lower runtime memory
+
+### Runtime Memory
+
+Memory usage during inference depends on:
+- **Model size**: Larger models require more weight memory
+- **Batch size**: Larger batches increase activation memory
+- **Precision**: FP16 uses 50% less memory than FP32
+
+For training large models, consider:
+- **Gradient checkpointing**: Up to 75% memory savings
+- **Mixed precision**: FP16/BF16 for 50% activation memory reduction
+- **Sequence parallelism**: Split long sequences across devices
 
 ### Platform Requirements
 - **macOS 15+**: Private ANE APIs require macOS 15 (Sequoia) or later

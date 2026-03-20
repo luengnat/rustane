@@ -5,6 +5,19 @@ edition = "2021"
 rust-version = "1.70"
 license = "MIT"
 
+# Memory-efficient profiles for development
+[profile.dev]
+debug = 1       # Less debug info = less memory
+opt-level = 1   # Some optimization reduces runtime memory
+
+[profile.test]
+debug = 1
+opt-level = 1
+
+[profile.release]
+debug = false
+lto = "thin"    # Faster linking, less memory
+
 [dependencies]
 # High-level safe wrappers (added in later phases)
 half = "2.4"
