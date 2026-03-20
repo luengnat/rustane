@@ -136,11 +136,14 @@ TOTAL: XX.XX ms
 - [x] Gradient checkpointing demo example
 - [ ] Activation recomputation during backward pass (TODO)
 
-### 📋 Task 2: Mixed Precision Training (FP16/BF16)
-- [ ] FP16/BF16 data type support
-- [ ] Loss scaling for FP16 gradients
-- [ ] ANE FP16 kernel compilation
-- [ ] Mixed precision forward/backward passes
+### ✅ Task 2: Mixed Precision Training (FP16/BF16)
+- [x] FP16/BF16 data type support (fp32_to_fp16, fp32_to_bf16, conversions)
+- [x] Loss scaling for FP16 gradients (LossScaler with dynamic scaling)
+- [x] ANE FP16 kernel compilation (existing MIL FP16 support)
+- [x] Mixed precision training example
+- [x] BF16 conversion utilities
+- [x] DataType enum updated with BF16
+- [ ] Full FP16/BF16 forward/backward pass integration (TODO)
 
 ### 📋 Task 3: Distributed Training (Multi-ANE)
 - [ ] Multi-ANE device detection
