@@ -254,6 +254,117 @@ impl<'a, M: Model> Trainer<'a, M> {
         // 8. Return: StepMetrics
         Ok(StepMetrics::new(loss, grad_norm, learning_rate, self.current_step - 1))
     }
+
+    /// Train with explicit gradient accumulation over chunks
+    ///
+    /// # Arguments
+    /// - `chunks`: Iterator yielding Result<Batch> chunks
+    /// - `accumulation_steps`: Number of backward passes before optimizer step
+    ///
+    /// # Returns
+    /// StepMetrics with aggregated loss and grad norm
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - accumulation_steps is 0
+    /// - Forward/backward pass fails
+    /// - Chunk count doesn't match accumulation_steps
+    /// - Gradients are NaN/Inf
+    pub fn train_accumulated_steps<I>(
+        &mut self,
+        chunks: I,
+        accumulation_steps: u32,
+    ) -> Result<StepMetrics>
+    where
+        I: IntoIterator<Item = Result<Batch>>,
+    {
+        use crate::training::GradAccumulator;
+
+        if accumulation_steps == 0 {
+            return Err(crate::Error::Other(
+                "accumulation_steps must be > 0".to_string()
+            ));
+        }
+
+        let mut accum = GradAccumulator::new(self.model.param_count(), accumulation_steps);
+        let scale = 1.0 / accumulation_steps as f32;
+        let mut chunk_count = 0u32;
+
+        // Process each chunk
+        for chunk_result in chunks {
+            let chunk = chunk_result?;
+
+            // Forward pass
+            let logits = self.model.forward(&chunk)
+                .map_err(|_| crate::Error::Other(
+                    TrainerError::ModelForwardFailed("forward pass failed".to_string()).to_string()
+                ))?;
+
+            // Compute loss
+            let loss = self.loss_fn.compute(&logits, &chunk)
+                .map_err(|_| crate::Error::Other(
+                    TrainerError::LossComputationFailed("loss computation failed".to_string()).to_string()
+                ))?;
+
+            // Backward pass
+            let grads = self.model.backward(loss)
+                .map_err(|_| crate::Error::Other(
+                    TrainerError::ModelBackwardFailed("backward pass failed".to_string()).to_string()
+                ))?;
+
+            // Validate gradient count
+            if grads.len() != self.model.param_count() {
+                return Err(crate::Error::Other(
+                    TrainerError::InvalidGradients(
+                        format!("gradient count {} != param count {}",
+                            grads.len(), self.model.param_count())
+                    ).to_string()
+                ));
+            }
+
+            // Check for NaN/Inf in gradients
+            for (i, &g) in grads.iter().enumerate() {
+                if !g.is_finite() {
+                    return Err(crate::Error::Other(
+                        TrainerError::InvalidGradients(
+                            format!("gradient[{}] is {}", i, g)
+                        ).to_string()
+                    ));
+                }
+            }
+
+            // Accumulate gradients
+            accum.accumulate(&grads, loss, scale)?;
+            chunk_count += 1;
+        }
+
+        // Verify we got the expected number of chunks
+        if chunk_count != accumulation_steps {
+            return Err(crate::Error::Other(
+                format!("expected {} chunks, got {}", accumulation_steps, chunk_count)
+            ));
+        }
+
+        // Apply accumulated gradients
+        let learning_rate = self.scheduler.get_lr(self.current_step);
+        self.optimizer.step(accum.gradients(), self.model.parameters(), learning_rate)
+            .map_err(|_| crate::Error::Other(
+                TrainerError::OptimizerStepFailed("optimizer step failed".to_string()).to_string()
+            ))?;
+
+        self.current_step += 1;
+
+        // Compute L2 norm of accumulated gradients
+        let grad_norm = compute_l2_norm(accum.gradients());
+
+        // Return aggregated metrics
+        Ok(StepMetrics::new(
+            accum.average_loss(),
+            grad_norm,
+            learning_rate,
+            self.current_step - 1,
+        ))
+    }
 }
 
 /// Compute L2 norm of a gradient vector
@@ -379,5 +490,75 @@ mod trainer_tests {
         assert_eq!(metrics.grad_norm, 1.5);
         assert_eq!(metrics.learning_rate, 0.001);
         assert_eq!(metrics.step, 5);
+    }
+}
+
+
+#[cfg(test)]
+mod accumulated_steps_tests {
+    use super::*;
+    use crate::training::GradAccumulator;
+    use crate::wrapper::ANETensor;
+
+    // Mock types for accumulated steps testing
+    struct MockModel {
+        params: Vec<f32>,
+    }
+
+    impl Model for MockModel {
+        fn forward(&mut self, _batch: &Batch) -> Result<ANETensor> {
+            // Return a dummy tensor (in tests this isn't actually used)
+            ANETensor::from_fp32(vec![1.0f32; 256], vec![256])
+        }
+
+        fn backward(&mut self, _loss: f32) -> Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2])
+        }
+
+        fn parameters(&mut self) -> &mut [f32] {
+            &mut self.params
+        }
+
+        fn param_count(&self) -> usize {
+            self.params.len()
+        }
+    }
+
+    /// Minimal optimizer for testing
+    struct SimpleOptimizer {
+        _lr: f32,
+    }
+
+    impl SimpleOptimizer {
+        fn new(lr: f32) -> Self {
+            SimpleOptimizer { _lr: lr }
+        }
+    }
+
+    impl Optimizer for SimpleOptimizer {
+        fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+            for (param, grad) in params.iter_mut().zip(grads.iter()) {
+                *param -= lr * grad;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_train_accumulated_steps_basic() -> Result<()> {
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
+
+        let mut trainer = TrainerBuilder::new(&mut model)
+            .with_optimizer(SimpleOptimizer::new(0.001))
+            .with_scheduler(crate::training::ConstantScheduler::new(0.001))
+            .with_loss_fn(crate::training::CrossEntropyLoss::new())
+            .build()?;
+
+        // Try to call train_accumulated_steps
+        let chunks = vec![Ok(batch)];
+        let _metrics = trainer.train_accumulated_steps(chunks.into_iter(), 1)?;
+
+        Ok(())
     }
 }
