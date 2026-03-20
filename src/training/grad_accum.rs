@@ -47,10 +47,10 @@ pub struct GradAccumulator {
     accumulated_grads: Vec<f32>,
 
     /// Number of accumulation steps completed
-    steps_completed: u32,
+    steps_completed: usize,
 
     /// Total steps before optimizer should step
-    total_steps: u32,
+    total_steps: usize,
 
     /// Running sum of losses (for averaging)
     accumulated_loss: f32,
@@ -72,7 +72,7 @@ impl GradAccumulator {
     /// assert_eq!(accum.progress(), (0, 8));
     /// assert!(!accum.is_ready());
     /// ```
-    pub fn new(param_count: usize, accumulation_steps: u32) -> Self {
+    pub fn new(param_count: usize, accumulation_steps: usize) -> Self {
         GradAccumulator {
             accumulated_grads: vec![0.0f32; param_count],
             steps_completed: 0,
@@ -174,7 +174,7 @@ impl GradAccumulator {
     /// let accum = GradAccumulator::new(100, 4);
     /// assert_eq!(accum.progress(), (0, 4));
     /// ```
-    pub fn progress(&self) -> (u32, u32) {
+    pub fn progress(&self) -> (usize, usize) {
         (self.steps_completed, self.total_steps)
     }
 
