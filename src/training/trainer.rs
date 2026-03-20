@@ -328,3 +328,56 @@ mod builder_tests {
         assert!(result.is_err());
     }
 }
+
+#[cfg(test)]
+mod trainer_tests {
+    use super::*;
+
+    #[test]
+    fn test_compute_l2_norm() {
+        let grads = vec![3.0, 4.0]; // 3-4-5 triangle
+        let norm = compute_l2_norm(&grads);
+        assert!((norm - 5.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_compute_l2_norm_empty() {
+        let grads: Vec<f32> = vec![];
+        let norm = compute_l2_norm(&grads);
+        assert_eq!(norm, 0.0);
+    }
+
+    #[test]
+    fn test_compute_l2_norm_single() {
+        let grads = vec![7.0];
+        let norm = compute_l2_norm(&grads);
+        assert!((norm - 7.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_trainer_error_variants() {
+        let errors = vec![
+            TrainerError::ModelForwardFailed("test".to_string()),
+            TrainerError::ModelBackwardFailed("test".to_string()),
+            TrainerError::LossComputationFailed("test".to_string()),
+            TrainerError::InvalidLogitsShape("test".to_string()),
+            TrainerError::OptimizerStepFailed("test".to_string()),
+            TrainerError::InvalidGradients("test".to_string()),
+            TrainerError::GradientNormInvalid("test".to_string()),
+            TrainerError::IncompleteTrainer("test".to_string()),
+        ];
+
+        for err in errors {
+            assert!(!err.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_step_metrics_properties() {
+        let metrics = StepMetrics::new(2.0, 1.5, 0.001, 5);
+        assert_eq!(metrics.loss, 2.0);
+        assert_eq!(metrics.grad_norm, 1.5);
+        assert_eq!(metrics.learning_rate, 0.001);
+        assert_eq!(metrics.step, 5);
+    }
+}
