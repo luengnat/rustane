@@ -38,7 +38,7 @@ fn extract_weights(model: &Sequential) -> Vec<(String, Vec<f32>)> {
     // In a real implementation, this would traverse the model graph
     // For this demo, we'll extract what we can access
 
-    let mut weights = Vec::new();
+    let mut weights: Vec<(String, Vec<f32>)> = Vec::new();
 
     // Example: Extract first layer weights if available
     // In production, you'd implement proper layer introspection
@@ -94,9 +94,19 @@ fn save_model(
         );
     }
 
-    // Save metadata
+    // Save metadata as JSON
     let metadata_path = model_path.join("metadata.json");
-    let metadata_json = serde_json::to_string_pretty(metadata, &Default::default())?;
+    let metadata_json = serde_json::to_string_pretty(&serde_json::json!({
+        "name": metadata.name,
+        "version": metadata.version,
+        "created_at": metadata.created_at,
+        "layers": metadata.layers.iter().map(|l| serde_json::json!({
+            "layer_type": l.layer_type,
+            "input_size": l.input_size,
+            "output_size": l.output_size,
+            "parameters": l.parameters,
+        })).collect::<Vec<_>>()
+    }))?;
     fs::write(&metadata_path, metadata_json)?;
 
     println!("\n  ✓ Metadata saved to {}", metadata_path.display());
@@ -141,7 +151,25 @@ fn load_model(
     // Load metadata
     let metadata_path = model_path.join("metadata.json");
     let metadata_json = fs::read_to_string(&metadata_path)?;
-    let metadata: ModelMetadata = serde_json::from_str(&metadata_json)?;
+    let metadata: ModelMetadata = serde_json::from_str::<serde_json::Value>(&metadata_json)
+        .map(|v| ModelMetadata {
+            name: v["name"].as_str().unwrap_or("").to_string(),
+            version: v["version"].as_str().unwrap_or("").to_string(),
+            created_at: v["created_at"].as_str().unwrap_or("").to_string(),
+            layers: v["layers"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .map(|l| LayerInfo {
+                            layer_type: l["layer_type"].as_str().unwrap_or("").to_string(),
+                            input_size: l["input_size"].as_u64().unwrap_or(0) as usize,
+                            output_size: l["output_size"].as_u64().unwrap_or(0) as usize,
+                            parameters: l["parameters"].as_u64().unwrap_or(0) as usize,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })?;
 
     println!("  Name: {}", metadata.name);
     println!("  Version: {}", metadata.version);
@@ -231,14 +259,13 @@ fn verify_weights(
 fn create_demo_model() -> Sequential {
     println!("Creating demo model...");
 
-    let mut model = Sequential::new("mlp_classifier");
-
-    // Add layers (in production, this would be a real trained model)
-    model.add(Box::new(Linear::new(784, 256).build().unwrap()));
-    model.add(Box::new(ReLU::new()));
-    model.add(Box::new(Linear::new(256, 128).build().unwrap()));
-    model.add(Box::new(ReLU::new()));
-    model.add(Box::new(Linear::new(128, 10).build().unwrap()));
+    let model = Sequential::new("mlp_classifier")
+        .add(Box::new(Linear::new(784, 256).build().unwrap()))
+        .add(Box::new(ReLU::new()))
+        .add(Box::new(Linear::new(256, 128).build().unwrap()))
+        .add(Box::new(ReLU::new()))
+        .add(Box::new(Linear::new(128, 10).build().unwrap()))
+        .build();
 
     println!("✓ Model created");
     println!("  Architecture: 784 → 256 → 128 → 10");
@@ -261,7 +288,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metadata = ModelMetadata {
         name: MODEL_NAME.to_string(),
         version: "1.0.0".to_string(),
-        created_at: chrono::Utc::now().to_rfc3339(),
+        created_at: {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            format!("unix:{}", secs)
+        },
         layers: vec![
             LayerInfo {
                 layer_type: "Linear".to_string(),
@@ -331,7 +362,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     println!("\nModel directory structure:");
-    println!("  {model_name}/");
+    println!("  {}/", MODEL_NAME);
     println!("    ├── metadata.json          # Model metadata");
     println!("    ├── summary.txt            # Human-readable summary");
     println!("    └── weights/               # Weight tensors");
@@ -366,5 +397,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Add chrono dependency for timestamps
-use chrono;
+
