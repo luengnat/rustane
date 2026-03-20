@@ -499,6 +499,55 @@ impl Model for TransformerANE {
     fn param_count(&self) -> usize {
         self.config.param_count()
     }
+
+    fn backward_on_ane(
+        &mut self,
+        batch: &Batch,
+        loss: f32,
+        accumulator: &mut crate::training::ANEGradientAccumulator,
+    ) -> Result<()> {
+        // Phase 3: ANE-accelerated backward pass
+        //
+        // For now, use CPU backward and transfer to accumulator (default implementation).
+        // Future Phase 3c implementation will:
+        // 1. Compile backward MIL kernels for each layer
+        // 2. Execute kernels on ANE using cached activations
+        // 3. Accumulate gradients directly in ANE memory
+        // 4. Transfer final accumulated gradients to CPU once per step
+        //
+        // Current behavior:
+        // - Compute gradients on CPU using backward_with_batch()
+        // - Scale and accumulate in ANEGradientAccumulator
+        // - Return success when accumulation complete
+
+        // Validate forward cache exists
+        if self.cached.samples.is_empty() {
+            return Err(crate::Error::Other(
+                "forward cache missing; call forward before backward_on_ane".to_string(),
+            ));
+        }
+
+        // Validate batch matches cached forward
+        if batch.tokens() != self.last_input_tokens.as_slice()
+            || batch.batch_size() != self.last_batch_size
+            || batch.seq_len() != self.last_seq_len
+        {
+            return Err(crate::Error::Other(
+                "batch used for backward_on_ane does not match cached forward batch".to_string(),
+            ));
+        }
+
+        // Compute gradients on CPU (Phase 2 implementation)
+        let grads = self.backward_with_batch(batch, loss)?;
+
+        // Accumulate in ANEGradientAccumulator
+        // Scale by 1.0 since this is a single backward pass
+        let scale = 1.0f32;
+        accumulator.accumulate(&grads, scale)
+            .map_err(|e| crate::Error::Other(format!("ANE gradient accumulation failed: {}", e)))?;
+
+        Ok(())
+    }
 }
 
 fn build_layout(config: &TransformerConfig) -> ParamLayout {

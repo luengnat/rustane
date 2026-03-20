@@ -44,6 +44,39 @@ pub trait Model: Send {
         self.backward(loss)
     }
 
+    /// ANE-accelerated backward pass with gradient accumulation
+    ///
+    /// # Arguments
+    /// - `batch`: Reference to the batch used in forward pass (for cached activations)
+    /// - `loss`: Scalar loss value from loss function
+    /// - `accumulator`: Gradient accumulator for ANE memory
+    ///
+    /// # Returns
+    /// Unit result - gradients are accumulated in the provided accumulator
+    ///
+    /// # Errors
+    /// Returns error if ANE backward pass fails
+    ///
+    /// # Default Implementation
+    /// Falls back to CPU backward and transfers to accumulator (for compatibility)
+    ///
+    /// # Phase 3 Feature
+    /// This is the Phase 3 ANE backward interface. Models implementing this
+    /// will compute gradients directly on ANE using backward MIL kernels.
+    fn backward_on_ane(
+        &mut self,
+        batch: &Batch,
+        loss: f32,
+        accumulator: &mut crate::training::ANEGradientAccumulator,
+    ) -> Result<()> {
+        // Default: CPU backward → transfer to accumulator
+        let grads = self.backward_with_batch(batch, loss)?;
+        let scale = 1.0; // Single step, no scaling
+        accumulator.accumulate(&grads, scale)
+            .map_err(|e| crate::error::Error::Other(e.to_string()))?;
+        Ok(())
+    }
+
     /// Get mutable reference to model parameters
     ///
     /// Used by optimizer to update weights in-place.
