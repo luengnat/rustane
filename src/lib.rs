@@ -46,8 +46,8 @@ pub mod wrapper;
 pub mod python;
 
 pub use data::{
-    Batch, Collator, DataLoader, Dataset, PadCollator, RandomSampler, SequentialDataset,
-    SequentialSampler, TruncateCollator,
+    Batch, Collator, DataLoader, Dataset, PadCollator, RandomSampler, Sampler,
+    SequentialDataset, SequentialSampler, TruncateCollator,
 };
 pub use error::{Error, Result};
 pub use layers::traits::Shape;
