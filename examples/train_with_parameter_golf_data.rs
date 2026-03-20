@@ -9,6 +9,7 @@
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use glob::glob;
 use rustane::data::{Batch, Dataset, DataLoader, SequentialSampler};
@@ -149,6 +150,7 @@ fn main() -> Result<()> {
     let mut total_train_batches = 0usize;
     let mut last_val_loss = None;
     let mut last_val_bpb = None;
+    let train_start = Instant::now();
 
     for step in 0..train_steps {
         let batch = match train_iter.next() {
@@ -242,6 +244,11 @@ fn main() -> Result<()> {
 
     println!("\n✓ Training completed successfully");
     println!("  Training batches: {}", total_train_batches);
+    let elapsed_ms = train_start.elapsed().as_secs_f64() * 1000.0;
+    println!("  Elapsed time:     {:.0} ms", elapsed_ms);
+    if total_train_batches > 0 {
+        println!("  Avg step time:    {:.2} ms", elapsed_ms / total_train_batches as f64);
+    }
     if let Some(loss) = last_val_loss {
         println!("  Final val loss:   {:.6}", loss);
     }

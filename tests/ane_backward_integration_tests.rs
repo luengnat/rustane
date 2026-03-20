@@ -55,15 +55,14 @@ fn test_transformer_ane_backward_on_ane() -> Result<()> {
     let mut model = TransformerANE::new(&config)?;
 
     // Create a batch manually
-    let tokens = vec![0u32; 128]; // 2 samples of 64 tokens each
+    let mut tokens = vec![0u32; 128]; // 2 samples of 64 tokens each
     for i in 0..128 {
         tokens[i] = (i % 256) as u32;
     }
     let batch = Batch {
-        token_ids: tokens,
+        tokens,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
     // Forward pass
@@ -96,26 +95,24 @@ fn test_backward_on_ane_batch_consistency() -> Result<()> {
     let mut model = TransformerANE::new(&config)?;
 
     // Create two different batches
-    let tokens1 = vec![0u32; 128];
+    let mut tokens1 = vec![0u32; 128];
     for i in 0..128 {
         tokens1[i] = (i % 256) as u32;
     }
     let batch1 = Batch {
-        token_ids: tokens1,
+        tokens: tokens1,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
-    let tokens2 = vec![8u32; 128];
+    let mut tokens2 = vec![8u32; 128];
     for i in 0..128 {
         tokens2[i] = ((i + 8) % 256) as u32;
     }
     let batch2 = Batch {
-        token_ids: tokens2,
+        tokens: tokens2,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
     // Forward pass on batch1
@@ -138,15 +135,14 @@ fn test_backward_on_ane_requires_forward() -> Result<()> {
     let mut model = TransformerANE::new(&config)?;
 
     // Create batch
-    let tokens = vec![0u32; 128];
+    let mut tokens = vec![0u32; 128];
     for i in 0..128 {
         tokens[i] = (i % 256) as u32;
     }
     let batch = Batch {
-        token_ids: tokens,
+        tokens,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
     // Try backward without forward (should fail)
@@ -166,15 +162,14 @@ fn test_gradient_accumulation_multiple_steps() -> Result<()> {
     let mut model = TransformerANE::new(&config)?;
 
     // Create batch
-    let tokens = vec![0u32; 128];
+    let mut tokens = vec![0u32; 128];
     for i in 0..128 {
         tokens[i] = (i % 256) as u32;
     }
     let batch = Batch {
-        token_ids: tokens,
+        tokens,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
     let mut accum = ANEGradientAccumulator::new(model.param_count())?;
@@ -203,15 +198,14 @@ fn test_accumulator_reset_between_steps() -> Result<()> {
     let mut model = TransformerANE::new(&config)?;
 
     // Create batch
-    let tokens = vec![0u32; 128];
+    let mut tokens = vec![0u32; 128];
     for i in 0..128 {
         tokens[i] = (i % 256) as u32;
     }
     let batch = Batch {
-        token_ids: tokens,
+        tokens,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
     let mut accum = ANEGradientAccumulator::new(model.param_count())?;
@@ -250,26 +244,24 @@ fn test_backward_on_ane_vs_backward_consistency() -> Result<()> {
     let mut model2 = TransformerANE::new(&config)?;
 
     // Create batch
-    let tokens1 = vec![0u32; 128];
+    let mut tokens1 = vec![0u32; 128];
     for i in 0..128 {
         tokens1[i] = (i % 256) as u32;
     }
     let batch1 = Batch {
-        token_ids: tokens1,
+        tokens: tokens1,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
-    let tokens2 = vec![0u32; 128];
+    let mut tokens2 = vec![0u32; 128];
     for i in 0..128 {
         tokens2[i] = (i % 256) as u32;
     }
     let batch2 = Batch {
-        token_ids: tokens2,
+        tokens: tokens2,
         batch_size: 2,
         seq_len: 64,
-        vocab_size: 256,
     };
 
     // Method 1: backward_with_batch
