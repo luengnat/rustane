@@ -100,3 +100,231 @@ mod tests {
         assert_eq!(err.to_string(), "Model forward pass failed: test error");
     }
 }
+
+/// Trait for optimizers that update model parameters based on gradients
+pub trait Optimizer: Send {
+    /// Perform a single optimization step
+    ///
+    /// # Arguments
+    /// - `grads`: Gradient vector (one per parameter)
+    /// - `params`: Mutable reference to model parameters
+    /// - `lr`: Learning rate for this step
+    ///
+    /// # Errors
+    /// Returns error if optimization step fails
+    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()>;
+}
+
+/// Builder for Trainer (ensures all required components are set)
+pub struct TrainerBuilder<'a, M: Model> {
+    model: &'a mut M,
+    optimizer: Option<Box<dyn Optimizer>>,
+    scheduler: Option<Box<dyn LRScheduler>>,
+    loss_fn: Option<Box<dyn LossFn>>,
+}
+
+impl<'a, M: Model> TrainerBuilder<'a, M> {
+    /// Create a new trainer builder
+    pub fn new(model: &'a mut M) -> Self {
+        TrainerBuilder {
+            model,
+            optimizer: None,
+            scheduler: None,
+            loss_fn: None,
+        }
+    }
+
+    /// Set the optimizer
+    pub fn with_optimizer<O: Optimizer + 'static>(mut self, opt: O) -> Self {
+        self.optimizer = Some(Box::new(opt));
+        self
+    }
+
+    /// Set the learning rate scheduler
+    pub fn with_scheduler<S: LRScheduler + 'static>(mut self, sch: S) -> Self {
+        self.scheduler = Some(Box::new(sch));
+        self
+    }
+
+    /// Set the loss function
+    pub fn with_loss_fn<L: LossFn + 'static>(mut self, loss: L) -> Self {
+        self.loss_fn = Some(Box::new(loss));
+        self
+    }
+
+    /// Build trainer, ensuring all components are set
+    pub fn build(self) -> Result<Trainer<'a, M>> {
+        let optimizer = self.optimizer
+            .ok_or_else(|| crate::Error::Other(
+                TrainerError::IncompleteTrainer("optimizer not set".to_string()).to_string()
+            ))?;
+
+        let scheduler = self.scheduler
+            .ok_or_else(|| crate::Error::Other(
+                TrainerError::IncompleteTrainer("scheduler not set".to_string()).to_string()
+            ))?;
+
+        let loss_fn = self.loss_fn
+            .ok_or_else(|| crate::Error::Other(
+                TrainerError::IncompleteTrainer("loss function not set".to_string()).to_string()
+            ))?;
+
+        Ok(Trainer {
+            model: self.model,
+            optimizer,
+            scheduler,
+            loss_fn,
+            current_step: 0,
+        })
+    }
+}
+
+/// Orchestrates training: forward → loss → backward → optimize
+pub struct Trainer<'a, M: Model> {
+    model: &'a mut M,
+    optimizer: Box<dyn Optimizer>,
+    scheduler: Box<dyn LRScheduler>,
+    loss_fn: Box<dyn LossFn>,
+    current_step: u32,
+}
+
+impl<'a, M: Model> Trainer<'a, M> {
+    /// Single training step
+    pub fn train_step(&mut self, batch: &Batch) -> Result<StepMetrics> {
+        // 1. Forward: logits = model.forward(batch)
+        let logits = self.model.forward(batch)
+            .map_err(|_| crate::Error::Other(
+                TrainerError::ModelForwardFailed("forward pass failed".to_string()).to_string()
+            ))?;
+
+        // 2. Loss: loss = loss_fn.compute(&logits, batch)
+        let loss = self.loss_fn.compute(&logits, batch)
+            .map_err(|_| crate::Error::Other(
+                TrainerError::LossComputationFailed("loss computation failed".to_string()).to_string()
+            ))?;
+
+        // 3. Backward: grads = model.backward(loss)
+        let grads = self.model.backward(loss)
+            .map_err(|_| crate::Error::Other(
+                TrainerError::ModelBackwardFailed("backward pass failed".to_string()).to_string()
+            ))?;
+
+        // Verify gradient vector length matches parameter count
+        if grads.len() != self.model.param_count() {
+            return Err(crate::Error::Other(
+                TrainerError::InvalidGradients(
+                    format!("gradient count {} != param count {}",
+                        grads.len(), self.model.param_count())
+                ).to_string()
+            ));
+        }
+
+        // 4. Metrics: grad_norm = compute_norm(&grads)
+        let grad_norm = compute_l2_norm(&grads);
+
+        // Check for NaN/Inf in gradients
+        if !grad_norm.is_finite() {
+            return Err(crate::Error::Other(
+                TrainerError::InvalidGradients(format!("grad_norm is {}", grad_norm)).to_string()
+            ));
+        }
+
+        for (i, &g) in grads.iter().enumerate() {
+            if !g.is_finite() {
+                return Err(crate::Error::Other(
+                    TrainerError::InvalidGradients(
+                        format!("gradient[{}] is {}", i, g)
+                    ).to_string()
+                ));
+            }
+        }
+
+        // 5. LR: lr = scheduler.get_lr(current_step)
+        let learning_rate = self.scheduler.get_lr(self.current_step);
+
+        // 6. Optimize: optimizer.step(&grads, model.parameters(), learning_rate)
+        self.optimizer.step(&grads, self.model.parameters(), learning_rate)
+            .map_err(|_| crate::Error::Other(
+                TrainerError::OptimizerStepFailed("optimizer step failed".to_string()).to_string()
+            ))?;
+
+        // 7. Increment: current_step += 1
+        self.current_step += 1;
+
+        // 8. Return: StepMetrics
+        Ok(StepMetrics::new(loss, grad_norm, learning_rate, self.current_step - 1))
+    }
+}
+
+/// Compute L2 norm of a gradient vector
+fn compute_l2_norm(grads: &[f32]) -> f32 {
+    grads.iter().map(|g| g * g).sum::<f32>().sqrt()
+}
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+
+    // Mock types for testing
+    struct MockModel {
+        params: Vec<f32>,
+    }
+
+    impl Model for MockModel {
+        fn forward(&mut self, _batch: &Batch) -> Result<ANETensor> {
+            Err(crate::Error::NotImplemented("not implemented".to_string()))
+        }
+
+        fn backward(&mut self, _loss: f32) -> Result<Vec<f32>> {
+            Ok(vec![0.1, 0.2])
+        }
+
+        fn parameters(&mut self) -> &mut [f32] {
+            &mut self.params
+        }
+
+        fn param_count(&self) -> usize {
+            self.params.len()
+        }
+    }
+
+    /// Minimal optimizer for testing
+    struct SimpleOptimizer {
+        _lr: f32,
+    }
+
+    impl SimpleOptimizer {
+        fn new(lr: f32) -> Self {
+            SimpleOptimizer { _lr: lr }
+        }
+    }
+
+    impl Optimizer for SimpleOptimizer {
+        fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+            for (param, grad) in params.iter_mut().zip(grads.iter()) {
+                *param -= lr * grad;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_builder_construction() {
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let builder = TrainerBuilder::new(&mut model);
+
+        // Should fail - missing optimizer
+        assert!(builder.build().is_err());
+    }
+
+    #[test]
+    fn test_builder_missing_component() {
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let builder = TrainerBuilder::new(&mut model)
+            .with_optimizer(SimpleOptimizer::new(0.001));
+
+        // Should fail - missing scheduler and loss_fn
+        let result = builder.build();
+        assert!(result.is_err());
+    }
+}
