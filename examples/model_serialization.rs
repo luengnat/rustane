@@ -1,18 +1,22 @@
 //! Model Serialization Example
 //!
-//! Demonstrates saving and loading model weights for deployment.
-//! Shows: weight extraction, serialization, loading, verification.
+//! Demonstrates saving and loading TransformerANE model weights for deployment.
+//! Shows: weight extraction, binary serialization, loading, round-trip verification.
+//!
+//! # Usage
+//!
+//! ```bash
+//! cargo run --example model_serialization
+//! ```
 
-use rustane::{
-    layers::{Linear, ReLU},
-    Sequential,
-};
+use rustane::training::{Model, TransformerANE, TransformerConfig};
+use rustane::data::Batch;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
 const MODEL_DIR: &str = "/tmp/rustane_models";
-const MODEL_NAME: &str = "mlp_classifier";
+const MODEL_NAME: &str = "transformer_ane";
 
 /// Model metadata for versioning
 #[derive(Debug, Clone)]
@@ -20,381 +24,226 @@ struct ModelMetadata {
     name: String,
     version: String,
     created_at: String,
-    layers: Vec<LayerInfo>,
+    vocab_size: usize,
+    dim: usize,
+    hidden_dim: usize,
+    n_heads: usize,
+    n_layers: usize,
+    seq_len: usize,
+    param_count: usize,
 }
 
-#[derive(Debug, Clone)]
-struct LayerInfo {
-    layer_type: String,
-    input_size: usize,
-    output_size: usize,
-    parameters: usize,
-}
-
-/// Extract weights from a sequential model
-fn extract_weights(model: &Sequential) -> Vec<(String, Vec<f32>)> {
-    println!("Extracting weights from model...");
-
-    // In a real implementation, this would traverse the model graph
-    // For this demo, we'll extract what we can access
-
-    let mut weights: Vec<(String, Vec<f32>)> = Vec::new();
-
-    // Example: Extract first layer weights if available
-    // In production, you'd implement proper layer introspection
-
-    println!("  Extracted {} weight tensors", weights.len());
-    println!(
-        "  Total parameters: {}",
-        weights.iter().map(|w| w.1.len()).sum::<usize>()
-    );
-
-    weights
-}
-
-/// Save model weights to disk
+/// Save TransformerANE weights to disk
 fn save_model(
-    model: &Sequential,
+    model: &mut TransformerANE,
     name: &str,
-    metadata: &ModelMetadata,
+    meta: &ModelMetadata,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Saving Model: {}", name);
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Create model directory
     let model_path = Path::new(MODEL_DIR).join(name);
     fs::create_dir_all(&model_path)?;
 
-    println!("  Created directory: {}", model_path.display());
+    // Extract parameters as contiguous f32 slice
+    let params: Vec<f32> = model.parameters().to_vec();
+    println!("  Parameters: {}", params.len());
 
-    // Extract weights
-    let weights = extract_weights(model);
+    // Serialize as raw FP32 binary (little-endian)
+    let weights_path = model_path.join("weights.bin");
+    let mut file = fs::File::create(&weights_path)?;
+    let bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(params.as_ptr() as *const u8, params.len() * 4)
+    };
+    file.write_all(bytes)?;
+    println!("  ✓ Weights → {} ({} bytes)", weights_path.display(), bytes.len());
 
-    // Save each weight tensor
-    let weights_dir = model_path.join("weights");
-    fs::create_dir_all(&weights_dir)?;
-
-    println!("\n  Saving weights...");
-    for (layer_name, weight_data) in &weights {
-        let weight_path = weights_dir.join(format!("{}.bin", layer_name));
-
-        // Serialize as FP32 binary
-        let mut file = fs::File::create(&weight_path)?;
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(weight_data.as_ptr() as *const u8, weight_data.len() * 4)
-        };
-        file.write_all(bytes)?;
-
-        println!(
-            "    ✓ {}: {} ({} bytes)",
-            layer_name,
-            weight_path.display(),
-            weight_data.len() * 4
-        );
-    }
-
-    // Save metadata as JSON
+    // Save metadata as JSON using serde_json::json! macro
     let metadata_path = model_path.join("metadata.json");
     let metadata_json = serde_json::to_string_pretty(&serde_json::json!({
-        "name": metadata.name,
-        "version": metadata.version,
-        "created_at": metadata.created_at,
-        "layers": metadata.layers.iter().map(|l| serde_json::json!({
-            "layer_type": l.layer_type,
-            "input_size": l.input_size,
-            "output_size": l.output_size,
-            "parameters": l.parameters,
-        })).collect::<Vec<_>>()
+        "name": meta.name,
+        "version": meta.version,
+        "created_at": meta.created_at,
+        "config": {
+            "vocab_size": meta.vocab_size,
+            "dim": meta.dim,
+            "hidden_dim": meta.hidden_dim,
+            "n_heads": meta.n_heads,
+            "n_layers": meta.n_layers,
+            "seq_len": meta.seq_len,
+        },
+        "param_count": meta.param_count,
     }))?;
     fs::write(&metadata_path, metadata_json)?;
+    println!("  ✓ Metadata → {}", metadata_path.display());
 
-    println!("\n  ✓ Metadata saved to {}", metadata_path.display());
-
-    // Save model summary
-    let summary_path = model_path.join("summary.txt");
-    let mut summary = fs::File::create(&summary_path)?;
-    writeln!(summary, "Model: {}", metadata.name)?;
-    writeln!(summary, "Version: {}", metadata.version)?;
-    writeln!(summary, "Created: {}", metadata.created_at)?;
-    writeln!(summary, "\nLayers:")?;
-    for layer in &metadata.layers {
-        writeln!(
-            summary,
-            "  - {}: {} → {} ({} params)",
-            layer.layer_type, layer.input_size, layer.output_size, layer.parameters
-        )?;
-    }
-
-    println!("  ✓ Summary saved to {}", summary_path.display());
-
-    println!("\n  ✓ Model saved successfully!");
-    println!("  Location: {}", model_path.display());
-
+    println!("  ✓ Model saved to {}", model_path.display());
     Ok(())
 }
 
-/// Load model weights from disk
+/// Load TransformerANE weights from disk
 fn load_model(
     name: &str,
-) -> Result<(Vec<(String, Vec<f32>)>, ModelMetadata), Box<dyn std::error::Error>> {
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+) -> Result<(Vec<f32>, ModelMetadata), Box<dyn std::error::Error>> {
+    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Loading Model: {}", name);
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
     let model_path = Path::new(MODEL_DIR).join(name);
-
     if !model_path.exists() {
-        return Err(format!("Model not found: {}", model_path.display()).into());
+        return Err(format!("Model not found at: {}", model_path.display()).into());
     }
 
     // Load metadata
     let metadata_path = model_path.join("metadata.json");
     let metadata_json = fs::read_to_string(&metadata_path)?;
-    let metadata: ModelMetadata = serde_json::from_str::<serde_json::Value>(&metadata_json)
-        .map(|v| ModelMetadata {
-            name: v["name"].as_str().unwrap_or("").to_string(),
-            version: v["version"].as_str().unwrap_or("").to_string(),
-            created_at: v["created_at"].as_str().unwrap_or("").to_string(),
-            layers: v["layers"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .map(|l| LayerInfo {
-                            layer_type: l["layer_type"].as_str().unwrap_or("").to_string(),
-                            input_size: l["input_size"].as_u64().unwrap_or(0) as usize,
-                            output_size: l["output_size"].as_u64().unwrap_or(0) as usize,
-                            parameters: l["parameters"].as_u64().unwrap_or(0) as usize,
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-        })?;
+    let v: serde_json::Value = serde_json::from_str(&metadata_json)?;
+    let cfg = &v["config"];
+    let meta = ModelMetadata {
+        name: v["name"].as_str().unwrap_or("").to_string(),
+        version: v["version"].as_str().unwrap_or("").to_string(),
+        created_at: v["created_at"].as_str().unwrap_or("").to_string(),
+        vocab_size: cfg["vocab_size"].as_u64().unwrap_or(0) as usize,
+        dim: cfg["dim"].as_u64().unwrap_or(0) as usize,
+        hidden_dim: cfg["hidden_dim"].as_u64().unwrap_or(0) as usize,
+        n_heads: cfg["n_heads"].as_u64().unwrap_or(0) as usize,
+        n_layers: cfg["n_layers"].as_u64().unwrap_or(0) as usize,
+        seq_len: cfg["seq_len"].as_u64().unwrap_or(0) as usize,
+        param_count: v["param_count"].as_u64().unwrap_or(0) as usize,
+    };
 
-    println!("  Name: {}", metadata.name);
-    println!("  Version: {}", metadata.version);
-    println!("  Created: {}", metadata.created_at);
-    println!("  Layers: {}", metadata.layers.len());
+    println!("  Name:    {}", meta.name);
+    println!("  Version: {}", meta.version);
+    println!("  Config:  vocab={} dim={} heads={} layers={}",
+        meta.vocab_size, meta.dim, meta.n_heads, meta.n_layers);
 
-    // Load weights
-    let weights_dir = model_path.join("weights");
-    let mut weights = Vec::new();
+    // Load weights binary
+    let weights_path = model_path.join("weights.bin");
+    let mut file = fs::File::open(&weights_path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
 
-    println!("\n  Loading weights...");
-    for entry in fs::read_dir(&weights_dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    let weights: Vec<f32> = bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect();
 
-        if path.extension().and_then(|s| s.to_str()) == Some("bin") {
-            let layer_name = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            // Read binary data
-            let mut file = fs::File::open(&path)?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes)?;
-
-            // Convert to FP32
-            let weight_data: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|chunk| {
-                    let arr: [u8; 4] = chunk.try_into().unwrap();
-                    f32::from_le_bytes(arr)
-                })
-                .collect();
-
-            println!(
-                "    ✓ {}: {} ({} parameters)",
-                layer_name,
-                path.display(),
-                weight_data.len()
-            );
-
-            weights.push((layer_name, weight_data));
-        }
-    }
-
-    println!("\n  ✓ Model loaded successfully!");
-    println!(
-        "  Total parameters: {}",
-        weights.iter().map(|w| w.1.len()).sum::<usize>()
-    );
-
-    Ok((weights, metadata))
+    println!("  ✓ Loaded {} parameters ({} bytes)", weights.len(), bytes.len());
+    Ok((weights, meta))
 }
 
-/// Verify loaded weights
-fn verify_weights(
-    original: &Sequential,
-    loaded: &[(String, Vec<f32>)],
+/// Verify round-trip: apply loaded weights to new model and compare a forward pass
+fn verify_round_trip(
+    original: &mut TransformerANE,
+    loaded_weights: &[f32],
+    config: &TransformerConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Verifying Loaded Weights");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("Verifying Round-Trip");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // In a real implementation, compare loaded weights with original
-    // For this demo, we'll just verify they loaded correctly
+    // Create a fresh model and inject loaded weights
+    let mut restored = TransformerANE::new(config)?;
+    let params = restored.parameters();
+    assert_eq!(params.len(), loaded_weights.len(),
+        "Parameter count mismatch: {} vs {}", params.len(), loaded_weights.len());
+    params.copy_from_slice(loaded_weights);
+    println!("  ✓ Weights injected into fresh model");
 
-    println!("  Checking weight tensors...");
+    // Run the same forward pass on both models
+    let tokens: Vec<u32> = (0..config.seq_len as u32).map(|i| i % config.vocab_size as u32).collect();
+    let batch = Batch::new(tokens, 1, config.seq_len)?;
 
-    for (name, data) in loaded {
-        // Verify data is valid FP32
-        let valid = data.iter().all(|&x| x.is_finite());
+    let original_out = original.forward(&batch)?;
+    let restored_out = restored.forward(&batch)?;
 
-        if valid {
-            println!("    ✓ {}: {} parameters (valid)", name, data.len());
-        } else {
-            println!("    ✗ {}: Contains invalid values", name);
-        }
+    assert_eq!(original_out.num_elements(), restored_out.num_elements(),
+        "Output shape mismatch");
+
+    // Check all outputs match within floating-point precision
+    let orig_data = original_out.to_vec_f32();
+    let rest_data = restored_out.to_vec_f32();
+    let max_diff = orig_data.iter().zip(rest_data.iter())
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+
+    println!("  Max output difference: {:.2e}", max_diff);
+    if max_diff < 1e-5 {
+        println!("  ✓ Round-trip verification PASSED (max diff < 1e-5)");
+    } else {
+        println!("  ✗ Round-trip verification FAILED (max diff = {:.2e})", max_diff);
+        return Err("Round-trip verification failed".into());
     }
-
-    println!("\n  ✓ Verification complete!");
 
     Ok(())
-}
-
-fn create_demo_model() -> Sequential {
-    println!("Creating demo model...");
-
-    let model = Sequential::new("mlp_classifier")
-        .add(Box::new(Linear::new(784, 256).build().unwrap()))
-        .add(Box::new(ReLU::new()))
-        .add(Box::new(Linear::new(256, 128).build().unwrap()))
-        .add(Box::new(ReLU::new()))
-        .add(Box::new(Linear::new(128, 10).build().unwrap()))
-        .build();
-
-    println!("✓ Model created");
-    println!("  Architecture: 784 → 256 → 128 → 10");
-    println!(
-        "  Total parameters: {}",
-        784 * 256 + 256 + 256 * 128 + 128 + 128 * 10 + 10
-    );
-
-    model
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("🍎 Rustane - Model Serialization Example");
-    println!("========================================\n");
+    println!("🍎 Rustane - ANE Model Serialization Example");
+    println!("============================================\n");
 
-    // Create demo model
-    let model = create_demo_model();
+    // 1. Configure and initialize TransformerANE model
+    let config = TransformerConfig::new(
+        512,  // vocab_size
+        128,  // dim
+        256,  // hidden_dim
+        4,    // n_heads
+        2,    // n_layers
+        64,   // seq_len
+    )?;
 
-    // Create metadata
-    let metadata = ModelMetadata {
+    println!("Step 1: Initializing TransformerANE...");
+    let mut model = TransformerANE::new(&config)?;
+    println!("  ✓ Model ready ({} parameters)", config.param_count());
+
+    // 2. Build metadata
+    let created_at = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        format!("unix:{}", secs)
+    };
+    let meta = ModelMetadata {
         name: MODEL_NAME.to_string(),
         version: "1.0.0".to_string(),
-        created_at: {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            format!("unix:{}", secs)
-        },
-        layers: vec![
-            LayerInfo {
-                layer_type: "Linear".to_string(),
-                input_size: 784,
-                output_size: 256,
-                parameters: 784 * 256 + 256,
-            },
-            LayerInfo {
-                layer_type: "ReLU".to_string(),
-                input_size: 256,
-                output_size: 256,
-                parameters: 0,
-            },
-            LayerInfo {
-                layer_type: "Linear".to_string(),
-                input_size: 256,
-                output_size: 128,
-                parameters: 256 * 128 + 128,
-            },
-            LayerInfo {
-                layer_type: "ReLU".to_string(),
-                input_size: 128,
-                output_size: 128,
-                parameters: 0,
-            },
-            LayerInfo {
-                layer_type: "Linear".to_string(),
-                input_size: 128,
-                output_size: 10,
-                parameters: 128 * 10 + 10,
-            },
-        ],
+        created_at,
+        vocab_size: config.vocab_size,
+        dim: config.dim,
+        hidden_dim: config.hidden_dim,
+        n_heads: config.n_heads,
+        n_layers: config.n_layers,
+        seq_len: config.seq_len,
+        param_count: config.param_count(),
     };
 
-    println!("Metadata:");
-    println!("  Name: {}", metadata.name);
-    println!("  Version: {}", metadata.version);
-    println!("  Layers: {}", metadata.layers.len());
-    println!();
+    // 3. Save model
+    println!("\nStep 2: Saving model weights...");
+    save_model(&mut model, MODEL_NAME, &meta)?;
 
-    // Save model
-    save_model(&model, MODEL_NAME, &metadata)?;
+    // 4. Load model
+    println!("\nStep 3: Loading model weights...");
+    let (loaded_weights, loaded_meta) = load_model(MODEL_NAME)?;
+    assert_eq!(loaded_weights.len(), config.param_count());
+    println!("  ✓ Version: {}", loaded_meta.version);
 
-    // Load model
-    let (loaded_weights, loaded_metadata) = load_model(MODEL_NAME)?;
+    // 5. Round-trip verification
+    println!("\nStep 4: Round-trip verification...");
+    verify_round_trip(&mut model, &loaded_weights, &config)?;
 
-    // Verify
-    verify_weights(&model, &loaded_weights)?;
-
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("USAGE EXAMPLES");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-    println!("\n1. Save a trained model:");
-    println!("   let model = train_model(...);");
-    println!("   save_model(&model, \"my_model\", &metadata)?;");
-
-    println!("\n2. Load model for inference:");
-    println!("   let (weights, metadata) = load_model(\"my_model\")?;");
-    println!("   let model = build_model_from_weights(weights)?;");
-
-    println!("\n3. Export for deployment:");
-    println!("   cp -r /tmp/rustane_models/my_model /path/to/deployment/");
-
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    // 6. File format summary
+    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("FILE FORMAT");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("\n  {}/", MODEL_NAME);
+    println!("    ├── metadata.json   # Config, version, param count");
+    println!("    └── weights.bin     # Raw FP32 (little-endian)");
+    println!("\n  Weight layout: contiguous f32 parameter vector");
+    println!("  Size: {} params × 4 bytes = {} KB",
+        config.param_count(), config.param_count() * 4 / 1024);
 
-    println!("\nModel directory structure:");
-    println!("  {}/", MODEL_NAME);
-    println!("    ├── metadata.json          # Model metadata");
-    println!("    ├── summary.txt            # Human-readable summary");
-    println!("    └── weights/               # Weight tensors");
-    println!("        ├── layer1.bin");
-    println!("        ├── layer2.bin");
-    println!("        └── ...");
-
-    println!("\nWeight format:");
-    println!("  • Binary FP32 (little-endian)");
-    println!("  • Shape: [output_size, input_size] for Linear");
-    println!("  • One .bin file per layer");
-
-    println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("PRODUCTION CONSIDERATIONS");
-    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-    println!("\nFor production deployment:");
-    println!("  ✓ Use version control for model iterations");
-    println!("  ✓ Include checksums for weight files");
-    println!("  ✓ Add compression for storage efficiency");
-    println!("  ✓ Support incremental updates");
-    println!("  ✓ Add encryption for sensitive models");
-
-    println!("\nFor deployment:");
-    println!("  ✓ Bundle weights with application");
-    println!("  ✓ Use memory-mapped files for large models");
-    println!("  ✓ Implement lazy loading for memory efficiency");
-    println!("  ✓ Add model validation before loading");
-
-    println!("\n✅ Model serialization example completed!");
-
+    println!("\n✅ ANE model serialization example completed!");
     Ok(())
 }
-
-

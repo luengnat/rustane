@@ -344,6 +344,11 @@ fn main() -> Result<()> {
     if let Some(bpb) = last_val_bpb {
         println!("  Final val BPB:    {:.6}", bpb);
     }
+    if ane_forward_head {
+        if let Some(summary) = rustane::training::ane_forward_block_summary() {
+            println!("  {}", summary);
+        }
+    }
 
     Ok(())
 }

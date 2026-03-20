@@ -9,6 +9,7 @@ pub mod util;
 
 pub use builder::MILBuilder;
 pub use programs::{
-    linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil, LinearLayer,
+    conv1x1_compile_request, linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil,
+    LinearLayer,
 };
 pub use util::{total_leaked_bytes, WeightBlob};

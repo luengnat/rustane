@@ -269,7 +269,7 @@ pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, Warmu
 pub use backend::{CpuTrainingBackend, TrainingBackend};
 pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
 pub use transformer_config::TransformerConfig;
-pub use transformer_model::{ParameterGroup, ParameterGroupKind, TransformerANE};
+pub use transformer_model::{ane_forward_block_summary, ParameterGroup, ParameterGroupKind, TransformerANE};
 pub use ane_backward_executor::{ANEGradientAccumulator, ANEBackwardModel};
 pub use ane_backward_kernel::{ANEBackwardKernel, ANEBackwardKernelCache};
 pub use ane_gradient_buffer::ANEGradientBuffer;

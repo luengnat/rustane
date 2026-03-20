@@ -30,6 +30,7 @@
 //! ```
 
 use super::{validate_mil_structure, BackwardMILGenerator};
+use crate::ane::{ANECompileRequest, ANEError};
 use crate::ane::Result;
 use crate::training::TransformerConfig;
 
@@ -130,6 +131,81 @@ main rmsnorm_backward(d_out: tensor<seq_lenxdimxf32>,
 }}
 "#
         )
+    }
+
+    /// Get input size in bytes
+    pub fn input_bytes(&self, config: &TransformerConfig) -> usize {
+        let dim = config.hidden_dim;
+        let seq_len = config.seq_len;
+        (2 * dim * seq_len + dim) * 4
+    }
+
+    /// Get output sizes in bytes
+    pub fn output_sizes(&self, config: &TransformerConfig) -> Vec<usize> {
+        let dim = config.hidden_dim;
+        let seq_len = config.seq_len;
+        vec![dim * seq_len * 4, dim * 4]
+    }
+
+    /// Run RMSNorm backward on ANE
+    pub fn run_on_ane(
+        &self,
+        config: &TransformerConfig,
+        d_out: &[f32],
+        x: &[f32],
+        w: &[f32],
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
+        let mil_code = self.generate_mil_code(config);
+
+        let input_bytes = self.input_bytes(config);
+        let output_sizes = self.output_sizes(config);
+
+        // Pack inputs as bytes
+        let mut packed_input = Vec::with_capacity(input_bytes);
+        for &v in d_out.iter() {
+            packed_input.extend_from_slice(&v.to_le_bytes());
+        }
+        for &v in x.iter() {
+            packed_input.extend_from_slice(&v.to_le_bytes());
+        }
+        for &v in w.iter() {
+            packed_input.extend_from_slice(&v.to_le_bytes());
+        }
+
+        let mut request =
+            ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
+        let mut executor = request
+            .compile()
+            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+
+        executor
+            .write_input(0, &packed_input)
+            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+        executor.eval().map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+
+        let d_x_len = config.hidden_dim * config.seq_len;
+        let dw_len = config.hidden_dim;
+
+        let mut d_x_bytes = vec![0u8; d_x_len * 4];
+        let mut dw_bytes = vec![0u8; dw_len * 4];
+
+        executor
+            .read_output(0, &mut d_x_bytes)
+            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+        executor
+            .read_output(1, &mut dw_bytes)
+            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+
+        let d_x: Vec<f32> = d_x_bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        let dw: Vec<f32> = dw_bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+
+        Ok((d_x, dw))
     }
 }
 

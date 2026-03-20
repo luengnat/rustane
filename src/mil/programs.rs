@@ -204,6 +204,62 @@ pub fn linear_matmul_compile_request(
     .with_weight_blob("@model_path/weights/weight.bin", weights)
 }
 
+/// 1x1 convolution projection for channel-first ANE layouts.
+///
+/// Implements `conv` on `[1, in_dim, 1, seq_len]` input with a
+/// `[out_dim, in_dim, 1, 1]` weight tensor.
+pub fn conv1x1_mil(seq_len: usize, in_dim: usize, out_dim: usize) -> String {
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        in_dim, seq_len
+    ));
+    mil.push_str("        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        in_dim, seq_len
+    ));
+    mil.push_str("        string pt = const()[name = string(\"pt\"), val = string(\"valid\")];\n");
+    mil.push_str("        tensor<int32, [4]> pd = const()[name = string(\"pd\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n");
+    mil.push_str("        tensor<int32, [2]> st = const()[name = string(\"st\"), val = tensor<int32, [2]>([1, 1])];\n");
+    mil.push_str("        tensor<int32, [2]> dl = const()[name = string(\"dl\"), val = tensor<int32, [2]>([1, 1])];\n");
+    mil.push_str("        int32 gr = const()[name = string(\"gr\"), val = int32(1)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [{}, {}, 1, 1]> W = const()[name = string(\"W\"), val = tensor<fp16, [{}, {}, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n",
+        out_dim, in_dim, out_dim, in_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> y16 = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W, x = x16)[name = string(\"conv\")];\n",
+        out_dim, seq_len
+    ));
+    mil.push_str("        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n");
+    mil.push_str(&format!(
+        "        tensor<fp32, [1, {}, 1, {}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n",
+        out_dim, seq_len
+    ));
+    mil.push_str("    } -> (y);\n");
+    mil.push_str("}\n");
+    mil
+}
+
+/// Build a compile request for the `conv1x1_mil` template.
+pub fn conv1x1_compile_request(
+    seq_len: usize,
+    in_dim: usize,
+    out_dim: usize,
+    weights: &ANEWeightBlob,
+) -> ANECompileRequest {
+    ANECompileRequest::new(
+        conv1x1_mil(seq_len, in_dim, out_dim),
+        vec![in_dim * seq_len * 4],
+        vec![out_dim * seq_len * 4],
+    )
+    .with_weight_blob("@model_path/weights/weight.bin", weights)
+}
+
 /// RMSNorm forward MIL program (program 1.3 format)
 ///
 /// Implements the upstream ANE pattern:
