@@ -273,7 +273,7 @@ impl<'a, M: Model> Trainer<'a, M> {
     pub fn train_accumulated_steps<I>(
         &mut self,
         chunks: I,
-        accumulation_steps: u32,
+        accumulation_steps: usize,
     ) -> Result<StepMetrics>
     where
         I: IntoIterator<Item = Result<Batch>>,
@@ -288,7 +288,7 @@ impl<'a, M: Model> Trainer<'a, M> {
 
         let mut accum = GradAccumulator::new(self.model.param_count(), accumulation_steps);
         let scale = 1.0 / accumulation_steps as f32;
-        let mut chunk_count = 0u32;
+        let mut chunk_count = 0usize;
 
         // Process each chunk
         for chunk_result in chunks {
