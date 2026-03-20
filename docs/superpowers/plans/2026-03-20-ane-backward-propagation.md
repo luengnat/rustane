@@ -270,6 +270,13 @@ Expected: `error[E0433]: cannot find module 'runtime'`
 
 - [ ] **Step 3: Create runtime.rs with minimal structure**
 
+**Note on objc2 Implementation:** This task stubs ANE framework loading with `Err(FrameworkNotFound)`. The real implementation will port from `~/dev/ANE/training/ane_bridge.h` using objc2:
+- Load private framework: `dlopen("/System/Library/PrivateFrameworks/AppleNeuralEngine.framework")`
+- Resolve classes: `_ANEInMemoryModel`, `_ANEInMemoryModelDescriptor`, `_ANERequest`, `_ANEIOSurfaceObject` via objc2
+- Call private methods via objc2's method dispatch
+- Return strongly-typed ANEKernel on success
+- Reference: objc2 patterns proven in existing Rust CoreFoundation bindings
+
 ```rust
 // src/ane/runtime.rs
 use std::collections::HashMap;
@@ -1381,6 +1388,16 @@ pub fn attention_backward(
 }
 
 /// FFN backward with SiLU gating
+///
+/// Backpropagates gradient through feed-forward layer.
+/// SiLU gating: y = (W1(x) * SiLU(W1(x))) @ W2
+///
+/// # Returns
+/// Returns `(d_x, dw1, dw3, dw2)` in order:
+/// - `d_x`: Gradient w.r.t. input [seq_len, dim]
+/// - `dw1`: Gradient w.r.t. W1 [dim, hidden_dim]
+/// - `dw3`: Gradient w.r.t. W3 (parallel gate) [dim, hidden_dim]
+/// - `dw2`: Gradient w.r.t. W2 (output proj) [hidden_dim, dim]
 pub fn ffn_backward(
     d_out: &[f32],
     x: &[f32],
@@ -1635,24 +1652,45 @@ impl Model for TransformerANE {
         let batch_size = batch.batch_size();
         let seq_len = batch.seq_len();
         let tokens = batch.tokens();
+        let dim = self.config.dim;
 
         if tokens.len() != batch_size * seq_len {
             return Err(crate::Error::Other("token count mismatch".to_string()));
         }
 
-        // Embedding lookup
-        let mut x = vec![0.0f32; batch_size * seq_len * self.config.dim];
+        // **Step 1: Embedding lookup**
+        // Convert token ids to embedding vectors
+        // Output shape: [batch_size * seq_len, dim]
+        let mut x = vec![0.0f32; batch_size * seq_len * dim];
         for (i, &token) in tokens.iter().enumerate() {
             let token_idx = (token as usize) % self.config.vocab_size;
-            let emb_start = token_idx * self.config.dim;
-            let x_start = i * self.config.dim;
-            x[x_start..x_start + self.config.dim]
-                .copy_from_slice(&self.embedding[emb_start..emb_start + self.config.dim]);
+            let emb_start = token_idx * dim;
+            let x_start = i * dim;
+            x[x_start..x_start + dim]
+                .copy_from_slice(&self.embedding[emb_start..emb_start + dim]);
         }
 
-        // TODO: Per-layer forward (attention + ffn + residual + norm)
-        // For now, return logits from embedding
+        // **Step 2: Per-layer transformer forward**
+        // Loop structure (pseudocode, detailed impl needed):
+        // ```
+        // for layer_idx in 0..n_layers {
+        //   1. Pre-attention RMSNorm: x_norm = rmsnorm(x, w_attn_norm)
+        //   2. Attention forward (via ANE): x_attn = attention(x_norm, weights_attn)
+        //   3. Residual: x = x + x_attn
+        //   4. Pre-FFN RMSNorm: x_norm = rmsnorm(x, w_ffn_norm)
+        //   5. FFN forward (via ANE): x_ffn = ffn(x_norm, weights_ffn)
+        //   6. Residual: x = x + x_ffn
+        //   7. Cache all intermediates (x_norm, attention outputs, FFN hidden)
+        // }
+        // ```
+        //
+        // TODO: Implement layer loop with ANE kernel invocations
+        // For now, return logits directly from embedding for compilation
         let logits = x;
+
+        // **Step 3: Output projection and classifier**
+        // Final RMSNorm followed by classifier (vocab projection)
+        // Output shape: [batch_size, seq_len, vocab_size]
 
         // Convert to ANETensor
         let shape = vec![batch_size, seq_len, self.config.vocab_size];
