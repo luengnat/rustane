@@ -4,6 +4,7 @@
 //! sharded files, enabling distributed training across multiple data sources.
 
 use std::path::PathBuf;
+use super::{DataLoader, Dataset, Sampler, SequentialDataset, SequentialSampler};
 
 /// Configuration for loading data from multiple shards
 ///
@@ -37,11 +38,13 @@ pub struct ShardMetadata {
 ///
 /// Represents one shard's data ready for loading as batches.
 #[derive(Debug)]
-pub struct ShardBatch {
+pub struct ShardBatch<D: Dataset, S: Sampler> {
     /// Index of the shard this batch comes from
     pub shard_idx: usize,
     /// Path to the shard file
     pub shard_path: PathBuf,
+    /// DataLoader for this shard
+    pub loader: DataLoader<D, S>,
     /// Total tokens available in this shard
     pub token_count: usize,
 }
@@ -90,9 +93,16 @@ mod tests {
             path: "data/shards/shard_0.jsonl".to_string(),
         };
 
+        // Create a minimal dataset and sampler for the loader
+        let samples = vec![vec![0, 1, 2], vec![3, 4, 5]];
+        let dataset = SequentialDataset::new(samples);
+        let sampler = SequentialSampler::new(dataset.len());
+        let loader = DataLoader::new(dataset, sampler, 2).unwrap();
+
         let shard_batch = ShardBatch {
             shard_idx: metadata.shard_idx,
             shard_path: PathBuf::from(&metadata.path),
+            loader,
             token_count: metadata.token_count,
         };
 

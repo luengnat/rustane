@@ -185,6 +185,7 @@ impl<D: Dataset, S: Sampler> Iterator for DataLoaderIter<D, S> {
 /// Data loader that iterates over batches
 ///
 /// Combines a dataset, sampler, and batch size to produce batches of data.
+#[derive(Debug)]
 pub struct DataLoader<D: Dataset, S: Sampler> {
     dataset: D,
     sampler: S,
