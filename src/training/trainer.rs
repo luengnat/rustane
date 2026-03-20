@@ -1,4 +1,55 @@
 //! Training orchestration for models
+//!
+//! This module provides the `Trainer` and related types for orchestrating
+//! the complete training loop: forward pass → loss computation → backward pass → optimizer step.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use rustane::training::{
+//!     Model, TrainerBuilder, AdamOptimizer, WarmupCosineScheduler, CrossEntropyLoss,
+//! };
+//! use rustane::data::Batch;
+//!
+//! # struct MyModel;
+//! # impl Model for MyModel {
+//! #     fn forward(&mut self, _: &Batch) -> rustane::error::Result<rustane::wrapper::ANETensor> { todo!() }
+//! #     fn backward(&mut self, _: f32) -> rustane::error::Result<Vec<f32>> { todo!() }
+//! #     fn backward_with_batch(&mut self, _: &Batch, _: f32) -> rustane::error::Result<Vec<f32>> { todo!() }
+//! #     fn parameters(&mut self) -> &mut [f32] { &mut [] }
+//! #     fn param_count(&self) -> usize { 0 }
+//! # }
+//! # let mut model = MyModel;
+//! # let dataloader = vec![Batch::new(vec![0u32], 1, 1).unwrap()];
+//! // Create model, optimizer, scheduler, and loss function
+//! let optimizer = AdamOptimizer::new(model.param_count());
+//! let scheduler = WarmupCosineScheduler::new(0.001, 1000, 10000, 1e-5);
+//!
+//! // Build trainer with all components
+//! let mut trainer = TrainerBuilder::new(&mut model)
+//!     .with_optimizer(optimizer)
+//!     .with_scheduler(scheduler)
+//!     .with_loss_fn(CrossEntropyLoss)
+//!     .with_grad_clip_norm(1.0)
+//!     .build()
+//!     .unwrap();
+//!
+//! // Training loop
+//! for epoch in 0..3 {
+//!     for batch in &dataloader {
+//!         match trainer.step(batch) {
+//!             Ok(metrics) => {
+//!                 println!("Step {}: loss={:.4}, grad_norm={:.4}",
+//!                     metrics.step, metrics.loss, metrics.grad_norm);
+//!             }
+//!             Err(e) => {
+//!                 eprintln!("Training error: {}", e);
+//!                 break;
+//!             }
+//!         }
+//!     }
+//! }
+//! ```
 
 use crate::data::Batch;
 use crate::error::Result;
@@ -59,6 +110,32 @@ impl fmt::Display for TrainerError {
 impl std::error::Error for TrainerError {}
 
 /// Metrics returned after each training step
+///
+/// Provides comprehensive information about the training state for monitoring
+/// and debugging.
+///
+/// # Fields
+///
+/// - **loss**: Scalar loss value for this batch (lower is better)
+/// - **grad_norm**: L2 norm of gradients (indicator of gradient magnitude)
+/// - **learning_rate**: Learning rate used for this step (may vary with scheduler)
+/// - **step**: Training step number (0-based, increments each call)
+///
+/// # Interpreting Metrics
+///
+/// - **Loss**: Should decrease over time. Spikes may indicate learning rate issues.
+/// - **Grad norm**: Typical values are 0.1-10. Very large values (>100) may indicate
+///   exploding gradients. Very small values (<0.001) may indicate vanishing gradients.
+/// - **Learning rate**: Follows the scheduler pattern (warmup → decay).
+///
+/// # Example
+///
+/// ```
+/// use rustane::training::StepMetrics;
+///
+/// let metrics = StepMetrics::new(2.5, 0.8, 0.001, 100);
+/// println!("Loss: {:.4}, Grad norm: {:.4}", metrics.loss, metrics.grad_norm);
+/// ```
 #[derive(Debug, Clone)]
 pub struct StepMetrics {
     /// Loss value for this step
@@ -76,6 +153,13 @@ pub struct StepMetrics {
 
 impl StepMetrics {
     /// Create a new StepMetrics
+    ///
+    /// # Arguments
+    ///
+    /// * `loss`: Scalar loss value
+    /// * `grad_norm`: L2 norm of the gradient vector
+    /// * `learning_rate`: Learning rate used for this step
+    /// * `step`: Current training step number
     pub fn new(loss: f32, grad_norm: f32, learning_rate: f32, step: u32) -> Self {
         StepMetrics {
             loss,
@@ -107,23 +191,92 @@ mod tests {
 }
 
 /// Trait for optimizers that update model parameters based on gradients
+///
+/// Optimizers implement the parameter update rule: θ = θ - lr * f(gradients, state)
+///
+/// # Implementing an Optimizer
+///
+/// Custom optimizers must implement the [`Optimizer::step`] method, which:
+/// 1. Takes gradients and current parameters as input
+/// 2. Updates parameters in-place using the optimizer's state
+/// 3. Returns an error if the update fails
+///
+/// # Example
+///
+/// ```no_run
+/// use rustane::training::Optimizer;
+/// use rustane::error::Result;
+///
+/// struct SGDMomentum {
+///     velocity: Vec<f32>,
+///     momentum: f32,
+/// }
+///
+/// impl Optimizer for SGDMomentum {
+///     fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+///         for i in 0..params.len() {
+///             self.velocity[i] = self.momentum * self.velocity[i] + grads[i];
+///             params[i] -= lr * self.velocity[i];
+///         }
+///         Ok(())
+///     }
+/// }
+/// ```
 pub trait Optimizer: Send {
     /// Perform a single optimization step
     ///
+    /// Updates parameters in-place using gradients and the optimizer's internal state.
+    ///
     /// # Arguments
-    /// - `grads`: Gradient vector (one per parameter)
-    /// - `params`: Mutable reference to model parameters
-    /// - `lr`: Learning rate for this step
+    ///
+    /// * `grads`: Gradient vector (one gradient per parameter)
+    /// * `params`: Mutable reference to model parameters (updated in-place)
+    /// * `lr`: Learning rate for this step
     ///
     /// # Errors
-    /// Returns error if optimization step fails
+    ///
+    /// Returns error if optimization step fails (e.g., size mismatch, NaN/Inf)
+    ///
+    /// # Notes
+    ///
+    /// - The gradients and parameters slices must have the same length
+    /// - Parameters are modified in-place; no copy is returned
+    /// - The optimizer should update its internal state (momentum, statistics, etc.)
     fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()>;
 }
 
-/// Adam optimizer with bias correction.
+/// Adam optimizer with bias correction
+///
+/// Implements the Adam optimization algorithm as described in [Kingma & Ba, 2014](https://arxiv.org/abs/1412.6980).
+///
+/// Adam combines ideas from RMSProp and momentum:
+/// - Maintains moving averages of gradients (m) and squared gradients (v)
+/// - Applies bias correction to account for initialization at zero
+/// - Adapts learning rates for each parameter individually
+///
+/// # Hyperparameters
+///
+/// - **beta1** (default: 0.9): Exponential decay rate for first moment estimates
+/// - **beta2** (default: 0.999): Exponential decay rate for second moment estimates
+/// - **eps** (default: 1e-8): Small constant for numerical stability
+///
+/// # Example
+///
+/// ```no_run
+/// use rustane::training::AdamOptimizer;
+///
+/// // Create with defaults (beta1=0.9, beta2=0.999, eps=1e-8)
+/// let optimizer = AdamOptimizer::new(1000);
+///
+/// // Create with custom hyperparameters
+/// let optimizer = AdamOptimizer::with_hyperparams(1000, 0.99, 0.9999, 1e-7);
+/// ```
+///
+/// # Performance Notes
 ///
 /// This is a simple CPU implementation intended for training examples and
-/// small-to-medium model experiments.
+/// small-to-medium model experiments. For large-scale training, consider
+/// GPU-accelerated optimizers or framework-specific implementations.
 pub struct AdamOptimizer {
     m: Vec<f32>,
     v: Vec<f32>,
@@ -186,7 +339,55 @@ impl Optimizer for AdamOptimizer {
     }
 }
 
-/// Builder for Trainer (ensures all required components are set)
+/// Builder for [`Trainer`] (ensures all required components are set)
+///
+/// The builder pattern prevents incomplete trainer configuration by requiring
+/// all mandatory components (optimizer, scheduler, loss_fn) before building.
+///
+/// # Required Components
+///
+/// - **Optimizer**: Updates parameters based on gradients (e.g., [`AdamOptimizer`])
+/// - **Scheduler**: Provides learning rate for each step (e.g., [`WarmupCosineScheduler`])
+/// - **Loss function**: Computes loss from model outputs (e.g., [`CrossEntropyLoss`])
+///
+/// # Optional Components
+///
+/// - **Gradient clipping**: Caps gradient norm to prevent exploding gradients
+///
+/// # Example
+///
+/// ```no_run
+/// use rustane::training::{
+///     Model, TrainerBuilder, AdamOptimizer, WarmupCosineScheduler, CrossEntropyLoss,
+/// };
+/// # use rustane::data::Batch;
+/// # struct MyModel;
+/// # impl Model for MyModel {
+/// #     fn forward(&mut self, _: &Batch) -> rustane::error::Result<rustane::wrapper::ANETensor> { todo!() }
+/// #     fn backward(&mut self, _: f32) -> rustane::error::Result<Vec<f32>> { todo!() }
+/// #     fn backward_with_batch(&mut self, _: &Batch, _: f32) -> rustane::error::Result<Vec<f32>> { todo!() }
+/// #     fn parameters(&mut self) -> &mut [f32] { &mut [] }
+/// #     fn param_count(&self) -> usize { 0 }
+/// # }
+/// # let mut model = MyModel;
+///
+/// // Basic trainer
+/// let mut trainer = TrainerBuilder::new(&mut model)
+///     .with_optimizer(AdamOptimizer::new(1000))
+///     .with_scheduler(WarmupCosineScheduler::new(0.001, 1000, 10000, 1e-5))
+///     .with_loss_fn(CrossEntropyLoss)
+///     .build()
+///     .unwrap();
+///
+/// // Trainer with gradient clipping (prevents exploding gradients)
+/// let mut trainer = TrainerBuilder::new(&mut model)
+///     .with_optimizer(AdamOptimizer::new(1000))
+///     .with_scheduler(WarmupCosineScheduler::new(0.001, 1000, 10000, 1e-5))
+///     .with_loss_fn(CrossEntropyLoss)
+///     .with_grad_clip_norm(1.0)  // Clip gradients at L2 norm of 1.0
+///     .build()
+///     .unwrap();
+/// ```
 pub struct TrainerBuilder<'a, M: Model> {
     model: &'a mut M,
     optimizer: Option<Box<dyn Optimizer>>,
@@ -268,7 +469,57 @@ impl<'a, M: Model> TrainerBuilder<'a, M> {
     }
 }
 
-/// Orchestrates training: forward → loss → backward → optimize
+/// Orchestrates the complete training loop
+///
+/// `Trainer` manages the training process by executing four steps for each batch:
+/// 1. **Forward pass**: Computes model outputs from inputs
+/// 2. **Loss computation**: Calculates loss from outputs and targets
+/// 3. **Backward pass**: Computes gradients via backpropagation
+/// 4. **Optimizer step**: Updates parameters using gradients
+///
+/// # Usage
+///
+/// ```no_run
+/// use rustane::training::{TrainerBuilder, AdamOptimizer, WarmupCosineScheduler, CrossEntropyLoss};
+/// # use rustane::training::Model;
+/// # use rustane::data::Batch;
+/// # use rustane::wrapper::ANETensor;
+/// # use rustane::error::Result;
+/// # struct MyModel;
+/// # impl Model for MyModel {
+/// #     fn forward(&mut self, _: &Batch) -> Result<ANETensor> { todo!() }
+/// #     fn backward(&mut self, _: f32) -> Result<Vec<f32>> { todo!() }
+/// #     fn backward_with_batch(&mut self, _: &Batch, _: f32) -> Result<Vec<f32>> { todo!() }
+/// #     fn parameters(&mut self) -> &mut [f32] { &mut [] }
+/// #     fn param_count(&self) -> usize { 0 }
+/// # }
+/// # let mut model = MyModel;
+///
+/// // Build trainer
+/// let mut trainer = TrainerBuilder::new(&mut model)
+///     .with_optimizer(AdamOptimizer::new(1000))
+///     .with_scheduler(WarmupCosineScheduler::new(0.001, 1000, 10000, 1e-5))
+///     .with_loss_fn(CrossEntropyLoss)
+///     .build()
+///     .unwrap();
+///
+/// // Training loop
+/// for batch in dataloader {
+///     match trainer.step(&batch) {
+///         Ok(metrics) => {
+///             if metrics.step % 100 == 0 {
+///                 println!("Step {}: loss={:.4}", metrics.step, metrics.loss);
+///             }
+///         }
+///         Err(e) => eprintln!("Error: {}", e),
+///     }
+/// }
+/// ```
+///
+/// # Gradient Clipping
+///
+/// If configured with a gradient norm threshold, the trainer will clip gradients
+/// before the optimizer step. This prevents exploding gradients and improves stability.
 pub struct Trainer<'a, M: Model> {
     model: &'a mut M,
     optimizer: Box<dyn Optimizer>,

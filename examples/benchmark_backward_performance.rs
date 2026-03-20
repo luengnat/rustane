@@ -2,11 +2,10 @@
 //!
 //! Demonstrates how to benchmark CPU vs ANE backward pass performance
 
+use rustane::data::{Batch, DataLoader, PadCollator, RandomSampler, SequentialDataset};
 use rustane::training::{
-    TransformerConfig, BackwardBenchmark, TimingContext,
-    ANEGradientAccumulator, Model
+    ANEGradientAccumulator, BackwardBenchmark, Model, TimingContext, TransformerConfig,
 };
-use rustane::data::{Batch, DataLoader, SequentialDataset, RandomSampler, PadCollator};
 
 /// Run performance benchmarks comparing CPU vs ANE backward pass
 ///
@@ -32,7 +31,10 @@ pub fn run_backward_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let iterations = 10;
     let mut benchmark = BackwardBenchmark::new(&config, iterations)?;
 
-    println!("⏱️  Running {} iterations of backward pass...\n", iterations);
+    println!(
+        "⏱️  Running {} iterations of backward pass...\n",
+        iterations
+    );
 
     // Run comparison
     let results = benchmark.run_comparison()?;
@@ -52,7 +54,10 @@ pub fn run_backward_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
     // Memory efficiency
     println!("💾 Memory Efficiency:");
-    println!("  - Transfer count: 1 (optimized from {})", config.n_layers * 4 + 2);
+    println!(
+        "  - Transfer count: 1 (optimized from {})",
+        config.n_layers * 4 + 2
+    );
     println!("  - Bandwidth saved: ~{:.1}%", 75.0);
     println!();
 
@@ -77,12 +82,18 @@ pub fn example_instrumented_backward_pass(
     }
 
     // Print detailed metrics
-    for (op_name, stats) in timing.metrics().layer_timings {
+    for (op_name, stats) in timing.metrics().layer_timings.iter() {
         println!("  {}:", op_name);
         println!("    Count: {}", stats.count);
         println!("    Avg: {:.2}μs", stats.average_us());
-        println!("    Min: {:.2}μs", stats.min_time.as_secs_f64() * 1_000_000.0);
-        println!("    Max: {:.2}μs", stats.max_time.as_secs_f64() * 1_000_000.0);
+        println!(
+            "    Min: {:.2}μs",
+            stats.min_time.as_secs_f64() * 1_000_000.0
+        );
+        println!(
+            "    Max: {:.2}μs",
+            stats.max_time.as_secs_f64() * 1_000_000.0
+        );
     }
 
     Ok(())
@@ -152,6 +163,10 @@ while maintaining numerical accuracy. The 4-6x speedup translates to faster trai
 iterations and lower energy consumption on Apple Silicon devices.
 "#
     )
+}
+
+fn main() {
+    println!("{}", example_performance_report());
 }
 
 #[cfg(test)]

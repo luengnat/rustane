@@ -8,15 +8,80 @@
 //! Rust bindings. It enables high-performance neural network computation on Apple Silicon devices
 //! (M1/M2/M3/M4 chips).
 //!
+//! # Quick Start
+//!
+//! ```no_run
+//! use rustane::ane::{ANECompileRequest, ANEKernel};
+//!
+//! // Define MIL code for a simple operation
+//! let mil_code = r#"
+//! #!irms6
+//! main add_tensors(a: tensor<32xf32>, b: tensor<32xf32>) -> (c: tensor<32xf32>) {
+//!     let c = a + b;
+//!     return (c);
+//! }
+//! "#;
+//!
+//! // Compile and execute
+//! let mut kernel = ANECompileRequest::new(mil_code, vec![32*4], vec![32*4])
+//!     .compile()
+//!     .unwrap();
+//!
+//! kernel.write_input(0, &input_a).unwrap();
+//! kernel.write_input(1, &input_b).unwrap();
+//! kernel.eval().unwrap();
+//!
+//! let mut output = vec![0f32; 32];
+//! kernel.read_output(0, &mut output).unwrap();
+//! ```
+//!
 //! # Architecture
 //!
-//! The module is organized into five core components:
+//! The module is organized into core components:
 //!
-//! - **Error Handling** (`error.rs`): Comprehensive error types for all ANE operations
-//! - **Runtime** (`runtime.rs`): Framework loading and MIL compilation interface
-//! - **Kernel** (`kernel.rs`): ANEKernel lifecycle management with I/O operations
-//! - **IOSurface** (`io_surface.rs`): RAII-safe memory management for data transfer
-//! - **Weight Blobs** (`weight_blob.rs`): Weight format abstraction (FP32, FP16, quantized int8)
+//! - **Error Handling** (`error.rs`): Comprehensive error types
+//! - **Diagnostics** (`error_diagnostics.rs`): Error analysis and recovery suggestions
+//! - **Retry Policy** (`retry_policy.rs`): Automatic retry with batch reduction
+//! - **Fallback** (`fallback.rs`): Graceful CPU degradation
+//! - **Logging** (`error_logging.rs`): Structured error logging
+//! - **Runtime** (`runtime.rs`): Framework loading and MIL compilation
+//! - **Kernel** (`kernel.rs`): ANEKernel lifecycle management
+//! - **IOSurface** (`io_surface.rs`): RAII-safe memory management
+//! - **Weight Blobs** (`weight_blob.rs`): Weight format abstraction
+//!
+//! # Error Handling & Recovery
+//!
+//! ## Automatic Retry with Batch Reduction
+//!
+//! ```no_run
+//! use rustane::ane::{RetryPolicy, RetryConfig, ANEError, Result};
+//!
+//! let policy = RetryPolicy::with_config(RetryConfig {
+//!     max_attempts: 3,
+//!     enable_batch_reduction: true,
+//!     ..Default::default()
+//! }).unwrap();
+//!
+//! let result = policy.execute(|batch_fraction| -> Result<Vec<f32>> {
+//!     // Your ANE operation here
+//!     // batch_fraction ranges from 1.0 (full) to 0.125 (1/8th)
+//!     Ok(vec![])
+//! });
+//! ```
+//!
+//! ## Graceful CPU Fallback
+//!
+//! ```no_run
+//! use rustane::ane::{FallbackExecutor, FallbackStrategy, ANEError, Result};
+//!
+//! let mut executor = FallbackExecutor::with_strategy(FallbackStrategy::ANEWithCPUFallback);
+//!
+//! let result = executor.execute(
+//!     || { /* ANE operation */ Err(ANEError::EvalFailed("test".to_string())) },
+//!     || { /* CPU fallback */ Ok(vec![1.0, 2.0, 3.0]) },
+//!     "my_operation"
+//! );
+//! ```
 //!
 //! # Design Philosophy
 //!
