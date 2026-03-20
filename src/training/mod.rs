@@ -261,6 +261,7 @@ pub mod ane_backward_executor;
 pub mod ane_backward_kernel;
 pub mod ane_gradient_buffer;
 pub mod ane_persistent_buffer;
+pub mod benchmark;
 
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};

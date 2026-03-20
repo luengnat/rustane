@@ -43,17 +43,18 @@
 - [x] Embedding gradient computation
 - [x] Full gradient correctness verification (CPU fallback)
 
-### Task 2: Memory Optimization - IN PROGRESS
-**Goal:** Minimize data transfer, keep gradients on ANE
+### ✅ Task 2: Memory Optimization - COMPLETE
+- [x] Implement persistent ANE gradient buffers
+- [x] Accumulate gradients directly on ANE
+- [x] Single transfer at end of backward pass
+- [x] Memory profiling and optimization
 
-- [ ] Implement persistent ANE gradient buffers
-- [ ] Accumulate gradients directly on ANE
-- [ ] Single transfer at end of backward pass
-- [ ] Memory profiling and optimization
+### Task 3: Performance Benchmarking - IN PROGRESS
+**Goal:** Quantify ANE speedup
 
-### Task 3: Performance Benchmarking
 - [ ] Add timing instrumentation
 - [ ] Benchmark CPU vs ANE backward
+- [ ] Benchmark end-to-end training step
 - [ ] Document speedup factors
 
 ### Task 4: Error Handling & Recovery
