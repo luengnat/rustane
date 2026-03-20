@@ -242,6 +242,7 @@ pub mod scheduler;
 pub mod trainer;
 pub mod transformer_config;
 pub mod transformer_model;
+pub mod ane_backward_executor;
 
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
@@ -251,3 +252,4 @@ pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, Warmu
 pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
 pub use transformer_config::TransformerConfig;
 pub use transformer_model::TransformerANE;
+pub use ane_backward_executor::{ANEGradientAccumulator, Precision};

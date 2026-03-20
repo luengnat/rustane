@@ -1108,7 +1108,15 @@ git commit -m "feat: implement ANEGradientAccumulator for gradient management"
 **Files:**
 - Modify: `src/training/transformer_model.rs`
 
-- [ ] **Step 1: Add backward_on_ane method to Model trait**
+- [ ] **Step 1: Define Gradients type alias**
+
+In `src/training/transformer_model.rs`, near the top of the file after imports:
+```rust
+/// Gradient vector for all model parameters
+pub type Gradients = Vec<f32>;
+```
+
+- [ ] **Step 2: Add backward_on_ane method to Model trait**
 
 In `src/training/transformer_model.rs`, find the `pub trait Model` definition and add:
 
