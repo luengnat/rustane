@@ -507,6 +507,10 @@ pub struct SimpleModel {
     /// For simplicity, uses same logits for all tokens in a batch
     logits: Vec<f32>,
     vocab_size: usize,
+    /// Store last batch tokens for gradient computation
+    last_tokens: Option<Vec<u32>>,
+    /// Store last expanded logits for gradient computation
+    last_expanded_logits: Option<Vec<f32>>,
 }
 
 impl SimpleModel {
@@ -516,7 +520,12 @@ impl SimpleModel {
         // Initialize logits to uniform distribution (will give loss = ln(vocab_size))
         let logits = vec![0.0f32; vocab_size];
 
-        Self { logits, vocab_size }
+        Self {
+            logits,
+            vocab_size,
+            last_tokens: None,
+            last_expanded_logits: None,
+        }
     }
 }
 
@@ -526,31 +535,70 @@ impl Model for SimpleModel {
         let num_tokens = tokens.len();
         let vocab_size = self.vocab_size;
 
-        // Key insight: Make logits depend on input token so backward pass can work
-        // logits[pred_id] = learned_logits[pred_id] + bonus_for_matching_token
-        // This way, if learned_logits increase, logits increase, softmax changes
-        let mut expanded_logits = Vec::with_capacity(num_tokens * self.vocab_size);
+        // Store tokens for backward pass
+        self.last_tokens = Some(tokens.to_vec());
 
-        for &token_id in tokens.iter() {
-            let token_idx = (token_id as usize).min(vocab_size - 1);
-            for pred_id in 0..vocab_size {
-                let base = self.logits[pred_id];
-                // Bonus: if predicting the same token as input, add boost
-                let bonus = if pred_id == token_idx { 2.0 } else { 0.0 };
-                expanded_logits.push(base + bonus);
-            }
+        // Expanded logits: replicate learned logits for each token
+        // (simplified version that allows proper gradient flow)
+        let mut expanded_logits = Vec::with_capacity(num_tokens * vocab_size);
+        for _ in 0..num_tokens {
+            expanded_logits.extend_from_slice(&self.logits);
         }
+
+        // Store for backward pass
+        self.last_expanded_logits = Some(expanded_logits.clone());
 
         ANETensor::from_fp32(expanded_logits, vec![num_tokens, self.vocab_size])
     }
 
-    fn backward(&mut self, loss: f32) -> Result<Vec<f32>> {
-        // Simple gradient descent: push all logits down when loss is high
-        // Since logits start at 0 (uniform softmax, loss=ln(1024)≈6.93),
-        // pushing down will make the bonus term matter more relatively
-        // This creates a non-uniform effect and allows loss to change
-        let grad_scale = -loss / 100.0;  // Negative means descending
-        Ok(vec![grad_scale; self.vocab_size])
+    fn backward(&mut self, _loss: f32) -> Result<Vec<f32>> {
+        // REAL gradient computation: dL/dlogits = softmax(logits) - one_hot(target)
+        // This is the actual gradient from cross-entropy loss!
+        //
+        // KEY: Different gradient for each logit enables softmax to change, loss to decrease
+        // Without this (all same gradients), softmax is invariant and loss is stuck
+
+        let tokens = self.last_tokens.as_ref().ok_or_else(|| {
+            rustane::Error::Other("No batch tokens stored".to_string())
+        })?;
+
+        let expanded_logits = self.last_expanded_logits.as_ref().ok_or_else(|| {
+            rustane::Error::Other("No logits stored".to_string())
+        })?;
+
+        let mut grad_sum = vec![0.0f32; self.vocab_size];
+        let num_tokens = tokens.len();
+
+        // For each position, compute gradient = softmax - one_hot(target)
+        for pos in 0..num_tokens {
+            let logits_at_pos = &expanded_logits[pos * self.vocab_size..(pos + 1) * self.vocab_size];
+
+            // Compute softmax with numerical stability
+            let max_logit = logits_at_pos.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exp_logits: Vec<f32> = logits_at_pos.iter()
+                .map(|&x| (x - max_logit).exp())
+                .collect();
+            let sum_exp: f32 = exp_logits.iter().sum();
+
+            // Get target token for next-token prediction
+            let target_idx = if pos + 1 < tokens.len() {
+                (tokens[pos + 1] as usize).min(self.vocab_size - 1)
+            } else {
+                (tokens[pos] as usize).min(self.vocab_size - 1)
+            };
+
+            // Compute gradient: softmax - one_hot(target)
+            for pred_id in 0..self.vocab_size {
+                let softmax_val = exp_logits[pred_id] / sum_exp;
+                let target_val = if pred_id == target_idx { 1.0 } else { 0.0 };
+                grad_sum[pred_id] += (softmax_val - target_val) / num_tokens as f32;
+            }
+        }
+
+        // Scale gradients for stable training
+        let grads = grad_sum.iter().map(|&g| g * 0.1).collect();
+
+        Ok(grads)
     }
 
     fn parameters(&mut self) -> &mut [f32] {
