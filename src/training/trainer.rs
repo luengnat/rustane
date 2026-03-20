@@ -561,4 +561,126 @@ mod accumulated_steps_tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_train_accumulated_steps_single_batch() -> Result<()> {
+        // Test with 1 batch, 1 accumulation step (should just call train_step equivalent)
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
+
+        let mut trainer = TrainerBuilder::new(&mut model)
+            .with_optimizer(SimpleOptimizer::new(0.001))
+            .with_scheduler(crate::training::ConstantScheduler::new(0.001))
+            .with_loss_fn(crate::training::CrossEntropyLoss::new())
+            .build()?;
+
+        let metrics = trainer.train_accumulated_steps(
+            vec![Ok(batch)].into_iter(),
+            1
+        )?;
+
+        assert!(metrics.loss.is_finite());
+        assert!(metrics.grad_norm.is_finite());
+        assert!(metrics.learning_rate > 0.0);
+        assert_eq!(metrics.step, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_train_accumulated_steps_multiple_batches() -> Result<()> {
+        // Test accumulating over 2 batches, then 1 optimizer step
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
+
+        let mut trainer = TrainerBuilder::new(&mut model)
+            .with_optimizer(SimpleOptimizer::new(0.001))
+            .with_scheduler(crate::training::ConstantScheduler::new(0.001))
+            .with_loss_fn(crate::training::CrossEntropyLoss::new())
+            .build()?;
+
+        let batches = vec![
+            Ok(batch.clone()),
+            Ok(batch.clone()),
+        ];
+
+        let metrics = trainer.train_accumulated_steps(
+            batches.into_iter(),
+            2  // Accumulate every 2 batches
+        )?;
+
+        assert!(metrics.loss.is_finite());
+        assert!(metrics.grad_norm.is_finite());
+        assert_eq!(metrics.step, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_train_accumulated_steps_exact_multiple() -> Result<()> {
+        // Test with exact multiple: 4 batches, 2 per step = 2 steps
+        // For now, we test a single 4-batch accumulation
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
+
+        let mut trainer = TrainerBuilder::new(&mut model)
+            .with_optimizer(SimpleOptimizer::new(0.001))
+            .with_scheduler(crate::training::ConstantScheduler::new(0.001))
+            .with_loss_fn(crate::training::CrossEntropyLoss::new())
+            .build()?;
+
+        let batches = (0..4)
+            .map(|_| Ok(batch.clone()))
+            .collect::<Vec<_>>();
+
+        let metrics = trainer.train_accumulated_steps(
+            batches.into_iter(),
+            4  // 4 batches in one accumulation step
+        )?;
+
+        assert!(metrics.loss.is_finite());
+        assert!(metrics.grad_norm.is_finite());
+        assert_eq!(metrics.step, 0);  // First step (0-indexed)
+        Ok(())
+    }
+
+    #[test]
+    fn test_train_accumulated_steps_invalid_accumulation() -> Result<()> {
+        // Test with 0 accumulation steps (should error)
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
+
+        let mut trainer = TrainerBuilder::new(&mut model)
+            .with_optimizer(SimpleOptimizer::new(0.001))
+            .with_scheduler(crate::training::ConstantScheduler::new(0.001))
+            .with_loss_fn(crate::training::CrossEntropyLoss::new())
+            .build()?;
+
+        let result = trainer.train_accumulated_steps(
+            vec![Ok(batch)].into_iter(),
+            0  // Invalid: 0 accumulation steps
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_train_accumulated_steps_mismatched_count() -> Result<()> {
+        // Test with fewer batches than accumulation_steps (should error)
+        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
+
+        let mut trainer = TrainerBuilder::new(&mut model)
+            .with_optimizer(SimpleOptimizer::new(0.001))
+            .with_scheduler(crate::training::ConstantScheduler::new(0.001))
+            .with_loss_fn(crate::training::CrossEntropyLoss::new())
+            .build()?;
+
+        let result = trainer.train_accumulated_steps(
+            vec![Ok(batch)].into_iter(),
+            2  // Expect 2 batches, but only provide 1
+        );
+
+        assert!(result.is_err());
+        Ok(())
+    }
 }
