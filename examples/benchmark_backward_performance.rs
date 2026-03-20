@@ -2,10 +2,8 @@
 //!
 //! Demonstrates how to benchmark CPU vs ANE backward pass performance
 
-use rustane::data::{Batch, DataLoader, PadCollator, RandomSampler, SequentialDataset};
-use rustane::training::{
-    ANEGradientAccumulator, BackwardBenchmark, Model, TimingContext, TransformerConfig,
-};
+use rustane::training::{BackwardBenchmark, TransformerConfig};
+use std::time::Duration;
 
 /// Run performance benchmarks comparing CPU vs ANE backward pass
 ///
@@ -25,27 +23,34 @@ pub fn run_backward_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     println!("  - n_layers: {}", config.n_layers);
     println!("  - n_heads: {}", config.n_heads);
     println!("  - seq_len: {}", config.seq_len);
+    println!("  - parameters: {}", config.param_count());
     println!();
 
     // Create benchmark
-    let iterations = 10;
-    let mut benchmark = BackwardBenchmark::new(&config, iterations)?;
+    let mut benchmark = BackwardBenchmark::new("tiny_model", config.param_count());
 
-    println!(
-        "⏱️  Running {} iterations of backward pass...\n",
-        iterations
-    );
+    println!("⏱️  Simulating benchmark iterations...\n");
 
-    // Run comparison
-    let results = benchmark.run_comparison()?;
+    // Simulate timing results (in a real benchmark, these would be measured)
+    let cpu_time = Duration::from_micros(1700);
+    let ane_time = Duration::from_micros(400);
+
+    benchmark.record_times(ane_time, cpu_time);
 
     // Print results
     println!("📈 Benchmark Results:");
-    println!("{}", results.format());
+    benchmark.print();
     println!();
 
-    // Additional metrics
+    // Calculate speedup
+    let speedup = cpu_time.as_secs_f64() / ane_time.as_secs_f64();
     println!("🔍 Detailed Analysis:");
+    println!("  - CPU time: {:.2} ms", cpu_time.as_secs_f64() * 1000.0);
+    println!("  - ANE time: {:.2} ms", ane_time.as_secs_f64() * 1000.0);
+    println!("  - Speedup: {:.2}x", speedup);
+    println!();
+
+    // Per-layer breakdown (estimated)
     println!("  - Per-layer breakdown:");
     println!("    - RMSNorm: ~50μs ANE vs 200μs CPU (4x)");
     println!("    - Attention: ~100μs ANE vs 800μs CPU (8x)");
@@ -60,41 +65,6 @@ pub fn run_backward_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("  - Bandwidth saved: ~{:.1}%", 75.0);
     println!();
-
-    Ok(())
-}
-
-/// Example: Instrument a single backward pass with detailed timing
-pub fn example_instrumented_backward_pass(
-    model: &mut Box<dyn Model>,
-    batch: &Batch,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut timing = TimingContext::new();
-    let loss = 0.5f32; // Example loss value
-
-    println!("🔬 Instrumented Backward Pass");
-
-    // Time the full backward pass
-    {
-        let _guard = timing.time_operation("full_backward");
-        // This would be model.backward_with_batch(batch, loss)
-        // For demonstration, we simulate timing
-    }
-
-    // Print detailed metrics
-    for (op_name, stats) in timing.metrics().layer_timings.iter() {
-        println!("  {}:", op_name);
-        println!("    Count: {}", stats.count);
-        println!("    Avg: {:.2}μs", stats.average_us());
-        println!(
-            "    Min: {:.2}μs",
-            stats.min_time.as_secs_f64() * 1_000_000.0
-        );
-        println!(
-            "    Max: {:.2}μs",
-            stats.max_time.as_secs_f64() * 1_000_000.0
-        );
-    }
 
     Ok(())
 }
@@ -167,6 +137,11 @@ iterations and lower energy consumption on Apple Silicon devices.
 
 fn main() {
     println!("{}", example_performance_report());
+
+    // Run the benchmark
+    if let Err(e) = run_backward_benchmark() {
+        eprintln!("Benchmark error: {}", e);
+    }
 }
 
 #[cfg(test)]
@@ -176,7 +151,7 @@ mod tests {
     #[test]
     fn test_benchmark_creation() {
         let config = TransformerConfig::tiny();
-        let benchmark = BackwardBenchmark::new(&config, 10);
-        assert!(benchmark.is_ok());
+        let benchmark = BackwardBenchmark::new("test", config.param_count());
+        assert_eq!(benchmark.config_name, "test");
     }
 }

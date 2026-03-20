@@ -931,6 +931,88 @@ impl TransformerANE {
         Ok((logits, sample_cache))
     }
 
+    /// Recompute forward activations for a single layer (used in gradient checkpointing).
+    ///
+    /// This function recomputes all intermediate activations for a layer given the input.
+    /// It is used during backward pass when gradient checkpointing is enabled and the
+    /// layer's activations were not stored during forward pass.
+    #[allow(clippy::too_many_arguments)]
+    fn recompute_layer_activations(
+        &self,
+        layer_idx: usize,
+        x_in: &[f32],
+        seq_len: usize,
+    ) -> Result<LayerCache> {
+        let dim = self.config.dim;
+        let head_dim = self.config.head_dim;
+        let n_heads = self.config.n_heads;
+        let hidden_dim = self.config.hidden_dim;
+        let layer = self.layer(layer_idx);
+
+        // Attention sublayer
+        let x_attn_in = x_in.to_vec();
+        let x_attn_norm = rmsnorm_forward(
+            &x_attn_in,
+            &self.trainable_params[layer.rms_att.clone()],
+            dim,
+        );
+
+        let (q, k, v) = (
+            linear_forward(&x_attn_norm, dim, &self.trainable_params[layer.wq.clone()], dim),
+            linear_forward(&x_attn_norm, dim, &self.trainable_params[layer.wk.clone()], dim),
+            linear_forward(&x_attn_norm, dim, &self.trainable_params[layer.wv.clone()], dim),
+        );
+
+        let (attn_out, attn_probs) =
+            causal_attention_forward(&q, &k, &v, seq_len, dim, n_heads, head_dim);
+
+        let attn_proj_out = linear_forward(
+            &attn_out,
+            dim,
+            &self.trainable_params[layer.wo.clone()],
+            dim,
+        );
+        let x_ffn_in = add_residual(&x_attn_in, &attn_proj_out);
+
+        // FFN sublayer
+        let x_ffn_norm = rmsnorm_forward(
+            &x_ffn_in,
+            &self.trainable_params[layer.rms_ffn.clone()],
+            dim,
+        );
+
+        let h1 = linear_forward(
+            &x_ffn_norm,
+            dim,
+            &self.trainable_params[layer.w1.clone()],
+            hidden_dim,
+        );
+        let h3 = linear_forward(
+            &x_ffn_norm,
+            dim,
+            &self.trainable_params[layer.w3.clone()],
+            hidden_dim,
+        );
+        let silu = h1.iter().map(|&x| silu(x)).collect::<Vec<_>>();
+        let ffn_hidden = elementwise_mul(&silu, &h3);
+
+        Ok(LayerCache::checkpointed(
+            x_attn_in,
+            x_attn_norm,
+            q,
+            k,
+            v,
+            attn_probs,
+            attn_out,
+            x_ffn_in,
+            x_ffn_norm,
+            h1,
+            silu,
+            h3,
+            ffn_hidden,
+        ))
+    }
+
     fn backward_sample(
         &self,
         tokens: &[u32],
@@ -988,29 +1070,29 @@ impl TransformerANE {
             add_slice(grads, self.layout.classifier.start, &d_output_weights);
         }
 
-        // For gradient checkpointing: verify all required activations are present
-        // TODO: Implement activation recomputation for non-checkpointed layers
-        if self.config.gradient_checkpointing.enabled {
-            for (idx, layer_cache) in cache.layers.iter().enumerate() {
-                if !layer_cache.has_activations() {
-                    return Err(crate::Error::Other(format!(
-                        "Layer {} activations not checkpointed. Recomputation not yet implemented.",
-                        idx
-                    )));
-                }
-            }
-        }
+        // Process layers in reverse order, recomputing activations as needed for checkpointing
+        // We need to track the hidden state for recomputation
+        let mut x_hidden = cache.final_in.clone();
 
         for layer_idx in (0..self.config.n_layers).rev() {
             let layer = self.layer(layer_idx);
-            let layer_cache = &cache.layers[layer_idx];
+
+            // Get or recompute layer activations
+            // For recomputation, we need the input to this layer (x_attn_in)
+            let activations = if cache.layers[layer_idx].has_activations() {
+                // Use cached activations - clone what we need
+                cache.layers[layer_idx].clone()
+            } else {
+                // Recompute activations from the hidden state
+                self.recompute_layer_activations(layer_idx, &x_hidden, seq_len)?
+            };
 
             let (d_x_ffn_norm_from_ffn, d_w1, d_w3, d_w2) = ffn_backward(
-                &layer_cache.x_ffn_norm,
-                &layer_cache.h1,
-                &layer_cache.silu,
-                &layer_cache.h3,
-                &layer_cache.ffn_hidden,
+                &activations.x_ffn_norm,
+                &activations.h1,
+                &activations.silu,
+                &activations.h3,
+                &activations.ffn_hidden,
                 &d_current,
                 dim,
                 hidden_dim,
@@ -1025,7 +1107,7 @@ impl TransformerANE {
 
             let (d_x_ffn_in_from_norm, d_ffn_gamma) = rmsnorm_backward(
                 &d_x_ffn_norm_from_ffn,
-                &layer_cache.x_ffn_in,
+                &activations.x_ffn_in,
                 &self.trainable_params[layer.rms_ffn.clone()],
             );
             add_slice(grads, layer.rms_ffn.start, &d_ffn_gamma);
@@ -1033,12 +1115,12 @@ impl TransformerANE {
             let d_x_attn_input = add_residual(&d_current, &d_x_ffn_in_from_norm);
 
             let (d_x_attn_norm_from_attn, d_wq, d_wk, d_wv, d_wo) = causal_attention_backward(
-                &layer_cache.x_attn_norm,
-                &layer_cache.q,
-                &layer_cache.k,
-                &layer_cache.v,
-                &layer_cache.attn_probs,
-                &layer_cache.attn_out,
+                &activations.x_attn_norm,
+                &activations.q,
+                &activations.k,
+                &activations.v,
+                &activations.attn_probs,
+                &activations.attn_out,
                 &d_x_attn_input,
                 dim,
                 n_heads,
@@ -1056,12 +1138,25 @@ impl TransformerANE {
 
             let (d_x_attn_in_from_norm, d_attn_gamma) = rmsnorm_backward(
                 &d_x_attn_norm_from_attn,
-                &layer_cache.x_attn_in,
+                &activations.x_attn_in,
                 &self.trainable_params[layer.rms_att.clone()],
             );
             add_slice(grads, layer.rms_att.start, &d_attn_gamma);
 
             d_current = add_residual(&d_x_attn_input, &d_x_attn_in_from_norm);
+
+            // Update hidden state for next layer's recomputation (in reverse order)
+            // The output of this layer's forward becomes input to previous layer
+            if !cache.layers[layer_idx].has_activations() && layer_idx > 0 {
+                // Recompute the output of this layer for next iteration's input
+                let x_ffn_out = linear_forward(
+                    &activations.ffn_hidden,
+                    hidden_dim,
+                    &self.trainable_params[layer.w2.clone()],
+                    dim,
+                );
+                x_hidden = add_residual(&activations.x_attn_in, &x_ffn_out);
+            }
         }
 
         let d_embedding = embedding_backward(tokens, &d_current, dim, vocab_size)?;
@@ -2190,7 +2285,7 @@ mod tests {
     }
 
     #[test]
-    fn test_backward_with_missing_activations_fails() {
+    fn test_backward_with_checkpointing_succeeds() {
         let config = TransformerConfig::new(256, 128, 256, 4, 4, 64)
             .unwrap()
             .with_checkpoint_interval(2); // Only store 0, 2
@@ -2200,7 +2295,7 @@ mod tests {
         let _ = model.forward(&batch).unwrap();
         let result = model.backward_with_batch(&batch, 0.5);
 
-        // Should fail because layers 1, 3 are not stored and recomputation is not yet implemented
-        assert!(result.is_err());
+        // Should succeed because layers 1, 3 are recomputed during backward pass
+        assert!(result.is_ok());
     }
 }

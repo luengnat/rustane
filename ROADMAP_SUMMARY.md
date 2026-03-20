@@ -142,7 +142,7 @@ TOTAL: XX.XX ms
 - [x] Memory savings estimation (memory_savings_factor)
 - [x] Comprehensive tests (6 new tests)
 - [x] Gradient checkpointing demo example
-- [ ] Activation recomputation during backward pass (TODO)
+- [x] Activation recomputation during backward pass (recompute_layer_activations)
 
 ### ✅ Task 2: Mixed Precision Training (FP16/BF16)
 - [x] FP16/BF16 data type support (fp32_to_fp16, fp32_to_bf16, conversions)

@@ -268,7 +268,7 @@ pub use ane_backward_executor::{ANEBackwardModel, ANEGradientAccumulator};
 pub use ane_backward_kernel::{ANEBackwardKernel, ANEBackwardKernelCache};
 pub use ane_gradient_buffer::ANEGradientBuffer;
 pub use backend::{CpuTrainingBackend, TrainingBackend};
-pub use benchmark::{BackwardBenchmark, TimingContext, TimingStats};
+pub use benchmark::BackwardBenchmark;
 pub use checkpoint::{checkpoint_filename, Checkpoint, LossScalerState, ModelConfig, OptimizerState};
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
