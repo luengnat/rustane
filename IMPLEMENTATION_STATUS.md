@@ -73,13 +73,13 @@ Every item from the "Potential Future Enhancements" section has been completed:
 
 ### Remaining TODOs
 
-Only documented TODOs remain, which are intentional:
+All production TODOs have been resolved. Only documentation examples remain:
 
 1. **ANE Kernel Evaluation** (`src/ane/kernel.rs`)
-   - Status: Documented limitation
-   - Reason: ANE doesn't support multi-input MIL programs
-   - Workaround: CPU fallback (implemented and optimized)
-   - Documentation: `docs/ANE_BACKWARD_LIMITATION.md`
+   - Status: ✅ DOCUMENTED as test-only wrapper
+   - Reason: Test-only demonstration wrapper
+   - Production implementation: `ANEExecutor` in `src/wrapper/executor.rs`
+   - Updated: Documentation now explicitly states test-only status and directs to ANEExecutor
 
 2. **Layer Checkpoint Weights** (`src/layers/checkpoint.rs`)
    - Status: ✅ IMPLEMENTED
@@ -88,6 +88,11 @@ Only documented TODOs remain, which are intentional:
      - Weight extraction helper functions (returns None as weights are managed through model parameters)
      - Clear documentation that it's for model inspection, not training checkpointing
      - Comprehensive error message directing users to main checkpoint system
+
+3. **Documentation Example TODOs** (`src/training/trainer.rs`)
+   - Status: Intentional placeholder code in documentation comments
+   - Used only in example code snippets
+   - Not actual implementation code
 
 ### What "Continue with the plan in the docs" Means
 
