@@ -228,9 +228,9 @@ impl ANEKernel {
 
 impl Drop for ANEKernel {
     fn drop(&mut self) {
-        // TODO: Unload from ANE, release IOSurfaces
-        // The IOSurfaces will be automatically dropped when io_inputs and io_outputs
-        // are dropped. The ANE model (once implemented) should be unloaded here.
+        // IOSurfaces are automatically dropped when io_inputs/io_outputs are dropped.
+        // When _model is implemented as *mut ANEKernelHandle, call ane_bridge_free() here.
+        // Current implementation uses Option<()> as a placeholder, so no cleanup needed.
     }
 }
 

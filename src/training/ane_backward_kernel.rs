@@ -25,20 +25,24 @@
 //! kernel.execute(&inputs, &mut outputs)?;
 //! ```
 
-use crate::ane::ANEKernel;
+use crate::wrapper::ANEExecutor;
 use crate::error::{Error, Result};
 use crate::training::TransformerConfig;
 
 /// Compiled ANE backward kernel ready for execution
 ///
-/// This struct wraps a compiled ANE kernel with metadata for backward
+/// This struct wraps a compiled ANE executor with metadata for backward
 /// pass operations. It manages the kernel lifecycle and provides
 /// a safe interface for execution.
 pub struct ANEBackwardKernel {
-    /// The underlying ANE kernel
-    kernel: ANEKernel,
+    /// The underlying ANE executor
+    executor: ANEExecutor,
     /// Operation name (e.g., "rmsnorm_backward")
     operation_name: String,
+    /// Input sizes in bytes
+    input_sizes: Vec<usize>,
+    /// Output sizes in bytes
+    output_sizes: Vec<usize>,
 }
 
 impl ANEBackwardKernel {
@@ -60,21 +64,40 @@ impl ANEBackwardKernel {
     /// - MIL code compilation fails
     /// - ANE kernel creation fails
     pub fn compile(
-        _mil_code: &str,
+        mil_code: &str,
         config: &TransformerConfig,
         operation_name: &str,
     ) -> Result<Self> {
-        // For now, we create a kernel with placeholder sizes
-        // In production, this would parse the MIL code to determine sizes
-        let input_sizes = vec![config.hidden_dim * 4]; // Placeholder
-        let output_sizes = vec![config.hidden_dim * 4]; // Placeholder
+        use std::collections::HashMap;
 
-        let kernel = ANEKernel::new(input_sizes, output_sizes)
-            .map_err(|e| Error::Other(format!("Failed to create ANE kernel: {}", e)))?;
+        // Calculate tensor sizes from config
+        // For backward pass, we typically have:
+        // - Input: gradients from upstream (hidden_dim)
+        // - Output: gradients for weights (varies by layer)
+        let input_size_bytes = config.hidden_dim * std::mem::size_of::<f32>();
+        let output_size_bytes = config.hidden_dim * std::mem::size_of::<f32>();
+
+        // Parse MIL code to extract weight names and create weight dictionary
+        // For now, use empty weights since backward kernels don't typically need weight data
+        let weights = HashMap::new();
+
+        // Create compile request
+        let compile_request = crate::ane::ANECompileRequest {
+            mil_text: mil_code.to_string(),
+            weights,
+            input_sizes: vec![input_size_bytes],
+            output_sizes: vec![output_size_bytes],
+        };
+
+        // Compile the MIL code
+        let executor = compile_request.compile()
+            .map_err(|e| Error::Other(format!("Failed to compile MIL code for {}: {}", operation_name, e)))?;
 
         Ok(Self {
-            kernel,
+            executor,
             operation_name: operation_name.to_string(),
+            input_sizes: vec![input_size_bytes],
+            output_sizes: vec![output_size_bytes],
         })
     }
 
@@ -96,35 +119,50 @@ impl ANEBackwardKernel {
     /// - ANE execution fails
     pub fn execute(&mut self, inputs: &[Vec<f32>], outputs: &mut [Vec<f32>]) -> Result<()> {
         // Validate input count
-        if inputs.len() != self.kernel.io_inputs.len() {
+        if inputs.len() != self.input_sizes.len() {
             return Err(Error::InvalidParameter(format!(
                 "Expected {} inputs, got {}",
-                self.kernel.io_inputs.len(),
+                self.input_sizes.len(),
                 inputs.len()
             )));
         }
 
         // Validate output count
-        if outputs.len() != self.kernel.io_outputs.len() {
+        if outputs.len() != self.output_sizes.len() {
             return Err(Error::InvalidParameter(format!(
                 "Expected {} outputs, got {}",
-                self.kernel.io_outputs.len(),
+                self.output_sizes.len(),
                 outputs.len()
             )));
         }
 
-        // Write inputs to IOSurfaces
+        // Write inputs to ANE
         for (i, input_data) in inputs.iter().enumerate() {
-            self.kernel.write_input(i, input_data)?;
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    input_data.as_ptr() as *const u8,
+                    input_data.len() * std::mem::size_of::<f32>(),
+                )
+            };
+            self.executor.write_input(i, bytes)?;
         }
 
         // Execute on ANE
-        self.kernel.eval()?;
+        self.executor.eval()?;
 
-        // Read outputs from IOSurfaces
+        // Read outputs from ANE
         for (i, output_buffer) in outputs.iter_mut().enumerate() {
-            let result = self.kernel.read_output(i)?;
-            output_buffer.copy_from_slice(&result);
+            let mut byte_buffer = vec![0u8; self.output_sizes[i]];
+            self.executor.read_output(i, &mut byte_buffer)?;
+
+            // Convert bytes to f32
+            let float_slice = unsafe {
+                std::slice::from_raw_parts(
+                    byte_buffer.as_ptr() as *const f32,
+                    byte_buffer.len() / std::mem::size_of::<f32>(),
+                )
+            };
+            output_buffer.copy_from_slice(float_slice);
         }
 
         Ok(())
@@ -137,12 +175,12 @@ impl ANEBackwardKernel {
 
     /// Get number of inputs
     pub fn num_inputs(&self) -> usize {
-        self.kernel.io_inputs.len()
+        self.input_sizes.len()
     }
 
     /// Get number of outputs
     pub fn num_outputs(&self) -> usize {
-        self.kernel.io_outputs.len()
+        self.output_sizes.len()
     }
 }
 
