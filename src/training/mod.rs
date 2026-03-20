@@ -6,11 +6,13 @@
 //! - Integration with CPU-side training loops
 
 pub mod grad_accum;
+pub mod loss;
 pub mod loss_scale;
 pub mod model;
 pub mod scheduler;
 
 pub use grad_accum::GradAccumulator;
+pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
 pub use loss_scale::LossScaler;
 pub use model::Model;
 pub use scheduler::{
