@@ -1,36 +1,29 @@
-//! Backward pass MIL generators for ANE
+//! # Backward Pass MIL Generators
 //!
-//! This module provides MIL (Model Intermediate Language) code generators for
-//! backward propagation (gradient computation) on Apple Neural Engine (ANE).
+//! This module implements gradient computation for all transformer operations
+//! via ANE-executable MIL code generation.
 //!
-//! # Architecture
+//! ## Architecture
 //!
-//! Each backward operation implements the `BackwardMILGenerator` trait, which defines:
-//! - MIL code generation for the backward operation
-//! - Validation against CPU reference implementations
-//! - Operation identification for debugging
+//! Each backward operation is generated as MIL code:
+//! - **RMSNormBackwardGen**: Normalization gradients (scale + bias)
+//! - **AttentionBackwardGen**: Attention gradients (Q, K, V, O)
+//! - **FFNBackwardGen**: Feed-forward gradients (linear layers + activation)
+//! - **LossBackwardGen**: Cross-entropy loss gradients
 //!
-//! # Components
+//! ## Validation
 //!
-//! - **BackwardMILGenerator**: Core trait for all backward MIL generators
-//! - **RMSNormBackwardGen**: RMSNorm layer normalization backward
-//! - **AttentionBackwardGen**: Multi-head attention backward (dQ, dK, dV, dO)
-//! - **FFNBackwardGen**: Feed-forward network backward
-//! - **LossBackwardGen**: Cross-entropy loss backward
+//! All generators are validated once at startup via **BackwardValidationSuite**
+//! with 1e-6 relative error tolerance against CPU reference implementations.
 //!
-//! # Usage
+//! ## Usage
 //!
 //! ```ignore
-//! use crate::layers::backward::{BackwardMILGenerator, RMSNormBackwardGen};
+//! use rustane::layers::backward::*;
 //!
-//! let config = TransformerConfig::tiny();
-//! let generator = RMSNormBackwardGen::new();
-//!
-//! // Generate MIL code
-//! let mil_code = generator.generate(&config)?;
-//!
-//! // Validate against CPU reference
-//! generator.validate(&config)?;
+//! let suite = BackwardValidationSuite::new();
+//! let report = suite.validate_all(&config)?;
+//! assert!(report.loss_passed);
 //! ```
 
 pub mod rmsnorm_backward_gen;

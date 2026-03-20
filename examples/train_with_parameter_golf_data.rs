@@ -16,7 +16,7 @@ use rustane::data::{Batch, Dataset, DataLoader, SequentialSampler};
 use rustane::error::Result;
 use rustane::training::{
     AdamOptimizer, ConstantScheduler, CrossEntropyLoss, LossFn, Model, Optimizer,
-    WarmupCosineScheduler, WarmupLinearScheduler,
+    ParameterGroupKind, WarmupCosineScheduler, WarmupLinearScheduler,
 };
 use rustane::training::{TransformerANE, TransformerConfig};
 use sentencepiece_model::SentencePieceModel;
@@ -31,6 +31,48 @@ fn main() -> Result<()> {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1024);
+    let tie_embeddings = std::env::var("TIE_EMBEDDINGS")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|v| v != 0)
+        .unwrap_or(true);
+    let logit_softcap = std::env::var("LOGIT_SOFTCAP")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(30.0);
+    let model_dim = std::env::var("MODEL_DIM")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(416);
+    let num_layers = std::env::var("NUM_LAYERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(11);
+    let num_heads = std::env::var("NUM_HEADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(8);
+    let hidden_dim = std::env::var("HIDDEN_DIM")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(model_dim * 2);
+    let embed_lr = std::env::var("EMBED_LR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(if tie_embeddings { 0.05 } else { 0.6 });
+    let head_lr = std::env::var("HEAD_LR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.008);
+    let matrix_lr = std::env::var("MATRIX_LR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.04);
+    let matrix_opt = std::env::var("MATRIX_OPT").unwrap_or_else(|_| "adam".to_string());
+    let scalar_lr = std::env::var("SCALAR_LR")
+        .ok()
+        .and_then(|s| s.parse::<f32>().ok())
+        .unwrap_or(0.04);
     let seq_len = std::env::var("TRAIN_SEQ_LEN")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -76,14 +118,16 @@ fn main() -> Result<()> {
         .and_then(|s| s.parse::<f32>().ok())
         .unwrap_or(0.0);
     let lr_scheduler = std::env::var("LR_SCHEDULER").unwrap_or_else(|_| "cosine".to_string());
-    let peak_lr = std::env::var("PEAK_LR")
+    let lr_scale_peak = std::env::var("LR_SCALE_PEAK")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(0.001);
-    let min_lr = std::env::var("MIN_LR")
+        .or_else(|| std::env::var("PEAK_LR").ok().and_then(|s| s.parse::<f32>().ok()))
+        .unwrap_or(1.0);
+    let lr_scale_min = std::env::var("LR_SCALE_MIN")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
-        .unwrap_or(1e-5);
+        .or_else(|| std::env::var("MIN_LR").ok().and_then(|s| s.parse::<f32>().ok()))
+        .unwrap_or(0.01);
     let warmup_steps = std::env::var("WARMUP_STEPS")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
@@ -101,6 +145,12 @@ fn main() -> Result<()> {
     println!("  Val pattern:    {}", val_pattern);
     println!("  Tokenizer:      {}", tokenizer_path);
     println!("  Vocab size:     {}", vocab_size);
+    println!("  Tie embeddings: {}", tie_embeddings);
+    println!("  Logit softcap:  {}", logit_softcap);
+    println!("  Model dim:      {}", model_dim);
+    println!("  Hidden dim:     {}", hidden_dim);
+    println!("  Num layers:     {}", num_layers);
+    println!("  Num heads:      {}", num_heads);
     println!("  Sequence len:   {}", seq_len);
     println!("  Batch size:     {}", batch_size);
     println!("  Chunk tokens:   {}", chunk_tokens);
@@ -113,8 +163,13 @@ fn main() -> Result<()> {
     println!("  Val batch size:  {}", val_batch_size);
     println!("  Val batches:     {}\n", val_max_batches);
     println!("  LR scheduler:    {}", lr_scheduler);
-    println!("  Peak LR:         {}", peak_lr);
-    println!("  Min LR:          {}", min_lr);
+    println!("  LR scale peak:   {}", lr_scale_peak);
+    println!("  LR scale min:    {}", lr_scale_min);
+    println!("  Embed LR:        {}", embed_lr);
+    println!("  Head LR:         {}", head_lr);
+    println!("  Matrix LR:       {}", matrix_lr);
+    println!("  Matrix opt:      {}", matrix_opt);
+    println!("  Scalar LR:       {}", scalar_lr);
     println!("  Warmup steps:    {}", warmup_steps);
     println!("  Grad clip norm:  {}\n", grad_clip_norm);
 
@@ -131,20 +186,28 @@ fn main() -> Result<()> {
     let train_sampler = SequentialSampler::new(train_dataset.len());
     let mut train_iter = DataLoader::new(train_dataset.clone(), train_sampler, batch_size)?.iter();
 
-    let config = TransformerConfig::new(vocab_size, 256, 512, 4, 2, seq_len)?;
+    let config = TransformerConfig::new(vocab_size, model_dim, hidden_dim, num_heads, num_layers, seq_len)?
+        .with_tie_embeddings(tie_embeddings)
+        .with_logit_softcap(logit_softcap);
     let mut model = TransformerANE::new(&config)?;
-    let param_count = model.param_count();
-    let mut optimizer = AdamOptimizer::new(param_count);
+    let mut optimizer_groups = build_optimizer_groups(
+        &model,
+        embed_lr,
+        head_lr,
+        matrix_lr,
+        scalar_lr,
+        &matrix_opt,
+    );
     let scheduler = build_scheduler(
         &lr_scheduler,
-        peak_lr,
+        lr_scale_peak,
         warmup_steps,
         train_steps as u32,
-        min_lr,
+        lr_scale_min,
     );
     let loss_fn = CrossEntropyLoss::new();
 
-    println!("Step | Train Loss | Grad Norm  | LR       | Validation");
+    println!("Step | Train Loss | Grad Norm  | LR Scale | Validation");
     println!("-----|------------|------------|----------|----------------");
 
     let mut total_train_batches = 0usize;
@@ -172,17 +235,17 @@ fn main() -> Result<()> {
         let mut total_grad_norm = 0.0f32;
         let mut chunk_count = 0usize;
         let scale = 1.0 / accum_steps as f32;
-        let mut accum_grads = vec![0.0f32; param_count];
+        let mut accum_grads = vec![0.0f32; model.param_count()];
         for chunk_result in batch.into_chunks(chunk_tokens)? {
             let chunk = chunk_result;
             let logits = model.forward(&chunk)?;
             let loss = loss_fn.compute(&logits, &chunk)?;
             let grads = model.backward_with_batch(&chunk, loss)?;
-            if grads.len() != param_count {
+            if grads.len() != model.param_count() {
                 return Err(rustane::Error::Other(format!(
                     "gradient count {} != param count {}",
                     grads.len(),
-                    param_count
+                    model.param_count()
                 )));
             }
             let grad_norm = l2_norm(&grads);
@@ -209,12 +272,19 @@ fn main() -> Result<()> {
                 accum_steps, chunk_count
             )));
         }
-        let learning_rate = scheduler.get_lr(step as u32);
-        optimizer.step(&accum_grads, model.parameters(), learning_rate)?;
+        let lr_scale = scheduler.get_lr(step as u32);
+        let params = model.parameters();
+        for group in optimizer_groups.iter_mut() {
+            let group_lr = group.base_lr * lr_scale;
+            let range = group.range.clone();
+            group
+                .optimizer
+                .step(&accum_grads[range.clone()], &mut params[range], group_lr)?;
+        }
         let metrics = SimpleStepMetrics {
             loss: total_loss,
             grad_norm: total_grad_norm,
-            learning_rate,
+            learning_rate: lr_scale,
         };
         total_train_batches += 1;
 
@@ -328,6 +398,193 @@ struct SimpleStepMetrics {
 
 fn l2_norm(grads: &[f32]) -> f32 {
     grads.iter().map(|g| g * g).sum::<f32>().sqrt()
+}
+
+struct OptimizerGroup {
+    range: std::ops::Range<usize>,
+    optimizer: GroupOptimizer,
+    base_lr: f32,
+}
+
+enum GroupOptimizer {
+    Adam(AdamOptimizer),
+    Muon(MuonOptimizer),
+}
+
+impl GroupOptimizer {
+    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+        match self {
+            GroupOptimizer::Adam(opt) => opt.step(grads, params, lr),
+            GroupOptimizer::Muon(opt) => opt.step(grads, params, lr),
+        }
+    }
+}
+
+struct MuonOptimizer {
+    momentum_buffer: Vec<f32>,
+    rows: usize,
+    cols: usize,
+    momentum: f32,
+    backend_steps: usize,
+    nesterov: bool,
+}
+
+impl MuonOptimizer {
+    fn new(rows: usize, cols: usize, momentum: f32, backend_steps: usize, nesterov: bool) -> Self {
+        Self {
+            momentum_buffer: vec![0.0; rows * cols],
+            rows,
+            cols,
+            momentum,
+            backend_steps,
+            nesterov,
+        }
+    }
+
+    fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
+        if grads.len() != params.len() || grads.len() != self.momentum_buffer.len() {
+            return Err(rustane::Error::Other(format!(
+                "muon optimizer state mismatch: grads={}, params={}, buffer={}",
+                grads.len(),
+                params.len(),
+                self.momentum_buffer.len()
+            )));
+        }
+        if self.rows == 0 || self.cols == 0 {
+            return Err(rustane::Error::Other("muon optimizer received empty matrix shape".to_string()));
+        }
+        let rows = self.rows;
+        let cols = self.cols;
+        let mut update = vec![0.0f32; grads.len()];
+        for i in 0..grads.len() {
+            self.momentum_buffer[i] = self.momentum * self.momentum_buffer[i] + grads[i];
+            update[i] = if self.nesterov {
+                grads[i] + self.momentum * self.momentum_buffer[i]
+            } else {
+                self.momentum_buffer[i]
+            };
+        }
+
+        let mut update = zero_power_via_newton_schulz5(&update, rows, cols, self.backend_steps);
+        let scale = (rows.max(cols) as f32 / rows.min(cols).max(1) as f32).sqrt();
+        for value in &mut update {
+            *value *= scale;
+        }
+        for (param, delta) in params.iter_mut().zip(update.iter()) {
+            *param -= lr * delta;
+        }
+        Ok(())
+    }
+}
+
+fn build_optimizer_groups(
+    model: &TransformerANE,
+    embed_lr: f32,
+    head_lr: f32,
+    matrix_lr: f32,
+    scalar_lr: f32,
+    matrix_opt: &str,
+) -> Vec<OptimizerGroup> {
+    let matrix_opt = matrix_opt.to_ascii_lowercase();
+    model
+        .parameter_groups()
+        .into_iter()
+        .map(|group| {
+            let base_lr = match group.kind {
+                ParameterGroupKind::Embedding => embed_lr,
+                ParameterGroupKind::Head => head_lr,
+                ParameterGroupKind::Matrix => matrix_lr,
+                ParameterGroupKind::Scalar => scalar_lr,
+            };
+            let optimizer = match group.kind {
+                ParameterGroupKind::Matrix if matrix_opt == "muon" => GroupOptimizer::Muon(MuonOptimizer::new(
+                    group.rows,
+                    group.cols,
+                    std::env::var("MUON_MOMENTUM")
+                        .ok()
+                        .and_then(|s| s.parse::<f32>().ok())
+                        .unwrap_or(0.95),
+                    std::env::var("MUON_BACKEND_STEPS")
+                        .ok()
+                        .and_then(|s| s.parse::<usize>().ok())
+                        .unwrap_or(5),
+                    std::env::var("MUON_NESTEROV")
+                        .ok()
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .map(|v| v != 0)
+                        .unwrap_or(true),
+                )),
+                _ => GroupOptimizer::Adam(AdamOptimizer::new(group.range.end - group.range.start)),
+            };
+            OptimizerGroup {
+                range: group.range.clone(),
+                optimizer,
+                base_lr,
+            }
+        })
+        .collect()
+}
+
+fn zero_power_via_newton_schulz5(
+    gradient: &[f32],
+    rows: usize,
+    cols: usize,
+    steps: usize,
+) -> Vec<f32> {
+    let mut mat = gradient.to_vec();
+    let norm = mat.iter().map(|v| v * v).sum::<f32>().sqrt().max(1e-7);
+    for value in &mut mat {
+        *value /= norm;
+    }
+    let transposed = rows > cols;
+    if transposed {
+        mat = transpose_matrix(&mat, rows, cols);
+    }
+    let (cur_rows, cur_cols) = if transposed { (cols, rows) } else { (rows, cols) };
+    for _ in 0..steps {
+        let xt = transpose_matrix(&mat, cur_rows, cur_cols);
+        let a = matmul(&mat, &xt, cur_rows, cur_cols, cur_rows);
+        let a2 = matmul(&a, &a, cur_rows, cur_rows, cur_rows);
+        let mut b = a.clone();
+        for i in 0..b.len() {
+            b[i] = -4.7750 * a[i] + 2.0315 * a2[i];
+        }
+        let bx = matmul(&b, &mat, cur_rows, cur_rows, cur_cols);
+        let mut next = mat.clone();
+        for i in 0..next.len() {
+            next[i] = 3.4445 * mat[i] + bx[i];
+        }
+        mat = next;
+    }
+
+    if transposed {
+        transpose_matrix(&mat, cur_rows, cur_cols)
+    } else {
+        mat
+    }
+}
+
+fn transpose_matrix(matrix: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; matrix.len()];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = matrix[r * cols + c];
+        }
+    }
+    out
+}
+
+fn matmul(a: &[f32], b: &[f32], a_rows: usize, a_cols: usize, b_cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; a_rows * b_cols];
+    for i in 0..a_rows {
+        for k in 0..a_cols {
+            let aval = a[i * a_cols + k];
+            for j in 0..b_cols {
+                out[i * b_cols + j] += aval * b[k * b_cols + j];
+            }
+        }
+    }
+    out
 }
 
 #[derive(Clone)]

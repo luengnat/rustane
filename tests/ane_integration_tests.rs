@@ -12,8 +12,8 @@
 use rustane::data::{Batch, DataLoader, Dataset, SequentialDataset, SequentialSampler};
 use rustane::error::Result;
 use rustane::layers::{
-    attention_backward, cross_entropy_backward, ffn_backward, rmsnorm_backward,
-    AttentionConfig, FFNConfig, MILGenerator,
+    attention_backward, cross_entropy_backward, ffn_backward, rmsnorm_backward, AttentionConfig,
+    FFNConfig, MILGenerator,
 };
 use rustane::training::{
     ConstantScheduler, CrossEntropyLoss, LRScheduler, Model, TransformerANE, TransformerConfig,
@@ -163,7 +163,10 @@ fn test_training_module_integration() {
     let mut model = TransformerANE::new(&config).unwrap();
     // Just verify param count is non-zero, don't check exact value
     assert!(model.param_count() > 0);
-    println!("  ✓ Model creation verified with {} parameters", model.param_count());
+    println!(
+        "  ✓ Model creation verified with {} parameters",
+        model.param_count()
+    );
 
     // Create batch for forward pass
     let tokens = vec![0u32; 4 * 128]; // 4 samples, 128 seq_len
@@ -203,9 +206,7 @@ fn test_data_model_pipeline() -> Result<()> {
     // Create synthetic dataset with 4 samples
     let mut samples = Vec::new();
     for i in 0..4 {
-        let sample: Vec<u32> = (0..128)
-            .map(|j| (i * 100 + j) as u32 % 256)
-            .collect();
+        let sample: Vec<u32> = (0..128).map(|j| (i * 100 + j) as u32 % 256).collect();
         samples.push(sample);
     }
 
@@ -244,7 +245,10 @@ fn test_data_model_pipeline() -> Result<()> {
     assert!(batch_count >= 0); // May be 0 if ANE not available
     println!("  ✓ Data pipeline integrated with model");
 
-    println!("✓ Data + Model pipeline verified ({} batches processed)", batch_count);
+    println!(
+        "✓ Data + Model pipeline verified ({} batches processed)",
+        batch_count
+    );
     Ok(())
 }
 
@@ -372,8 +376,8 @@ fn test_error_handling() {
     assert!(batch_result.is_err());
     println!("  ✓ Invalid batch size rejected");
 
-    // Invalid config should fail gracefully (dim must be divisible by 128)
-    let config_result = TransformerConfig::new(256, 64, 256, 4, 2, 128);
+    // Invalid config should fail gracefully (dim must be greater than zero)
+    let config_result = TransformerConfig::new(256, 0, 256, 4, 2, 128);
     assert!(config_result.is_err());
     println!("  ✓ Invalid config rejected");
 
@@ -410,7 +414,10 @@ fn test_cross_module_data_flow() -> Result<()> {
     // Step 3: Create model
     let config = TransformerConfig::new(256, 256, 256, 4, 2, 128).unwrap();
     let mut model = TransformerANE::new(&config).unwrap();
-    println!("  ✓ Step 3: Model created ({} parameters)", model.param_count());
+    println!(
+        "  ✓ Step 3: Model created ({} parameters)",
+        model.param_count()
+    );
 
     // Step 4: Forward pass
     let _forward_result = model.forward(&batch);
@@ -421,7 +428,10 @@ fn test_cross_module_data_flow() -> Result<()> {
     match backward_result {
         Ok(grads) => {
             assert_eq!(grads.len(), model.param_count());
-            println!("  ✓ Step 5: Backward pass succeeded ({} gradients)", grads.len());
+            println!(
+                "  ✓ Step 5: Backward pass succeeded ({} gradients)",
+                grads.len()
+            );
         }
         Err(_) => {
             println!("  ⚠ Step 5: Backward pass not available (expected without ANE)");

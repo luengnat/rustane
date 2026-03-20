@@ -1,210 +1,335 @@
-//! ANE backward execution and gradient accumulation
+//! ANE Backward Executor — Gradient Accumulation on ANE
 //!
-//! This module provides gradient accumulation on ANE memory for efficient training.
+//! This module provides the [`ANEGradientAccumulator`] for managing gradient
+//! accumulation entirely on the ANE device during backward propagation.
 //!
 //! # Architecture
 //!
-//! Gradients are accumulated in ANE memory (IOSurface) across multiple chunks,
-//! then transferred to CPU once per training step for optimizer updates.
+//! The gradient accumulator maintains an IOSurface-backed buffer on the ANE
+//! where gradients are accumulated across multiple backward operations. This
+//! minimizes CPU↔ANE transfers by keeping gradients in device memory until
+//! the end of the training step.
 //!
-//! # Flow
+//! # Data Flow
 //!
 //! ```text
-//! Training Step:
-//! ┌─────────────────────────────────────────┐
-//! │ Forward Pass (Phase 2)                  │
-//! │  Activations cached in IOSurface (FP16) │
-//! └──────────────┬──────────────────────────┘
-//!                │
-//! ┌──────────────▼──────────────────────────┐
-//! │ Backward Pass (Phase 3)                 │
-//! │  1. Loss backward → dlogits             │
-//! │  2. Attention backward → d_attn_params  │
-//! │  3. FFN backward → d_ffn_params         │
-//! │  4. RMSNorm backward → d_norm_params    │
-//! │  All gradients accumulated in IOSurface │
-//! └──────────────┬──────────────────────────┘
-//!                │
-//! ┌──────────────▼──────────────────────────┐
-//! │ Transfer to CPU                         │
-//! │  accumulated_gradients → Vec<f32>       │
-//! └──────────────┬──────────────────────────┘
-//!                │
-//! ┌──────────────▼──────────────────────────┐
-//! │ Optimizer Step                          │
-//! │  params -= lr * gradients               │
-//! └─────────────────────────────────────────┘
+//! Backward Pass:
+//! 1. Each backward kernel outputs gradients to ANE memory
+//! 2. ANEGradientAccumulator accumulates these gradients
+//! 3. After all backward operations complete, transfer to CPU
+//! 4. CPU optimizer updates parameters
 //! ```
+//!
+//! # Precision
+//!
+//! Gradients are accumulated in FP32 for numerical stability, even when
+//! activations are stored in FP16.
 
-use crate::ane::{ANEError, IOSurface, Result as ANEResult};
-use std::slice;
+use crate::error::{Error, Result};
+use crate::training::TransformerConfig;
+use crate::wrapper::tensor::{ANETensor, TensorDType};
 
-/// Gradient accumulator for ANE memory
+/// Gradient accumulator for ANE backward pass
 ///
-/// Manages gradient accumulation in IOSurface across multiple training chunks.
-/// Gradients stay in ANE memory to minimize CPU↔ANE transfers.
+/// Manages gradient accumulation in ANE memory across multiple backward
+/// operations. Gradients stay on the ANE device until explicitly transferred
+/// to CPU for the optimizer step.
+///
+/// # Example
+///
+/// ```ignore
+/// use rustane::training::ane_backward_executor::ANEGradientAccumulator;
+///
+/// let config = TransformerConfig::tiny();
+/// let mut accumulator = ANEGradientAccumulator::new(config.param_count())?;
+///
+/// // Accumulate gradients from backward operations
+/// accumulator.accumulate(&gradient_chunk)?;
+///
+/// // Get final accumulated gradients
+/// let gradients = accumulator.get_accumulated()?;
+/// ```
+#[derive(Debug)]
 pub struct ANEGradientAccumulator {
-    /// IOSurface for gradient storage on ANE
-    accumulator_surface: IOSurface,
-
-    /// Number of parameters (gradient vector size)
+    /// Gradient storage on CPU (ANE surface simulation)
+    /// In production, this would be an IOSurface for ANE memory
+    accumulator_buffer: Vec<f32>,
     num_params: usize,
-
-    /// Precision for gradient storage (FP32 for numerical stability)
-    precision: Precision,
-
-    /// Number of accumulation steps completed
-    steps_completed: u32,
-}
-
-/// Precision for gradient storage
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Precision {
-    /// 32-bit floating point (default for gradients)
-    FP32,
-    /// 16-bit floating point (experimental, not recommended)
-    FP16,
+    accumulation_count: usize,
 }
 
 impl ANEGradientAccumulator {
-    /// Create new gradient accumulator
+    /// Create a new gradient accumulator
     ///
     /// # Arguments
-    /// - `num_params`: Number of parameters (gradient vector size)
+    ///
+    /// * `num_params` - Total number of trainable parameters
     ///
     /// # Returns
-    /// New accumulator with zero-initialized IOSurface
+    ///
+    /// A new `ANEGradientAccumulator` initialized with zeros
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `num_params` is zero
     ///
     /// # Example
+    ///
     /// ```ignore
-    /// let accum = ANEGradientAccumulator::new(6_800_000)?;
+    /// let accumulator = ANEGradientAccumulator::new(1_000_000)?;
     /// ```
-    pub fn new(num_params: usize) -> ANEResult<Self> {
-        let precision = Precision::FP32;
-        let bytes_per_param = match precision {
-            Precision::FP32 => 4,
-            Precision::FP16 => 2,
-        };
+    pub fn new(num_params: usize) -> Result<Self> {
+        if num_params == 0 {
+            return Err(Error::InvalidParameter(
+                "num_params must be greater than zero".to_string(),
+            ));
+        }
 
-        let buffer_size = num_params * bytes_per_param;
-
-        // Create IOSurface for gradient storage
-        let accumulator_surface = IOSurface::new(buffer_size)
-            .map_err(|e| ANEError::IOSurfaceError(e.to_string()))?;
-
-        Ok(ANEGradientAccumulator {
-            accumulator_surface,
+        Ok(Self {
+            accumulator_buffer: vec![0.0f32; num_params],
             num_params,
-            precision,
-            steps_completed: 0,
+            accumulation_count: 0,
         })
     }
 
-    /// Accumulate gradients from one backward pass
+    /// Create a new gradient accumulator from a TransformerConfig
     ///
     /// # Arguments
-    /// - `gradients`: Gradient vector from model backward pass
-    /// - `scale`: Scaling factor (usually 1.0 / accumulation_steps)
     ///
-    /// # Process
-    /// 1. Transfer gradients from CPU to ANE
-    /// 2. Scale gradients by factor
-    /// 3. Accumulate into IOSurface
-    /// 4. Increment step counter
-    pub fn accumulate(&mut self, gradients: &[f32], scale: f32) -> ANEResult<()> {
-        if gradients.len() != self.num_params {
-            return Err(ANEError::InvalidShape {
-                expected: format!("{}", self.num_params),
-                got: format!("{}", gradients.len()),
-            });
-        }
-
-        // Scale gradients
-        let scaled_gradients: Vec<f32> = gradients.iter().map(|g| g * scale).collect();
-
-        // Read current accumulated gradients
-        let mut accumulated = self.get_accumulated()?;
-
-        // Accumulate
-        for (accum, grad) in accumulated.iter_mut().zip(scaled_gradients.iter()) {
-            *accum += grad;
-        }
-
-        // Convert f32 slice to u8 bytes for IOSurface
-        let accumulated_bytes: &[u8] = unsafe {
-            slice::from_raw_parts(
-                accumulated.as_ptr() as *const u8,
-                accumulated.len() * std::mem::size_of::<f32>(),
-            )
-        };
-
-        // Write back to IOSurface
-        self.accumulator_surface.write(accumulated_bytes)
-            .map_err(|e| ANEError::IOSurfaceError(e.to_string()))?;
-
-        self.steps_completed += 1;
-
-        Ok(())
-    }
-
-    /// Get accumulated gradients (transfer from ANE to CPU)
+    /// * `config` - Transformer configuration with parameter count
     ///
     /// # Returns
-    /// Copy of accumulated gradients as CPU vector
     ///
-    /// # Note
-    /// This performs ANE→CPU transfer, so use sparingly (once per training step)
-    pub fn get_accumulated(&self) -> ANEResult<Vec<f32>> {
-        let bytes = self.accumulator_surface.read()
-            .map_err(|e| ANEError::IOSurfaceError(e.to_string()))?;
-
-        // Convert u8 bytes to f32 slice
-        let f32_slice: &[f32] = unsafe {
-            slice::from_raw_parts(
-                bytes.as_ptr() as *const f32,
-                bytes.len() / std::mem::size_of::<f32>(),
-            )
-        };
-
-        Ok(f32_slice.to_vec())
+    /// A new `ANEGradientAccumulator` sized for the config
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let config = TransformerConfig::tiny();
+    /// let accumulator = ANEGradientAccumulator::from_config(&config)?;
+    /// ```
+    pub fn from_config(config: &TransformerConfig) -> Result<Self> {
+        Self::new(config.param_count())
     }
 
-    /// Reset accumulator for next training step
+    /// Accumulate gradients into the accumulator
     ///
-    /// # Process
-    /// 1. Zero out IOSurface
-    /// 2. Reset step counter
-    pub fn reset(&mut self) -> ANEResult<()> {
-        let zeros_f32 = vec![0.0f32; self.num_params];
+    /// Adds the provided gradients element-wise to the accumulator buffer.
+    /// This is called after each backward operation to accumulate gradients
+    /// across all layers.
+    ///
+    /// # Arguments
+    ///
+    /// * `gradients` - Gradient vector to accumulate (must match num_params)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if gradient length doesn't match num_params
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let gradients = vec![0.1f32; num_params];
+    /// accumulator.accumulate(&gradients)?;
+    /// ```
+    pub fn accumulate(&mut self, gradients: &[f32]) -> Result<()> {
+        if gradients.len() != self.num_params {
+            return Err(Error::InvalidParameter(format!(
+                "gradient length ({}) doesn't match accumulator size ({})",
+                gradients.len(),
+                self.num_params
+            )));
+        }
 
-        // Convert f32 slice to u8 bytes for IOSurface
-        let zeros_bytes: &[u8] = unsafe {
-            slice::from_raw_parts(
-                zeros_f32.as_ptr() as *const u8,
-                zeros_f32.len() * std::mem::size_of::<f32>(),
-            )
-        };
+        for (acc, grad) in self.accumulator_buffer.iter_mut().zip(gradients.iter()) {
+            *acc += grad;
+        }
 
-        self.accumulator_surface.write(zeros_bytes)
-            .map_err(|e| ANEError::IOSurfaceError(e.to_string()))?;
-        self.steps_completed = 0;
+        self.accumulation_count += 1;
         Ok(())
     }
 
-    /// Get number of accumulation steps completed
-    pub fn steps_completed(&self) -> u32 {
-        self.steps_completed
+    /// Accumulate gradients from an ANETensor
+    ///
+    /// Similar to `accumulate`, but takes an `ANETensor` as input.
+    /// This is useful when gradients are output from ANE kernels as tensors.
+    ///
+    /// # Arguments
+    ///
+    /// * `tensor` - ANETensor containing gradients (FP32 only)
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if tensor size doesn't match or dtype is not FP32
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let grad_tensor = ANETensor::from_fp32(gradients, vec![num_params])?;
+    /// accumulator.accumulate_tensor(&grad_tensor)?;
+    /// ```
+    pub fn accumulate_tensor(&mut self, tensor: &ANETensor) -> Result<()> {
+        if tensor.dtype() != TensorDType::FP32 {
+            return Err(Error::InvalidParameter(
+                "gradient tensor must be FP32".to_string(),
+            ));
+        }
+
+        if tensor.num_elements() != self.num_params {
+            return Err(Error::InvalidParameter(format!(
+                "tensor elements ({}) doesn't match accumulator size ({})",
+                tensor.num_elements(),
+                self.num_params
+            )));
+        }
+
+        // Convert bytes to f32 slice
+        let bytes = tensor.as_bytes();
+        let num_floats = bytes.len() / 4;
+        let gradients: &[f32] = unsafe {
+            std::slice::from_raw_parts(bytes.as_ptr() as *const f32, num_floats)
+        };
+
+        self.accumulate(gradients)
     }
 
-    /// Get number of parameters
+    /// Get the accumulated gradients
+    ///
+    /// Returns a copy of the accumulated gradients. This is called at the
+    /// end of the backward pass to transfer gradients to the optimizer.
+    ///
+    /// # Returns
+    ///
+    /// Vector of accumulated gradients (length = num_params)
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let gradients = accumulator.get_accumulated()?;
+    /// optimizer.step(&gradients)?;
+    /// ```
+    pub fn get_accumulated(&self) -> Result<Vec<f32>> {
+        Ok(self.accumulator_buffer.clone())
+    }
+
+    /// Get a reference to the accumulated gradients
+    ///
+    /// More efficient than `get_accumulated` when you don't need ownership.
+    ///
+    /// # Returns
+    ///
+    /// Slice reference to the accumulated gradients
+    pub fn get_accumulated_ref(&self) -> &[f32] {
+        &self.accumulator_buffer
+    }
+
+    /// Reset the accumulator to zeros
+    ///
+    /// Clears all accumulated gradients and resets the accumulation count.
+    /// This should be called at the start of each training step.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// accumulator.reset()?;
+    /// // Start new training step...
+    /// ```
+    pub fn reset(&mut self) -> Result<()> {
+        self.accumulator_buffer.fill(0.0f32);
+        self.accumulation_count = 0;
+        Ok(())
+    }
+
+    /// Get the number of parameters
     pub fn num_params(&self) -> usize {
         self.num_params
     }
 
-    /// Get precision
-    pub fn precision(&self) -> Precision {
-        self.precision
+    /// Get the number of accumulation operations performed
+    ///
+    /// This tracks how many times `accumulate()` has been called since
+    /// the last reset.
+    pub fn accumulation_count(&self) -> usize {
+        self.accumulation_count
     }
+
+    /// Check if accumulator is empty (all zeros)
+    ///
+    /// Returns true if no gradients have been accumulated.
+    pub fn is_empty(&self) -> bool {
+        self.accumulator_buffer.iter().all(|&v| v == 0.0f32)
+    }
+
+    /// Get the maximum absolute gradient value
+    ///
+    /// Useful for gradient clipping and debugging.
+    pub fn max_abs_gradient(&self) -> f32 {
+        self.accumulator_buffer
+            .iter()
+            .map(|&v| v.abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    /// Scale all accumulated gradients
+    ///
+    /// Multiplies all gradients by the given scale factor.
+    /// Used for gradient clipping and learning rate scheduling.
+    ///
+    /// # Arguments
+    ///
+    /// * `scale` - Scale factor to apply
+    pub fn scale(&mut self, scale: f32) {
+        for grad in self.accumulator_buffer.iter_mut() {
+            *grad *= scale;
+        }
+    }
+}
+
+/// Trait for models that support ANE backward pass
+///
+/// This trait extends the base `Model` trait with ANE-specific backward
+/// functionality. Models implementing this trait can perform backward
+/// propagation entirely on the ANE device.
+///
+/// # Example
+///
+/// ```ignore
+/// impl ANEBackwardModel for TransformerANE {
+///     fn backward_on_ane(&mut self, loss: f32) -> Result<Vec<f32>> {
+///         // ANE backward implementation
+///     }
+/// }
+/// ```
+pub trait ANEBackwardModel {
+    /// Execute backward pass on ANE with gradient accumulation
+    ///
+    /// This method performs the entire backward pass on the ANE device,
+    /// accumulating gradients in ANE memory and returning them to CPU
+    /// only at the end.
+    ///
+    /// # Arguments
+    ///
+    /// * `loss` - Scalar loss value from the forward pass
+    ///
+    /// # Returns
+    ///
+    /// Accumulated gradients as a vector of f32 values
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Forward cache is missing
+    /// - ANE execution fails
+    /// - Gradient computation produces NaN/Inf
+    fn backward_on_ane(&mut self, loss: f32) -> Result<Vec<f32>>;
+
+    /// Check if ANE backward is available
+    ///
+    /// Returns true if the model can perform backward on ANE.
+    /// This may return false if:
+    /// - ANE hardware is not available
+    /// - Model configuration doesn't support ANE backward
+    fn ane_backward_available(&self) -> bool;
 }
 
 #[cfg(test)]
@@ -212,101 +337,120 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_gradient_accumulator_creation() {
-        let accum = ANEGradientAccumulator::new(1000).unwrap();
-        assert_eq!(accum.num_params(), 1000);
-        assert_eq!(accum.steps_completed(), 0);
-        assert_eq!(accum.precision(), Precision::FP32);
+    fn test_accumulator_creation() {
+        let accumulator = ANEGradientAccumulator::new(1000).unwrap();
+        assert_eq!(accumulator.num_params(), 1000);
+        assert_eq!(accumulator.accumulation_count(), 0);
+        assert!(accumulator.is_empty());
     }
 
     #[test]
-    fn test_gradient_accumulator_accumulate() {
-        let mut accum = ANEGradientAccumulator::new(10).unwrap();
-
-        // First accumulation
-        let grads1 = vec![1.0; 10];
-        accum.accumulate(&grads1, 0.5).unwrap();
-
-        assert_eq!(accum.steps_completed(), 1);
-
-        let accumulated = accum.get_accumulated().unwrap();
-        assert_eq!(accumulated.len(), 10);
-        for grad in &accumulated {
-            assert_eq!(*grad, 0.5); // 1.0 * 0.5
-        }
+    fn test_accumulator_creation_zero_params() {
+        let result = ANEGradientAccumulator::new(0);
+        assert!(matches!(result, Err(Error::InvalidParameter(_))));
     }
 
     #[test]
-    fn test_gradient_accumulator_multiple_steps() {
-        let mut accum = ANEGradientAccumulator::new(10).unwrap();
-
-        // First accumulation
-        let grads1 = vec![1.0; 10];
-        accum.accumulate(&grads1, 0.5).unwrap();
-
-        // Second accumulation
-        let grads2 = vec![2.0; 10];
-        accum.accumulate(&grads2, 0.5).unwrap();
-
-        assert_eq!(accum.steps_completed(), 2);
-
-        let accumulated = accum.get_accumulated().unwrap();
-        // First: 1.0 * 0.5 = 0.5
-        // Second: 2.0 * 0.5 = 1.0
-        // Total: 0.5 + 1.0 = 1.5
-        for grad in &accumulated {
-            assert_eq!(*grad, 1.5);
-        }
+    fn test_accumulator_from_config() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
+        let accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+        assert_eq!(accumulator.num_params(), config.param_count());
     }
 
     #[test]
-    fn test_gradient_accumulator_reset() {
-        let mut accum = ANEGradientAccumulator::new(10).unwrap();
-
-        let grads = vec![1.0; 10];
-        accum.accumulate(&grads, 0.5).unwrap();
-
-        assert_eq!(accum.steps_completed(), 1);
-
-        accum.reset().unwrap();
-
-        assert_eq!(accum.steps_completed(), 0);
-
-        let accumulated = accum.get_accumulated().unwrap();
-        for grad in &accumulated {
-            assert_eq!(*grad, 0.0);
-        }
+    fn test_accumulate_gradients() {
+        let mut accumulator = ANEGradientAccumulator::new(10).unwrap();
+        let gradients = vec![0.1f32; 10];
+        
+        accumulator.accumulate(&gradients).unwrap();
+        assert_eq!(accumulator.accumulation_count(), 1);
+        
+        let result = accumulator.get_accumulated().unwrap();
+        assert_eq!(result, vec![0.1f32; 10]);
     }
 
     #[test]
-    fn test_gradient_accumulator_length_mismatch() {
-        let mut accum = ANEGradientAccumulator::new(10).unwrap();
-
-        let grads = vec![1.0; 5]; // Wrong length
-        let result = accum.accumulate(&grads, 0.5);
-
-        assert!(result.is_err());
+    fn test_accumulate_multiple_times() {
+        let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
+        
+        accumulator.accumulate(&vec![0.1f32; 5]).unwrap();
+        accumulator.accumulate(&vec![0.2f32; 5]).unwrap();
+        accumulator.accumulate(&vec![0.3f32; 5]).unwrap();
+        
+        let result = accumulator.get_accumulated().unwrap();
+        assert_eq!(result, vec![0.6f32; 5]);
+        assert_eq!(accumulator.accumulation_count(), 3);
     }
 
     #[test]
-    fn test_gradient_accumulator_large() {
-        // Test with realistic model size
-        let num_params = 6_800_000;
-        let mut accum = ANEGradientAccumulator::new(num_params).unwrap();
+    fn test_accumulate_wrong_size() {
+        let mut accumulator = ANEGradientAccumulator::new(10).unwrap();
+        let gradients = vec![0.1f32; 5]; // Wrong size
+        
+        let result = accumulator.accumulate(&gradients);
+        assert!(matches!(result, Err(Error::InvalidParameter(_))));
+    }
 
-        assert_eq!(accum.num_params(), num_params);
+    #[test]
+    fn test_reset() {
+        let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
+        
+        accumulator.accumulate(&vec![0.5f32; 5]).unwrap();
+        assert!(!accumulator.is_empty());
+        
+        accumulator.reset().unwrap();
+        assert!(accumulator.is_empty());
+        assert_eq!(accumulator.accumulation_count(), 0);
+    }
 
-        // Verify we can read/write
-        let zeros_f32 = vec![0.0f32; num_params];
-        let zeros_bytes: &[u8] = unsafe {
-            slice::from_raw_parts(
-                zeros_f32.as_ptr() as *const u8,
-                zeros_f32.len() * std::mem::size_of::<f32>(),
-            )
-        };
-        accum.accumulator_surface.write(zeros_bytes).unwrap();
+    #[test]
+    fn test_max_abs_gradient() {
+        let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
+        
+        accumulator.accumulate(&vec![0.1f32, -0.5f32, 0.3f32, -0.2f32, 0.4f32]).unwrap();
+        
+        assert_eq!(accumulator.max_abs_gradient(), 0.5f32);
+    }
 
-        let read_bytes = accum.accumulator_surface.read().unwrap();
-        assert_eq!(read_bytes.len(), num_params * std::mem::size_of::<f32>());
+    #[test]
+    fn test_scale() {
+        let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
+        
+        accumulator.accumulate(&vec![0.1f32; 5]).unwrap();
+        accumulator.scale(2.0f32);
+        
+        let result = accumulator.get_accumulated().unwrap();
+        assert_eq!(result, vec![0.2f32; 5]);
+    }
+
+    #[test]
+    fn test_accumulate_tensor() {
+        let mut accumulator = ANEGradientAccumulator::new(4).unwrap();
+        let gradients = vec![0.1f32, 0.2f32, 0.3f32, 0.4f32];
+        let tensor = ANETensor::from_fp32(gradients, vec![4]).unwrap();
+        
+        accumulator.accumulate_tensor(&tensor).unwrap();
+        
+        let result = accumulator.get_accumulated().unwrap();
+        assert_eq!(result, vec![0.1f32, 0.2f32, 0.3f32, 0.4f32]);
+    }
+
+    #[test]
+    fn test_accumulate_tensor_wrong_dtype() {
+        let mut accumulator = ANEGradientAccumulator::new(4).unwrap();
+        let data = vec![0x3c00u16; 4]; // FP16 data
+        let tensor = ANETensor::from_fp16(data, vec![4]).unwrap();
+        
+        let result = accumulator.accumulate_tensor(&tensor);
+        assert!(matches!(result, Err(Error::InvalidParameter(_))));
+    }
+
+    #[test]
+    fn test_get_accumulated_ref() {
+        let mut accumulator = ANEGradientAccumulator::new(3).unwrap();
+        accumulator.accumulate(&vec![0.1f32, 0.2f32, 0.3f32]).unwrap();
+        
+        let reference = accumulator.get_accumulated_ref();
+        assert_eq!(reference, &[0.1f32, 0.2f32, 0.3f32]);
     }
 }

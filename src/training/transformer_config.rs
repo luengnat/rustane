@@ -5,7 +5,7 @@ use crate::ane::ANEError;
 /// Transformer model configuration
 ///
 /// Defines the architecture of a transformer model with validation for ANE compatibility.
-/// Ensures all dimensions are properly aligned for efficient computation on Apple Neural Engine.
+    /// Ensures the model dimensions are internally consistent for training.
 #[derive(Clone, Debug)]
 pub struct TransformerConfig {
     /// Vocabulary size (number of unique tokens)
@@ -22,6 +22,10 @@ pub struct TransformerConfig {
     pub n_layers: usize,
     /// Maximum sequence length
     pub seq_len: usize,
+    /// Whether to tie the output projection to the input embedding matrix
+    pub tie_embeddings: bool,
+    /// Logit softcap used during the final projection
+    pub logit_softcap: f32,
 }
 
 impl TransformerConfig {
@@ -29,8 +33,7 @@ impl TransformerConfig {
     ///
     /// Validates that:
     /// - `dim` is divisible by `n_heads` (required for multi-head attention)
-    /// - `dim` is divisible by 128 (ANE efficiency requirement)
-    /// - `hidden_dim` is divisible by 128 (ANE efficiency requirement)
+    /// - `n_heads`, `dim`, and `hidden_dim` are non-zero
     ///
     /// # Arguments
     /// * `vocab_size` - Number of unique tokens in vocabulary
@@ -50,7 +53,23 @@ impl TransformerConfig {
         n_layers: usize,
         seq_len: usize,
     ) -> Result<Self, ANEError> {
-        let head_dim = dim / n_heads;
+        if n_heads == 0 {
+            return Err(ANEError::ConfigError(
+                "n_heads must be greater than zero".to_string(),
+            ));
+        }
+
+        if dim == 0 {
+            return Err(ANEError::ConfigError(
+                "dim must be greater than zero".to_string(),
+            ));
+        }
+
+        if hidden_dim == 0 {
+            return Err(ANEError::ConfigError(
+                "hidden_dim must be greater than zero".to_string(),
+            ));
+        }
 
         // Validate that dim is divisible by n_heads
         if dim % n_heads != 0 {
@@ -59,21 +78,7 @@ impl TransformerConfig {
             ));
         }
 
-        // Validate that dim is divisible by 128 for ANE efficiency
-        if dim % 128 != 0 {
-            return Err(ANEError::ConfigError(format!(
-                "dim {} must be divisible by 128 for ANE efficiency",
-                dim
-            )));
-        }
-
-        // Validate that hidden_dim is divisible by 128 for ANE efficiency
-        if hidden_dim % 128 != 0 {
-            return Err(ANEError::ConfigError(format!(
-                "hidden_dim {} must be divisible by 128 for ANE efficiency",
-                hidden_dim
-            )));
-        }
+        let head_dim = dim / n_heads;
 
         Ok(TransformerConfig {
             vocab_size,
@@ -83,7 +88,26 @@ impl TransformerConfig {
             head_dim,
             n_layers,
             seq_len,
+            tie_embeddings: false,
+            logit_softcap: 30.0,
         })
+    }
+
+    /// Create a small default configuration used by tests and examples.
+    pub fn tiny() -> Self {
+        Self::new(256, 128, 256, 4, 2, 64).expect("tiny config should be valid")
+    }
+
+    /// Enable or disable tied input/output embeddings.
+    pub fn with_tie_embeddings(mut self, tie_embeddings: bool) -> Self {
+        self.tie_embeddings = tie_embeddings;
+        self
+    }
+
+    /// Set the final logit softcap.
+    pub fn with_logit_softcap(mut self, logit_softcap: f32) -> Self {
+        self.logit_softcap = logit_softcap;
+        self
     }
 
     /// Calculate total parameter count for this configuration.
@@ -101,7 +125,11 @@ impl TransformerConfig {
     pub fn param_count(&self) -> usize {
         // Embedding and classifier layers
         let embedding = self.vocab_size * self.dim;
-        let classifier = self.dim * self.vocab_size;
+        let classifier = if self.tie_embeddings {
+            0
+        } else {
+            self.dim * self.vocab_size
+        };
 
         // Per-layer parameters
         let per_layer = 4 * self.dim * self.dim         // QKV + attention output projection
@@ -157,22 +185,27 @@ mod tests {
     }
 
     #[test]
-    fn test_validation_dim_divisible_by_128() {
-        let result = TransformerConfig::new(4096, 256, 100, 8, 6, 512);
+    fn test_validation_zero_heads() {
+        let result = TransformerConfig::new(4096, 256, 768, 0, 6, 512);
         assert!(result.is_err());
         match result {
             Err(ANEError::ConfigError(msg)) => {
-                assert!(msg.contains("hidden_dim"));
-                assert!(msg.contains("128"));
+                assert!(msg.contains("n_heads"));
             }
             _ => panic!("expected ConfigError"),
         }
     }
 
     #[test]
-    fn test_validation_hidden_dim_divisible_by_128() {
-        let result = TransformerConfig::new(4096, 128, 129, 4, 3, 512);
+    fn test_validation_hidden_dim_nonzero() {
+        let result = TransformerConfig::new(4096, 128, 0, 4, 3, 512);
         assert!(result.is_err());
+        match result {
+            Err(ANEError::ConfigError(msg)) => {
+                assert!(msg.contains("hidden_dim"));
+            }
+            _ => panic!("expected ConfigError"),
+        }
     }
 
     #[test]
@@ -182,5 +215,23 @@ mod tests {
         let cloned = config.clone();
         assert_eq!(config.param_count(), cloned.param_count());
         assert_eq!(config.dim, cloned.dim);
+    }
+
+    #[test]
+    fn test_tied_embeddings_reduce_param_count() {
+        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
+            .expect("valid config")
+            .with_tie_embeddings(true);
+        let untied = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
+            .expect("valid config");
+        assert_eq!(untied.param_count() - 4096 * 256, config.param_count());
+    }
+
+    #[test]
+    fn test_logit_softcap_setter() {
+        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
+            .expect("valid config")
+            .with_logit_softcap(12.5);
+        assert_eq!(config.logit_softcap, 12.5);
     }
 }

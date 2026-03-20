@@ -1,6 +1,6 @@
 //! Training Infrastructure for Transformer Models on Apple Neural Engine
 //!
-//! Provides comprehensive training utilities for models running on ANE:
+//! Provides comprehensive training utilities for transformer-style models:
 //! - Model trait and loss functions for flexible training
 //! - Learning rate scheduling (constant, linear warmup, cosine annealing)
 //! - Loss scaling for FP16 gradient stability
@@ -45,8 +45,7 @@
 //!
 //! Validates:
 //! - dim divisible by n_heads (multi-head attention requirement)
-//! - dim divisible by 128 (ANE efficiency)
-//! - hidden_dim divisible by 128 (ANE efficiency)
+//! - n_heads, dim, and hidden_dim are non-zero
 //!
 //! Computes:
 //! - head_dim = dim / n_heads
@@ -185,6 +184,21 @@
 //! - **Stability**: Numerical gradient validation, loss scaling
 //! - **Experimentation**: Easy scheduler/optimizer swapping
 //!
+//! # Phase 3: ANE Backward Kernels
+//!
+//! Phase 3 adds end-to-end ANE training with backward MIL kernels:
+//! - **ANEGradientAccumulator**: Manages gradient accumulation in ANE memory
+//! - **backward_on_ane()**: ANE-accelerated backward pass with gradient accumulation
+//! - **BackwardValidationSuite**: Startup validation against CPU reference (1e-6 tolerance)
+//! - **MIL Generators**: RMSNorm, Attention, FFN, and Loss backward code generation
+//!
+//! Usage:
+//! ```ignore
+//! let mut accum = ANEGradientAccumulator::new(param_count)?;
+//! model.backward_on_ane(&batch, loss, &mut accum)?;
+//! let grads = accum.get_accumulated()?;
+//! ```
+//!
 //! # Integration with Data Pipeline
 //!
 //! Works seamlessly with `crate::data` module:
@@ -251,5 +265,5 @@ pub use model::Model;
 pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
 pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
 pub use transformer_config::TransformerConfig;
-pub use transformer_model::TransformerANE;
-pub use ane_backward_executor::{ANEGradientAccumulator, Precision};
+pub use transformer_model::{ParameterGroup, ParameterGroupKind, TransformerANE};
+pub use ane_backward_executor::{ANEGradientAccumulator, ANEBackwardModel};

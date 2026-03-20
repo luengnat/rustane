@@ -71,8 +71,7 @@ pub trait Model: Send {
     ) -> Result<()> {
         // Default: CPU backward → transfer to accumulator
         let grads = self.backward_with_batch(batch, loss)?;
-        let scale = 1.0; // Single step, no scaling
-        accumulator.accumulate(&grads, scale)
+        accumulator.accumulate(&grads)
             .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         Ok(())
     }

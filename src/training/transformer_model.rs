@@ -46,6 +46,34 @@ struct ParamLayout {
     classifier: Range<usize>,
 }
 
+/// Parameter group kinds used by the training example to mirror train_gpt.py.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterGroupKind {
+    /// Token embedding parameters.
+    Embedding,
+    /// Dense matrix weights such as Q/K/V, output projection, and FFN matrices.
+    Matrix,
+    /// Per-channel scalars such as RMSNorm weights.
+    Scalar,
+    /// Untied output projection weights.
+    Head,
+}
+
+/// A contiguous slice of model parameters with an optimizer category.
+#[derive(Clone, Debug)]
+pub struct ParameterGroup {
+    /// Human-readable group label.
+    pub name: String,
+    /// Which optimizer bucket this slice belongs to.
+    pub kind: ParameterGroupKind,
+    /// Range into the model's contiguous parameter buffer.
+    pub range: Range<usize>,
+    /// Number of rows for matrix-shaped parameters.
+    pub rows: usize,
+    /// Number of columns for matrix-shaped parameters.
+    pub cols: usize,
+}
+
 #[derive(Clone, Debug, Default)]
 struct LayerCache {
     x_attn_in: Vec<f32>,
@@ -84,6 +112,7 @@ struct SampleCache {
     layers: Vec<LayerCache>,
     final_in: Vec<f32>,
     final_norm: Vec<f32>,
+    logits: Vec<f32>,
 }
 
 /// CPU-backed transformer used for real training runs.
@@ -148,11 +177,13 @@ impl TransformerANE {
         }
 
         fill_gamma(&mut trainable_params[layout.final_norm.clone()]);
-        fill_linear(
-            &mut trainable_params[layout.classifier.clone()],
-            config.dim,
-            config.vocab_size,
-        );
+        if !config.tie_embeddings {
+            fill_linear(
+                &mut trainable_params[layout.classifier.clone()],
+                config.dim,
+                config.vocab_size,
+            );
+        }
 
         Ok(Self {
             config: config.clone(),
@@ -171,12 +202,114 @@ impl TransformerANE {
         &self.config
     }
 
+    /// Return contiguous parameter groups for optimizer splitting.
+    pub fn parameter_groups(&self) -> Vec<ParameterGroup> {
+        let mut groups = Vec::with_capacity(self.config.n_layers * 8 + 3);
+        groups.push(ParameterGroup {
+            name: "tok_emb".to_string(),
+            kind: ParameterGroupKind::Embedding,
+            range: self.layout.embedding.clone(),
+            rows: self.config.vocab_size,
+            cols: self.config.dim,
+        });
+
+        for (layer_idx, layer) in self.layout.layers.iter().enumerate() {
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.rms_att"),
+                kind: ParameterGroupKind::Scalar,
+                range: layer.rms_att.clone(),
+                rows: 1,
+                cols: self.config.dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.wq"),
+                kind: ParameterGroupKind::Matrix,
+                range: layer.wq.clone(),
+                rows: self.config.dim,
+                cols: self.config.dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.wk"),
+                kind: ParameterGroupKind::Matrix,
+                range: layer.wk.clone(),
+                rows: self.config.dim,
+                cols: self.config.dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.wv"),
+                kind: ParameterGroupKind::Matrix,
+                range: layer.wv.clone(),
+                rows: self.config.dim,
+                cols: self.config.dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.wo"),
+                kind: ParameterGroupKind::Matrix,
+                range: layer.wo.clone(),
+                rows: self.config.dim,
+                cols: self.config.dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.rms_ffn"),
+                kind: ParameterGroupKind::Scalar,
+                range: layer.rms_ffn.clone(),
+                rows: 1,
+                cols: self.config.dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.w1"),
+                kind: ParameterGroupKind::Matrix,
+                range: layer.w1.clone(),
+                rows: self.config.dim,
+                cols: self.config.hidden_dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.w3"),
+                kind: ParameterGroupKind::Matrix,
+                range: layer.w3.clone(),
+                rows: self.config.dim,
+                cols: self.config.hidden_dim,
+            });
+            groups.push(ParameterGroup {
+                name: format!("layers.{layer_idx}.w2"),
+                kind: ParameterGroupKind::Matrix,
+                range: layer.w2.clone(),
+                rows: self.config.hidden_dim,
+                cols: self.config.dim,
+            });
+        }
+
+        groups.push(ParameterGroup {
+            name: "final_norm".to_string(),
+            kind: ParameterGroupKind::Scalar,
+            range: self.layout.final_norm.clone(),
+            rows: 1,
+            cols: self.config.dim,
+        });
+
+        if !self.config.tie_embeddings {
+            groups.push(ParameterGroup {
+                name: "lm_head".to_string(),
+                kind: ParameterGroupKind::Head,
+                range: self.layout.classifier.clone(),
+                rows: self.config.dim,
+                cols: self.config.vocab_size,
+            });
+        }
+
+        groups
+    }
+
     fn embedding(&self) -> &[f32] {
         &self.trainable_params[self.layout.embedding.clone()]
     }
 
     fn classifier(&self) -> &[f32] {
-        &self.trainable_params[self.layout.classifier.clone()]
+        if self.config.tie_embeddings {
+            self.embedding()
+        } else {
+            &self.trainable_params[self.layout.classifier.clone()]
+        }
     }
 
     fn final_norm(&self) -> &[f32] {
@@ -220,6 +353,7 @@ impl TransformerANE {
             layers: Vec::with_capacity(self.config.n_layers),
             final_in: Vec::new(),
             final_norm: Vec::new(),
+            logits: Vec::new(),
         };
 
         for layer_idx in 0..self.config.n_layers {
@@ -300,15 +434,17 @@ impl TransformerANE {
 
         let final_in = x;
         let final_norm = rmsnorm_forward(&final_in, self.final_norm(), dim);
-        let logits = linear_forward(
+        let logits_proj = linear_forward(
             &final_norm[..(seq_len - 1) * dim],
             dim,
             self.classifier(),
             vocab_size,
         );
+        let logits = apply_logit_softcap(&logits_proj, self.config.logit_softcap);
 
         sample_cache.final_in = final_in;
         sample_cache.final_norm = final_norm;
+        sample_cache.logits = logits.clone();
 
         Ok((logits, sample_cache))
     }
@@ -327,24 +463,31 @@ impl TransformerANE {
         let n_heads = self.config.n_heads;
         let hidden_dim = self.config.hidden_dim;
         let positions = seq_len - 1;
-        let mut d_classifier = vec![0.0f32; self.layout.classifier.end - self.layout.classifier.start];
         let mut d_final_norm = vec![0.0f32; cache.final_norm.len()];
 
-        let (d_final_norm_from_logits, d_classifier_from_logits) = linear_backward(
-            &cache.final_norm[..positions * dim],
+        let d_logits_proj = apply_logit_softcap_backward(
             d_logits,
+            self.config.logit_softcap,
+            &cache.logits,
+        );
+        let (d_final_norm_from_logits, d_output_weights) = linear_backward(
+            &cache.final_norm[..positions * dim],
+            &d_logits_proj,
             dim,
             vocab_size,
             self.classifier(),
         );
         d_final_norm[..positions * dim].copy_from_slice(&d_final_norm_from_logits);
-        d_classifier.copy_from_slice(&d_classifier_from_logits);
 
         let (mut d_current, d_final_gamma) =
             rmsnorm_backward(&d_final_norm, &cache.final_in, self.final_norm());
         add_slice(grads, self.layout.final_norm.start, &d_final_gamma);
 
-        add_slice(grads, self.layout.classifier.start, &d_classifier);
+        if self.config.tie_embeddings {
+            add_slice(grads, self.layout.embedding.start, &d_output_weights);
+        } else {
+            add_slice(grads, self.layout.classifier.start, &d_output_weights);
+        }
 
         for layer_idx in (0..self.config.n_layers).rev() {
             let layer = self.layer(layer_idx);
@@ -541,9 +684,7 @@ impl Model for TransformerANE {
         let grads = self.backward_with_batch(batch, loss)?;
 
         // Accumulate in ANEGradientAccumulator
-        // Scale by 1.0 since this is a single backward pass
-        let scale = 1.0f32;
-        accumulator.accumulate(&grads, scale)
+        accumulator.accumulate(&grads)
             .map_err(|e| crate::Error::Other(format!("ANE gradient accumulation failed: {}", e)))?;
 
         Ok(())
@@ -593,8 +734,13 @@ fn build_layout(config: &TransformerConfig) -> ParamLayout {
     let final_norm = offset..offset + config.dim;
     offset = final_norm.end;
 
-    let classifier = offset..offset + config.dim * config.vocab_size;
-    offset = classifier.end;
+    let classifier = if config.tie_embeddings {
+        offset..offset
+    } else {
+        let classifier = offset..offset + config.dim * config.vocab_size;
+        offset = classifier.end;
+        classifier
+    };
 
     debug_assert_eq!(offset, config.param_count());
 
@@ -728,6 +874,28 @@ fn linear_backward(
     }
 
     (d_input, d_weight)
+}
+
+fn apply_logit_softcap(logits: &[f32], softcap: f32) -> Vec<f32> {
+    logits
+        .iter()
+        .map(|&x| softcap * (x / softcap).tanh())
+        .collect()
+}
+
+fn apply_logit_softcap_backward(d_logits: &[f32], softcap: f32, logits: &[f32]) -> Vec<f32> {
+    if softcap <= 0.0 {
+        return d_logits.to_vec();
+    }
+
+    d_logits
+        .iter()
+        .zip(logits.iter())
+        .map(|(&grad, &logit)| {
+            let tanh_val = (logit / softcap).tanh();
+            grad * (1.0 - tanh_val * tanh_val)
+        })
+        .collect()
 }
 
 fn add_residual(lhs: &[f32], rhs: &[f32]) -> Vec<f32> {

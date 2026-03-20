@@ -66,7 +66,7 @@ pub use platform::ANEAvailability;
 pub use training::{
     ConstantScheduler, CrossEntropyLoss, GradAccumulator, LRScheduler, LossFn, LossScaler,
     Model as TrainingModel, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError,
-    WarmupCosineScheduler, WarmupLinearScheduler,
+    WarmupCosineScheduler, WarmupLinearScheduler, ANEGradientAccumulator, ANEBackwardModel,
 };
 pub use wrapper::{ANECompiler, ANEExecutor, ANERuntime, ANETensor, KernelCache};
 

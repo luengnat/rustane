@@ -68,13 +68,13 @@ mod transformer_config_tests {
     }
 
     #[test]
-    fn test_transformer_config_validation_dim_divisible_by_128() {
-        // Invalid: dim not divisible by 128 for ANE efficiency
+    fn test_transformer_config_validation_zero_heads() {
+        // Invalid: n_heads must be non-zero
         let result = TransformerConfig::new(
             4096,  // vocab_size
-            256,   // dim (256 is divisible by 128)
-            100,   // hidden_dim (not divisible by 128)
-            8,     // n_heads
+            256,   // dim
+            100,   // hidden_dim
+            0,     // n_heads
             6,     // n_layers
             512,   // seq_len
         );

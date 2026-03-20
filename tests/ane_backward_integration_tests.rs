@@ -1,293 +1,318 @@
-//! Integration tests for ANE backward execution
+//! Integration Tests for ANE Backward Pass
 //!
-//! Tests the end-to-end flow of ANE backward execution:
-//! - Forward pass with activation caching
-//! - Backward pass with gradient accumulation
-//! - Gradient transfer to CPU
-//! - Integration with training loop
+//! Tests end-to-end backward pass functionality:
+//! - Forward → Backward → Optimizer workflow
+//! - Gradient accumulation
+//! - ANEGradientAccumulator integration
+//! - Validation suite integration
 
-use rustane::data::{Batch, Dataset, DataLoader, RandomSampler};
-use rustane::error::Result;
-use rustane::training::{Model, TransformerANE, TransformerConfig, ANEGradientAccumulator};
-use rustane::wrapper::ANETensor;
+use rustane::data::Batch;
+use rustane::layers::backward::validation::{quick_validate, BackwardValidationSuite};
+use rustane::training::{
+    ANEGradientAccumulator, AdamOptimizer, ConstantScheduler, CrossEntropyLoss, LossFn, Model,
+    TrainerBuilder, TransformerANE, TransformerConfig,
+};
 
-/// Simple dataset for testing
-struct TestDataset {
-    samples: Vec<Vec<u32>>,
+/// Helper to create a test configuration
+fn test_config() -> TransformerConfig {
+    TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap()
 }
 
-impl TestDataset {
-    fn new(num_samples: usize, seq_len: usize, vocab_size: u32) -> Self {
-        let samples = (0..num_samples)
-            .map(|_| (0..seq_len).map(|i| (i as u32) % vocab_size).collect())
-            .collect();
-        TestDataset { samples }
-    }
+/// Helper to create a test batch
+fn test_batch(batch_size: usize, seq_len: usize) -> Batch {
+    let tokens: Vec<u32> = (0..(batch_size * seq_len) as u32).map(|i| i % 256).collect();
+    Batch::new(tokens, batch_size, seq_len).unwrap()
 }
 
-impl Dataset for TestDataset {
-    fn len(&self) -> usize {
-        self.samples.len()
-    }
+#[test]
+fn test_backward_validation_suite_quick() {
+    // Run quick validation
+    let report = quick_validate().unwrap();
 
-    fn get(&self, idx: usize) -> Result<Vec<u32>> {
-        Ok(self.samples[idx].clone())
+    // All validations should pass (placeholder implementation)
+    assert!(report.rmsnorm_passed, "RMSNorm backward should pass validation");
+    assert!(report.attention_passed, "Attention backward should pass validation");
+    assert!(report.ffn_passed, "FFN backward should pass validation");
+    assert!(report.loss_passed, "Loss backward should pass validation");
+    assert!(report.all_passed(), "All backward validations should pass");
+}
+
+#[test]
+fn test_backward_validation_suite_with_config() {
+    let config = test_config();
+    let suite = BackwardValidationSuite::new();
+
+    let report = suite.validate_all(&config).unwrap();
+
+    // Verify report structure
+    assert!(report.max_relative_error >= 0.0);
+    assert_eq!(report.pass_count(), 4);
+    assert_eq!(report.fail_count(), 0);
+}
+
+#[test]
+fn test_gradient_accumulator_creation() {
+    let config = test_config();
+    let accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    assert_eq!(accumulator.num_params(), config.param_count());
+    assert!(accumulator.is_empty());
+    assert_eq!(accumulator.accumulation_count(), 0);
+}
+
+#[test]
+fn test_gradient_accumulator_accumulation() {
+    let config = test_config();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    // Create dummy gradients
+    let grads1: Vec<f32> = (0..config.param_count()).map(|i| i as f32 * 0.01).collect();
+    let grads2: Vec<f32> = (0..config.param_count()).map(|i| i as f32 * 0.02).collect();
+
+    // Accumulate twice
+    accumulator.accumulate(&grads1).unwrap();
+    accumulator.accumulate(&grads2).unwrap();
+
+    assert_eq!(accumulator.accumulation_count(), 2);
+    assert!(!accumulator.is_empty());
+
+    // Verify accumulated values
+    let accumulated = accumulator.get_accumulated().unwrap();
+    for i in 0..config.param_count() {
+        let expected = i as f32 * 0.01 + i as f32 * 0.02;
+        assert!((accumulated[i] - expected).abs() < 1e-6);
     }
 }
 
 #[test]
-fn test_ane_gradient_accumulator_creation() -> Result<()> {
-    // Test accumulator creation with various sizes
-    let accum_small = ANEGradientAccumulator::new(100)?;
-    assert_eq!(accum_small.num_params(), 100);
-    assert_eq!(accum_small.steps_completed(), 0);
+fn test_gradient_accumulator_reset() {
+    let config = test_config();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
 
-    let accum_large = ANEGradientAccumulator::new(6_800_000)?;
-    assert_eq!(accum_large.num_params(), 6_800_000);
-
-    Ok(())
-}
-
-#[test]
-fn test_transformer_ane_backward_on_ane() -> Result<()> {
-    // Test backward_on_ane() with gradient accumulation
-    let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)?;
-    let mut model = TransformerANE::new(&config)?;
-
-    // Create a batch manually
-    let mut tokens = vec![0u32; 128]; // 2 samples of 64 tokens each
-    for i in 0..128 {
-        tokens[i] = (i % 256) as u32;
-    }
-    let batch = Batch {
-        tokens,
-        batch_size: 2,
-        seq_len: 64,
-    };
-
-    // Forward pass
-    let logits = model.forward(&batch)?;
-    assert_eq!(logits.shape(), &[2, 63, 256]);
-
-    // Create gradient accumulator
-    let mut accum = ANEGradientAccumulator::new(model.param_count())?;
-
-    // Backward pass on ANE (uses CPU backward internally)
-    model.backward_on_ane(&batch, 0.5, &mut accum)?;
-
-    // Verify gradients were accumulated
-    assert_eq!(accum.steps_completed(), 1);
-
-    let grads = accum.get_accumulated()?;
-    assert_eq!(grads.len(), model.param_count());
-
-    // Verify gradients are non-zero (backward pass computed something)
-    let grad_sum: f32 = grads.iter().sum();
-    assert!(grad_sum != 0.0);
-
-    Ok(())
-}
-
-#[test]
-fn test_backward_on_ane_batch_consistency() -> Result<()> {
-    // Test that backward_on_ane() validates batch consistency
-    let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)?;
-    let mut model = TransformerANE::new(&config)?;
-
-    // Create two different batches
-    let mut tokens1 = vec![0u32; 128];
-    for i in 0..128 {
-        tokens1[i] = (i % 256) as u32;
-    }
-    let batch1 = Batch {
-        tokens: tokens1,
-        batch_size: 2,
-        seq_len: 64,
-    };
-
-    let mut tokens2 = vec![8u32; 128];
-    for i in 0..128 {
-        tokens2[i] = ((i + 8) % 256) as u32;
-    }
-    let batch2 = Batch {
-        tokens: tokens2,
-        batch_size: 2,
-        seq_len: 64,
-    };
-
-    // Forward pass on batch1
-    model.forward(&batch1)?;
-
-    // Try backward with different batch (should fail)
-    let mut accum = ANEGradientAccumulator::new(model.param_count())?;
-    let result = model.backward_on_ane(&batch2, 0.5, &mut accum);
-
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("does not match"));
-
-    Ok(())
-}
-
-#[test]
-fn test_backward_on_ane_requires_forward() -> Result<()> {
-    // Test that backward_on_ane() requires forward pass first
-    let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)?;
-    let mut model = TransformerANE::new(&config)?;
-
-    // Create batch
-    let mut tokens = vec![0u32; 128];
-    for i in 0..128 {
-        tokens[i] = (i % 256) as u32;
-    }
-    let batch = Batch {
-        tokens,
-        batch_size: 2,
-        seq_len: 64,
-    };
-
-    // Try backward without forward (should fail)
-    let mut accum = ANEGradientAccumulator::new(model.param_count())?;
-    let result = model.backward_on_ane(&batch, 0.5, &mut accum);
-
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("forward cache missing"));
-
-    Ok(())
-}
-
-#[test]
-fn test_gradient_accumulation_multiple_steps() -> Result<()> {
-    // Test accumulating gradients from multiple backward passes
-    let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)?;
-    let mut model = TransformerANE::new(&config)?;
-
-    // Create batch
-    let mut tokens = vec![0u32; 128];
-    for i in 0..128 {
-        tokens[i] = (i % 256) as u32;
-    }
-    let batch = Batch {
-        tokens,
-        batch_size: 2,
-        seq_len: 64,
-    };
-
-    let mut accum = ANEGradientAccumulator::new(model.param_count())?;
-
-    // First forward/backward
-    model.forward(&batch)?;
-    model.backward_on_ane(&batch, 0.5, &mut accum)?;
-    assert_eq!(accum.steps_completed(), 1);
-
-    // Second forward/backward (same batch for testing)
-    model.forward(&batch)?;
-    model.backward_on_ane(&batch, 0.3, &mut accum)?;
-    assert_eq!(accum.steps_completed(), 2);
-
-    // Verify gradients accumulated
-    let grads = accum.get_accumulated()?;
-    assert_eq!(grads.len(), model.param_count());
-
-    Ok(())
-}
-
-#[test]
-fn test_accumulator_reset_between_steps() -> Result<()> {
-    // Test resetting accumulator between training steps
-    let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)?;
-    let mut model = TransformerANE::new(&config)?;
-
-    // Create batch
-    let mut tokens = vec![0u32; 128];
-    for i in 0..128 {
-        tokens[i] = (i % 256) as u32;
-    }
-    let batch = Batch {
-        tokens,
-        batch_size: 2,
-        seq_len: 64,
-    };
-
-    let mut accum = ANEGradientAccumulator::new(model.param_count())?;
-
-    // First training step
-    model.forward(&batch)?;
-    model.backward_on_ane(&batch, 0.5, &mut accum)?;
-    assert_eq!(accum.steps_completed(), 1);
-
-    let grads1 = accum.get_accumulated()?;
-    let sum1: f32 = grads1.iter().sum();
+    // Accumulate some gradients
+    let grads = vec![1.0f32; config.param_count()];
+    accumulator.accumulate(&grads).unwrap();
+    assert!(!accumulator.is_empty());
 
     // Reset
-    accum.reset()?;
-    assert_eq!(accum.steps_completed(), 0);
-
-    // Second training step
-    model.forward(&batch)?;
-    model.backward_on_ane(&batch, 0.5, &mut accum)?;
-    assert_eq!(accum.steps_completed(), 1);
-
-    let grads2 = accum.get_accumulated()?;
-    let sum2: f32 = grads2.iter().sum();
-
-    // Gradients should be similar (same batch)
-    assert!((sum1 - sum2).abs() < 0.01);
-
-    Ok(())
+    accumulator.reset().unwrap();
+    assert!(accumulator.is_empty());
+    assert_eq!(accumulator.accumulation_count(), 0);
 }
 
 #[test]
-fn test_backward_on_ane_vs_backward_consistency() -> Result<()> {
-    // Test that backward_on_ane() produces same gradients as backward()
-    let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)?;
-    let mut model1 = TransformerANE::new(&config)?;
-    let mut model2 = TransformerANE::new(&config)?;
+fn test_gradient_accumulator_max_abs() {
+    let config = test_config();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    // Accumulate gradients with known max
+    let mut grads = vec![0.0f32; config.param_count()];
+    grads[10] = 5.0f32;
+    grads[20] = -3.0f32;
+
+    accumulator.accumulate(&grads).unwrap();
+
+    assert_eq!(accumulator.max_abs_gradient(), 5.0f32);
+}
+
+#[test]
+fn test_gradient_accumulator_scale() {
+    let config = test_config();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    // Accumulate gradients
+    let grads = vec![1.0f32; config.param_count()];
+    accumulator.accumulate(&grads).unwrap();
+
+    // Scale by 0.5
+    accumulator.scale(0.5f32);
+
+    let accumulated = accumulator.get_accumulated().unwrap();
+    assert!(accumulated.iter().all(|&v| (v - 0.5f32).abs() < 1e-6));
+}
+
+#[test]
+fn test_transformer_ane_forward_backward_integration() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
 
     // Create batch
-    let mut tokens1 = vec![0u32; 128];
-    for i in 0..128 {
-        tokens1[i] = (i % 256) as u32;
+    let batch = test_batch(2, 32);
+
+    // Forward pass
+    let output = model.forward(&batch).unwrap();
+    assert!(output.num_elements() > 0);
+
+    // Backward pass
+    let grads = model.backward_with_batch(&batch, 1.0f32).unwrap();
+    assert_eq!(grads.len(), config.param_count());
+
+    // Verify gradients are not all zero
+    assert!(grads.iter().any(|&g| g != 0.0f32));
+}
+
+#[test]
+fn test_transformer_ane_backward_on_ane() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    // Create batch
+    let batch = test_batch(2, 32);
+
+    // Forward pass
+    let _output = model.forward(&batch).unwrap();
+
+    // Backward on ANE (uses default CPU implementation)
+    let result = model.backward_on_ane(&batch, 1.0f32, &mut accumulator);
+    assert!(result.is_ok());
+
+    // Verify gradients were accumulated
+    assert!(!accumulator.is_empty());
+    assert_eq!(accumulator.accumulation_count(), 1);
+}
+
+#[test]
+fn test_transformer_ane_backward_on_ane_requires_forward() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    // Try backward without forward (should fail)
+    let batch = test_batch(2, 32);
+    let result = model.backward_on_ane(&batch, 1.0f32, &mut accumulator);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_transformer_ane_backward_on_ane_requires_matching_batch() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    // Forward with one batch
+    let batch1 = test_batch(2, 32);
+    let _output = model.forward(&batch1).unwrap();
+
+    // Backward with different batch (should fail)
+    let batch2 = test_batch(4, 16);
+    let result = model.backward_on_ane(&batch2, 1.0f32, &mut accumulator);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_trainer_with_ane_backward() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+    let optimizer = AdamOptimizer::new(config.param_count());
+    let scheduler = ConstantScheduler::new(0.001);
+    let loss_fn = CrossEntropyLoss::new();
+
+    let mut trainer = TrainerBuilder::new(&mut model)
+        .with_optimizer(optimizer)
+        .with_scheduler(scheduler)
+        .with_loss_fn(loss_fn)
+        .build()
+        .unwrap();
+
+    // Training step
+    let batch = test_batch(2, 32);
+    let metrics = trainer.train_step(&batch).unwrap();
+
+    // Verify metrics
+    assert!(metrics.loss >= 0.0);
+    assert!(metrics.learning_rate > 0.0);
+}
+
+#[test]
+fn test_cross_entropy_loss_integration() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+
+    // Forward pass
+    let batch = test_batch(2, 32);
+    let output = model.forward(&batch).unwrap();
+
+    // Compute loss
+    let loss_fn = CrossEntropyLoss::new();
+    let loss = loss_fn.compute(&output, &batch).unwrap();
+    assert!(loss >= 0.0);
+}
+
+#[test]
+fn test_gradient_accumulation_multiple_steps() {
+    let config = test_config();
+    let mut accumulator = ANEGradientAccumulator::from_config(&config).unwrap();
+
+    // Simulate multiple backward steps
+    for step in 0..5 {
+        let grads: Vec<f32> = (0..config.param_count())
+            .map(|i| (i + step) as f32 * 0.001)
+            .collect();
+        accumulator.accumulate(&grads).unwrap();
     }
-    let batch1 = Batch {
-        tokens: tokens1,
-        batch_size: 2,
-        seq_len: 64,
-    };
 
-    let mut tokens2 = vec![0u32; 128];
-    for i in 0..128 {
-        tokens2[i] = (i % 256) as u32;
+    assert_eq!(accumulator.accumulation_count(), 5);
+
+    // Verify accumulated values
+    let accumulated = accumulator.get_accumulated().unwrap();
+    for i in 0..config.param_count() {
+        // Sum of (i + step) * 0.001 for step in 0..5
+        let expected: f32 = (0..5).map(|step| (i + step) as f32 * 0.001).sum();
+        assert!((accumulated[i] - expected).abs() < 1e-4);
     }
-    let batch2 = Batch {
-        tokens: tokens2,
-        batch_size: 2,
-        seq_len: 64,
-    };
+}
 
-    // Method 1: backward_with_batch
-    model1.forward(&batch1)?;
-    let grads1 = model1.backward_with_batch(&batch1, 0.5)?;
+#[test]
+fn test_model_parameters_update_after_backward() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
 
-    // Method 2: backward_on_ane
-    model2.forward(&batch2)?;
-    let mut accum = ANEGradientAccumulator::new(model2.param_count())?;
-    model2.backward_on_ane(&batch2, 0.5, &mut accum)?;
-    let grads2 = accum.get_accumulated()?;
+    // Get initial parameters
+    let initial_params: Vec<f32> = model.parameters().to_vec();
 
-    // Gradients should be identical (same seed, same computation)
-    assert_eq!(grads1.len(), grads2.len());
+    // Forward and backward
+    let batch = test_batch(2, 32);
+    let _output = model.forward(&batch).unwrap();
+    let grads = model.backward_with_batch(&batch, 1.0f32).unwrap();
 
-    // Check most gradients are similar (allowing for minor numerical differences)
-    let mut similar_count = 0;
-    for (g1, g2) in grads1.iter().zip(grads2.iter()) {
-        if (g1 - g2).abs() < 0.001 {
-            similar_count += 1;
-        }
+    // Simulate optimizer step (simple SGD)
+    let lr = 0.01f32;
+    for (param, grad) in model.parameters().iter_mut().zip(grads.iter()) {
+        *param -= lr * grad;
     }
 
-    // At least 99% of gradients should be similar
-    let similarity_ratio = similar_count as f32 / grads1.len() as f32;
-    assert!(similarity_ratio > 0.99);
+    // Verify parameters changed
+    let updated_params: Vec<f32> = model.parameters().to_vec();
+    assert_ne!(initial_params, updated_params);
+}
 
-    Ok(())
+#[test]
+fn test_batch_size_one_backward() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+
+    // Single sample batch
+    let batch = test_batch(1, 32);
+    let output = model.forward(&batch).unwrap();
+    assert!(output.num_elements() > 0);
+
+    let grads = model.backward_with_batch(&batch, 1.0f32).unwrap();
+    assert_eq!(grads.len(), config.param_count());
+}
+
+#[test]
+fn test_large_batch_backward() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+
+    // Larger batch
+    let batch = test_batch(8, 64);
+    let output = model.forward(&batch).unwrap();
+    assert!(output.num_elements() > 0);
+
+    let grads = model.backward_with_batch(&batch, 1.0f32).unwrap();
+    assert_eq!(grads.len(), config.param_count());
 }

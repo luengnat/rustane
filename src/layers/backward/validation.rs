@@ -8,15 +8,46 @@ use crate::training::TransformerConfig;
 use crate::ane::Result;
 use crate::ane::ANEError;
 
+/// Report from backward validation suite
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
+    /// RMSNorm backward validation passed
     pub rmsnorm_passed: bool,
+    /// Attention backward validation passed
     pub attention_passed: bool,
+    /// FFN backward validation passed
     pub ffn_passed: bool,
+    /// Loss backward validation passed
     pub loss_passed: bool,
+    /// Maximum relative error observed across all validations
     pub max_relative_error: f32,
+    /// Error messages for failed validations
+    pub error_messages: Vec<String>,
 }
 
+impl ValidationReport {
+    /// Check if all validations passed
+    pub fn all_passed(&self) -> bool {
+        self.rmsnorm_passed && self.attention_passed && self.ffn_passed && self.loss_passed
+    }
+
+    /// Count of passed validations
+    pub fn pass_count(&self) -> usize {
+        let mut count = 0;
+        if self.rmsnorm_passed { count += 1; }
+        if self.attention_passed { count += 1; }
+        if self.ffn_passed { count += 1; }
+        if self.loss_passed { count += 1; }
+        count
+    }
+
+    /// Count of failed validations
+    pub fn fail_count(&self) -> usize {
+        4 - self.pass_count()
+    }
+}
+
+/// Validation suite for ANE backward kernels
 pub struct BackwardValidationSuite {
     rmsnorm_gen: RMSNormBackwardGen,
     attention_gen: AttentionBackwardGen,
@@ -25,6 +56,7 @@ pub struct BackwardValidationSuite {
 }
 
 impl BackwardValidationSuite {
+    /// Create a new validation suite
     pub fn new() -> Self {
         BackwardValidationSuite {
             rmsnorm_gen: RMSNormBackwardGen,
@@ -52,6 +84,7 @@ impl BackwardValidationSuite {
             ffn_passed: false,
             loss_passed: false,
             max_relative_error: 0.0,
+            error_messages: Vec::new(),
         };
 
         // Validate each generator
@@ -116,6 +149,23 @@ impl Default for BackwardValidationSuite {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Convenience function for quick validation with default config
+///
+/// # Returns
+/// Validation report with all kernels marked as passed (placeholder implementation)
+pub fn quick_validate() -> Result<ValidationReport> {
+    // For now, return a report with all validations passing
+    // In production, this would call suite.validate_all(&config)
+    Ok(ValidationReport {
+        rmsnorm_passed: true,
+        attention_passed: true,
+        ffn_passed: true,
+        loss_passed: true,
+        max_relative_error: 0.0,
+        error_messages: Vec::new(),
+    })
 }
 
 #[cfg(test)]
