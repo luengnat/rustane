@@ -89,7 +89,10 @@ impl ChunkedBackwardConfig {
     /// Create a new chunked backward configuration
     pub fn new(chunk_size: usize, overlap_size: usize) -> Self {
         assert!(chunk_size > 0, "chunk_size must be > 0");
-        assert!(overlap_size < chunk_size, "overlap_size must be < chunk_size");
+        assert!(
+            overlap_size < chunk_size,
+            "overlap_size must be < chunk_size"
+        );
 
         Self {
             chunk_size,
@@ -234,7 +237,10 @@ impl ChunkedExecutionPlan {
     /// Create a new execution plan
     pub fn new(chunks: Vec<BackwardChunk>) -> Self {
         let total_memory = chunks.iter().map(|c| c.estimated_memory).sum();
-        Self { chunks, total_memory }
+        Self {
+            chunks,
+            total_memory,
+        }
     }
 
     /// Get chunk by index
@@ -369,7 +375,7 @@ impl ChunkedBackwardExecutor {
 
             // Calculate memory for this chunk (simplified to avoid large allocations in tests)
             let hidden_dim = 128; // Reduced from 1024
-            let seq_len = 64;     // Reduced from 512
+            let seq_len = 64; // Reduced from 512
             let layer_memory = actual_chunk_size * hidden_dim * seq_len * 4;
             let estimated_memory = layer_memory + (overlap_size * hidden_dim * seq_len * 4);
 
@@ -438,9 +444,7 @@ impl ChunkedBackwardExecutor {
         // Check if all required activations are available
         for key in &chunk.activation_keys {
             if !self.activation_cache.contains(key) {
-                return Err(ChunkedBackwardError::ActivationCacheMiss(
-                    key.clone(),
-                ));
+                return Err(ChunkedBackwardError::ActivationCacheMiss(key.clone()));
             }
         }
 
@@ -694,12 +698,7 @@ mod tests {
         let config = ChunkedBackwardConfig::new(4, 1);
         let executor = ChunkedBackwardExecutor::new(config);
 
-        let chunk = BackwardChunk::new(
-            0,
-            (0, 4),
-            vec!["layer_0_activation".to_string()],
-            1024,
-        );
+        let chunk = BackwardChunk::new(0, (0, 4), vec!["layer_0_activation".to_string()], 1024);
 
         let result = executor.execute_chunk(&chunk, &[]);
         assert!(result.is_err());
@@ -712,12 +711,7 @@ mod tests {
 
         executor.store_activations(0, vec![1.0; 512]);
 
-        let chunk = BackwardChunk::new(
-            0,
-            (0, 1),
-            vec!["layer_0_activation".to_string()],
-            1024,
-        );
+        let chunk = BackwardChunk::new(0, (0, 1), vec!["layer_0_activation".to_string()], 1024);
 
         let result = executor.execute_chunk(&chunk, &[]);
         assert!(result.is_ok());

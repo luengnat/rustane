@@ -68,7 +68,10 @@ fn compare_optimizers() {
     adam.step(&grads, &mut params_adam, lr).unwrap();
 
     println!("After step 1:");
-    println!("  Lion: params = [{:.6}, {:.6}, {:.6}]", params_lion[0], params_lion[1], params_lion[2]);
+    println!(
+        "  Lion: params = [{:.6}, {:.6}, {:.6}]",
+        params_lion[0], params_lion[1], params_lion[2]
+    );
     println!(
         "  Adam: params = [{:.6}, {:.6}, {:.6}]",
         params_adam[0], params_adam[1], params_adam[2]

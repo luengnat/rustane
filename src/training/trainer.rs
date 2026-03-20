@@ -1488,8 +1488,11 @@ mod optimizer_tests {
         // AdamW should have smaller parameters due to direct weight decay
         // (params are directly reduced by lr * wd * param)
         for i in 0..3 {
-            assert!(params_adamw[i] < params_adam[i],
-                "AdamW param {} should be smaller than Adam param due to weight decay", i);
+            assert!(
+                params_adamw[i] < params_adam[i],
+                "AdamW param {} should be smaller than Adam param due to weight decay",
+                i
+            );
         }
 
         Ok(())
@@ -1511,8 +1514,10 @@ mod optimizer_tests {
 
         // With zero weight decay, results should be nearly identical
         for i in 0..3 {
-            assert!((params_adam[i] - params_adamw[i]).abs() < 1e-6,
-                "AdamW with wd=0 should match Adam");
+            assert!(
+                (params_adam[i] - params_adamw[i]).abs() < 1e-6,
+                "AdamW with wd=0 should match Adam"
+            );
         }
 
         Ok(())
@@ -1534,8 +1539,10 @@ mod optimizer_tests {
         }
 
         // Parameters should shrink due to weight decay even with zero gradients
-        assert!(params[0] < initial_param,
-            "Weight decay should reduce parameters even with zero gradients");
+        assert!(
+            params[0] < initial_param,
+            "Weight decay should reduce parameters even with zero gradients"
+        );
 
         Ok(())
     }

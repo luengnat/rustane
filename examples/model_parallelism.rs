@@ -92,7 +92,11 @@ fn layer_parallelism_demo() {
 
     println!("\nLayer to device mapping (sample):");
     for layer in [0, 8, 16, 24, 31] {
-        println!("  Layer {}: Device {}", layer, mp.get_device_for_layer(layer).unwrap());
+        println!(
+            "  Layer {}: Device {}",
+            layer,
+            mp.get_device_for_layer(layer).unwrap()
+        );
     }
 
     println!("\n→ Each device processes 8 layers independently");

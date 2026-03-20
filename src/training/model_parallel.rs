@@ -42,14 +42,14 @@ pub enum ModelParallelError {
         /// The requested layer index
         layer: usize,
         /// Total number of layers
-        num_layers: usize
+        num_layers: usize,
     },
     /// Device index out of valid range
     DeviceOutOfRange {
         /// The requested device index
         device: usize,
         /// Total number of devices
-        num_devices: usize
+        num_devices: usize,
     },
     /// Communication between devices failed
     CommunicationError(String),
@@ -66,8 +66,15 @@ impl std::fmt::Display for ModelParallelError {
             ModelParallelError::LayerOutOfRange { layer, num_layers } => {
                 write!(f, "Layer {} out of range for {} layers", layer, num_layers)
             }
-            ModelParallelError::DeviceOutOfRange { device, num_devices } => {
-                write!(f, "Device {} out of range for {} devices", device, num_devices)
+            ModelParallelError::DeviceOutOfRange {
+                device,
+                num_devices,
+            } => {
+                write!(
+                    f,
+                    "Device {} out of range for {} devices",
+                    device, num_devices
+                )
             }
             ModelParallelError::CommunicationError(msg) => {
                 write!(f, "Communication failed: {}", msg)
@@ -101,20 +108,20 @@ impl ParallelismType {
     /// Get the memory efficiency factor (0-1, lower is better)
     pub fn memory_efficiency(&self) -> f32 {
         match self {
-            ParallelismType::Layer => 0.25, // Each device gets 1/N of layers
-            ParallelismType::Tensor => 0.5,  // Tensors split, but some redundancy
+            ParallelismType::Layer => 0.25,   // Each device gets 1/N of layers
+            ParallelismType::Tensor => 0.5,   // Tensors split, but some redundancy
             ParallelismType::Pipeline => 0.3, // Pipeline stages
-            ParallelismType::Hybrid => 0.2,  // Best of both worlds
+            ParallelismType::Hybrid => 0.2,   // Best of both worlds
         }
     }
 
     /// Get the communication overhead (0-1, lower is better)
     pub fn communication_overhead(&self) -> f32 {
         match self {
-            ParallelismType::Layer => 0.3,     // Inter-layer communication
-            ParallelismType::Tensor => 0.5,    // Frequent all-reduce
-            ParallelismType::Pipeline => 0.2,  // Only at stage boundaries
-            ParallelismType::Hybrid => 0.35,   // Combined overhead
+            ParallelismType::Layer => 0.3,    // Inter-layer communication
+            ParallelismType::Tensor => 0.5,   // Frequent all-reduce
+            ParallelismType::Pipeline => 0.2, // Only at stage boundaries
+            ParallelismType::Hybrid => 0.35,  // Combined overhead
         }
     }
 }
@@ -154,10 +161,10 @@ impl ModelParallelConfig {
 
         // Validate layer parallelism
         if parallelism_type == ParallelismType::Layer && num_layers < num_devices {
-            return Err(ModelParallelError::InvalidConfiguration(
-                format!("num_layers ({}) must be >= num_devices ({}) for layer parallelism",
-                        num_layers, num_devices)
-            ));
+            return Err(ModelParallelError::InvalidConfiguration(format!(
+                "num_layers ({}) must be >= num_devices ({}) for layer parallelism",
+                num_layers, num_devices
+            )));
         }
 
         Ok(Self {
@@ -291,7 +298,9 @@ impl ModelParallelism {
     }
 
     /// Create layer-parallel shards
-    fn create_layer_shards(config: &ModelParallelConfig) -> Result<Vec<ModelShard>, ModelParallelError> {
+    fn create_layer_shards(
+        config: &ModelParallelConfig,
+    ) -> Result<Vec<ModelShard>, ModelParallelError> {
         let num_devices = config.num_devices;
         let num_layers = config.num_layers;
         let layers_per_device = (num_layers + num_devices - 1) / num_devices;
@@ -325,7 +334,9 @@ impl ModelParallelism {
     }
 
     /// Create tensor-parallel shards
-    fn create_tensor_shards(config: &ModelParallelConfig) -> Result<Vec<ModelShard>, ModelParallelError> {
+    fn create_tensor_shards(
+        config: &ModelParallelConfig,
+    ) -> Result<Vec<ModelShard>, ModelParallelError> {
         let num_devices = config.num_devices;
         let num_layers = config.num_layers;
         let heads_per_device = config.heads_per_device.unwrap_or(8);
@@ -353,14 +364,18 @@ impl ModelParallelism {
     }
 
     /// Create pipeline-parallel shards
-    fn create_pipeline_shards(config: &ModelParallelConfig) -> Result<Vec<ModelShard>, ModelParallelError> {
+    fn create_pipeline_shards(
+        config: &ModelParallelConfig,
+    ) -> Result<Vec<ModelShard>, ModelParallelError> {
         // Pipeline parallelism is similar to layer parallelism
         // but with micro-batch streaming
         Self::create_layer_shards(config)
     }
 
     /// Create hybrid parallel shards
-    fn create_hybrid_shards(config: &ModelParallelConfig) -> Result<Vec<ModelShard>, ModelParallelError> {
+    fn create_hybrid_shards(
+        config: &ModelParallelConfig,
+    ) -> Result<Vec<ModelShard>, ModelParallelError> {
         let num_devices = config.num_devices;
         let num_layers = config.num_layers;
 
@@ -389,7 +404,8 @@ impl ModelParallelism {
                 let head_start = sub_id * heads_per_device;
                 let head_end = head_start + heads_per_device;
 
-                let estimated_memory = (layer_end - layer_start) * 1024 * 1024 * 4 / devices_in_group;
+                let estimated_memory =
+                    (layer_end - layer_start) * 1024 * 1024 * 4 / devices_in_group;
 
                 shards.push(ModelShard::new(
                     device_id,
@@ -469,18 +485,16 @@ impl ModelParallelism {
             });
         }
 
-        self.layer_to_device
-            .get(&layer)
-            .copied()
-            .ok_or_else(|| ModelParallelError::InvalidConfiguration(format!("Layer {} not mapped", layer)))
+        self.layer_to_device.get(&layer).copied().ok_or_else(|| {
+            ModelParallelError::InvalidConfiguration(format!("Layer {} not mapped", layer))
+        })
     }
 
     /// Get which device should handle a specific attention head
     pub fn get_device_for_head(&self, head: usize) -> Result<usize, ModelParallelError> {
-        self.head_to_device
-            .get(&head)
-            .copied()
-            .ok_or_else(|| ModelParallelError::InvalidConfiguration(format!("Head {} not mapped", head)))
+        self.head_to_device.get(&head).copied().ok_or_else(|| {
+            ModelParallelError::InvalidConfiguration(format!("Head {} not mapped", head))
+        })
     }
 
     /// Get all shards
@@ -514,7 +528,9 @@ impl ModelParallelism {
     }
 
     /// Generate communication plan for forward/backward passes
-    pub fn communication_plan(&self) -> Result<Vec<ModelParallelCommunication>, ModelParallelError> {
+    pub fn communication_plan(
+        &self,
+    ) -> Result<Vec<ModelParallelCommunication>, ModelParallelError> {
         let mut plan = Vec::new();
 
         match self.config.parallelism_type {
@@ -644,10 +660,7 @@ pub struct ModelParallelGradAccumulator {
 impl ModelParallelGradAccumulator {
     /// Create a new gradient accumulator
     pub fn new(num_devices: usize, shard_sizes: &[usize]) -> Self {
-        let shards = shard_sizes
-            .iter()
-            .map(|&size| vec![0.0; size])
-            .collect();
+        let shards = shard_sizes.iter().map(|&size| vec![0.0; size]).collect();
 
         Self {
             num_devices,
@@ -656,7 +669,11 @@ impl ModelParallelGradAccumulator {
     }
 
     /// Add gradients for a specific shard
-    pub fn add_shard_gradients(&mut self, device_id: usize, grads: &[f32]) -> Result<(), ModelParallelError> {
+    pub fn add_shard_gradients(
+        &mut self,
+        device_id: usize,
+        grads: &[f32],
+    ) -> Result<(), ModelParallelError> {
         if device_id >= self.num_devices {
             return Err(ModelParallelError::DeviceOutOfRange {
                 device: device_id,

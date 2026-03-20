@@ -67,10 +67,10 @@ impl AttentionBackwardGen {
         let seq_len = config.seq_len;
 
         vec![
-            dim * seq_len * 4,  // d_out
-            dim * seq_len * 4,  // q
-            dim * seq_len * 4,  // k
-            dim * seq_len * 4,  // v
+            dim * seq_len * 4, // d_out
+            dim * seq_len * 4, // q
+            dim * seq_len * 4, // k
+            dim * seq_len * 4, // v
         ]
     }
 
@@ -79,10 +79,10 @@ impl AttentionBackwardGen {
         let dim = config.dim;
 
         vec![
-            dim * dim * 4,  // d_wq
-            dim * dim * 4,  // d_wk
-            dim * dim * 4,  // d_wv
-            dim * dim * 4,  // d_wo
+            dim * dim * 4, // d_wq
+            dim * dim * 4, // d_wk
+            dim * dim * 4, // d_wv
+            dim * dim * 4, // d_wo
         ]
     }
 }

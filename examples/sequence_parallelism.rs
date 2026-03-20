@@ -100,30 +100,24 @@ fn demonstrate_memory_savings() {
     println!("seq_len | devices | Standard (per dev) | Flash (per dev) | SeqParallel (per dev)");
     println!("--------|---------|-------------------|----------------|---------------------");
 
-    for (seq_len, num_devices) in [
-        (4096, 2),
-        (8192, 4),
-        (16384, 4),
-        (32768, 8),
-    ] {
-            let config = SequenceParallelConfig::new(num_devices, seq_len, 128).unwrap();
-            let sp = SequenceParallelism::new(config).unwrap();
+    for (seq_len, num_devices) in [(4096, 2), (8192, 4), (16384, 4), (32768, 8)] {
+        let config = SequenceParallelConfig::new(num_devices, seq_len, 128).unwrap();
+        let sp = SequenceParallelism::new(config).unwrap();
 
-            // Standard attention: seq_len² * 4 bytes
-            let standard_mb = (seq_len * seq_len * 4) as f64 / 1024.0 / 1024.0;
+        // Standard attention: seq_len² * 4 bytes
+        let standard_mb = (seq_len * seq_len * 4) as f64 / 1024.0 / 1024.0;
 
-            // Flash attention (block_size=128): block_size * seq_len * 2 * 4 bytes
-            let flash_mb = (128 * seq_len * 2 * 4) as f64 / 1024.0 / 1024.0;
+        // Flash attention (block_size=128): block_size * seq_len * 2 * 4 bytes
+        let flash_mb = (128 * seq_len * 2 * 4) as f64 / 1024.0 / 1024.0;
 
-            // Sequence parallel: (seq_len/num_devices)² * 4 bytes
-            let seq_par_mb = (seq_len / num_devices * seq_len / num_devices * 4) as f64
-                / 1024.0
-                / 1024.0;
+        // Sequence parallel: (seq_len/num_devices)² * 4 bytes
+        let seq_par_mb =
+            (seq_len / num_devices * seq_len / num_devices * 4) as f64 / 1024.0 / 1024.0;
 
-            println!(
-                "{:7} | {:8} | {:17.2} MB | {:14.2} MB | {:21.2} MB",
-                seq_len, num_devices, standard_mb, flash_mb, seq_par_mb
-            );
+        println!(
+            "{:7} | {:8} | {:17.2} MB | {:14.2} MB | {:21.2} MB",
+            seq_len, num_devices, standard_mb, flash_mb, seq_par_mb
+        );
     }
 
     println!();
@@ -185,7 +179,10 @@ fn demonstrate_device_assignment() {
     let sp = SequenceParallelism::new(config).unwrap();
 
     println!("Device assignments for sample positions:");
-    println!("  Position 0: Device {}", sp.get_device_for_position(0).unwrap());
+    println!(
+        "  Position 0: Device {}",
+        sp.get_device_for_position(0).unwrap()
+    );
     println!(
         "  Position 512: Device {}",
         sp.get_device_for_position(512).unwrap()

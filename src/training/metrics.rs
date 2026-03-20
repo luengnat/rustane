@@ -364,7 +364,10 @@ impl MetricsLogger for JsonLogger {
             .unwrap_or(0.0);
 
         let mut metric_obj = String::from("{");
-        metric_obj.push_str(&format!(r#"timestamp": {:.3}, "step": {}, "metrics": {{"#, timestamp, step));
+        metric_obj.push_str(&format!(
+            r#"timestamp": {:.3}, "step": {}, "metrics": {{"#,
+            timestamp, step
+        ));
 
         for (i, (name, value)) in metrics.iter().enumerate() {
             if i > 0 {

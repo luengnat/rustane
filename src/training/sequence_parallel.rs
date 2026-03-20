@@ -234,7 +234,8 @@ impl SequenceParallelism {
         if shards.len() != self.config.num_devices {
             return Err(Error::InvalidParameter(format!(
                 "Expected {} shards, got {}",
-                self.config.num_devices, shards.len()
+                self.config.num_devices,
+                shards.len()
             )));
         }
 
@@ -245,7 +246,8 @@ impl SequenceParallelism {
             if shard.data.len() != shard_size {
                 return Err(Error::InvalidParameter(format!(
                     "Shard size mismatch: expected {}, got {}",
-                    shard_size, shard.data.len()
+                    shard_size,
+                    shard.data.len()
                 )));
             }
             merged.extend(&shard.data);
@@ -290,7 +292,9 @@ impl SequenceParallelism {
             if shard.data.len() != expected_size {
                 return Err(Error::InvalidParameter(format!(
                     "Shard {} has size {}, expected {}",
-                    i, shard.data.len(), expected_size
+                    i,
+                    shard.data.len(),
+                    expected_size
                 )));
             }
 
@@ -408,9 +412,7 @@ impl SequenceParallelGradAccumulator {
         let num_devices = config.num_devices;
         Ok(Self {
             config,
-            gradients: (0..num_devices)
-                .map(|_| HashMap::new())
-                .collect(),
+            gradients: (0..num_devices).map(|_| HashMap::new()).collect(),
         })
     }
 
@@ -423,7 +425,8 @@ impl SequenceParallelGradAccumulator {
     pub fn add_gradients(&mut self, device_id: usize, local_gradients: Vec<f32>) -> Result<()> {
         if device_id >= self.config.num_devices {
             return Err(Error::InvalidParameter(format!(
-                "Invalid device_id {}", device_id
+                "Invalid device_id {}",
+                device_id
             )));
         }
 
@@ -473,11 +476,7 @@ impl SequenceParallelGradAccumulator {
     }
 
     /// Exchange overlap gradients between two devices
-    fn exchange_overlap_gradients(
-        &mut self,
-        device_a: usize,
-        device_b: usize,
-    ) -> Result<()> {
+    fn exchange_overlap_gradients(&mut self, device_a: usize, device_b: usize) -> Result<()> {
         // In a real distributed setting, this would use actual communication
         // For now, we just validate that both devices have gradient data
 

@@ -62,7 +62,10 @@ fn basic_chunking_config() {
     println!("  chunk_size: {}", config.chunk_size);
     println!("  overlap_size: {}", config.overlap_size);
     println!("  use_ane: {}", config.use_ane);
-    println!("  max_chunk_memory: {} MB", config.max_chunk_memory / 1024 / 1024);
+    println!(
+        "  max_chunk_memory: {} MB",
+        config.max_chunk_memory / 1024 / 1024
+    );
 
     println!("\n→ Chunk size determines layers per backward pass");
     println!("→ Overlap ensures gradient continuity across chunks");
@@ -102,7 +105,10 @@ fn execution_plan_demo() {
     let plan = executor.create_execution_plan(16).unwrap();
 
     println!("Total chunks: {}", plan.num_chunks());
-    println!("Total memory: {:.2} MB", plan.total_memory as f64 / 1024.0 / 1024.0);
+    println!(
+        "Total memory: {:.2} MB",
+        plan.total_memory as f64 / 1024.0 / 1024.0
+    );
     println!();
 
     println!("Chunk breakdown:");

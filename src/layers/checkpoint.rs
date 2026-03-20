@@ -9,8 +9,8 @@ use std::path::Path;
 
 /// Extract weights from a layer if available
 fn extract_layer_weights(layer: &dyn Layer) -> Option<Vec<f32>> {
-    use crate::layers::linear::Linear;
     use crate::layers::activations::ReLU;
+    use crate::layers::linear::Linear;
 
     // Try to downcast to specific layer types
     if let Some(_linear) = layer.as_any().downcast_ref::<Linear>() {
@@ -28,8 +28,8 @@ fn extract_layer_weights(layer: &dyn Layer) -> Option<Vec<f32>> {
 
 /// Extract bias from a layer if available
 fn extract_layer_bias(layer: &dyn Layer) -> Option<Vec<f32>> {
-    use crate::layers::linear::Linear;
     use crate::layers::activations::ReLU;
+    use crate::layers::linear::Linear;
 
     // Try to downcast to specific layer types
     if let Some(_linear) = layer.as_any().downcast_ref::<Linear>() {

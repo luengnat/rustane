@@ -52,7 +52,10 @@ impl std::fmt::Display for LargeModelError {
             LargeModelError::InvalidConfiguration(msg) => {
                 write!(f, "Invalid configuration: {}", msg)
             }
-            LargeModelError::InsufficientMemory { required, available } => {
+            LargeModelError::InsufficientMemory {
+                required,
+                available,
+            } => {
                 write!(
                     f,
                     "Insufficient memory: required {} MB, available {} MB",
@@ -107,7 +110,10 @@ impl LargeModelConfig {
         assert!(hidden_dim > 0, "hidden_dim must be > 0");
         assert!(num_heads > 0, "num_heads must be > 0");
         assert!(intermediate_dim > 0, "intermediate_dim must be > 0");
-        assert!(hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads");
+        assert!(
+            hidden_dim % num_heads == 0,
+            "hidden_dim must be divisible by num_heads"
+        );
 
         Self {
             num_layers,
@@ -115,7 +121,7 @@ impl LargeModelConfig {
             num_heads,
             intermediate_dim,
             vocab_size: 50272, // Default vocab size
-            max_seq_len: 2048,  // Default sequence length
+            max_seq_len: 2048, // Default sequence length
             use_mixed_precision: true,
             use_gradient_checkpointing: true,
             num_devices: 1,
@@ -187,8 +193,7 @@ impl LargeModelConfig {
         // Activation memory per layer
         // activations: batch_size * seq_len * hidden_dim * 4 bytes
         let batch_size = 1;
-        let activation_memory_per_layer =
-            batch_size * self.max_seq_len * self.hidden_dim * 4;
+        let activation_memory_per_layer = batch_size * self.max_seq_len * self.hidden_dim * 4;
         let total_activation_memory = activation_memory_per_layer * self.num_layers;
 
         // With gradient checkpointing, we only keep a fraction of activations
@@ -202,10 +207,8 @@ impl LargeModelConfig {
         let gradient_memory = param_memory;
 
         // Total memory
-        let total_memory = param_memory
-            + optimizer_memory
-            + effective_activation_memory
-            + gradient_memory;
+        let total_memory =
+            param_memory + optimizer_memory + effective_activation_memory + gradient_memory;
 
         LargeModelMemory {
             parameter_count: param_count,
@@ -427,9 +430,7 @@ impl LargeModelInitializer {
     }
 
     /// Initialize all layers progressively
-    pub fn initialize_progressively(
-        &self,
-    ) -> Result<ProgressiveInitialization, LargeModelError> {
+    pub fn initialize_progressively(&self) -> Result<ProgressiveInitialization, LargeModelError> {
         let memory = self.config.calculate_memory_requirements();
         let init_memory = self.init_memory_requirements();
 
@@ -680,9 +681,7 @@ mod tests {
 
         // FP16 should use roughly half the parameter memory
         assert!(memory_fp16.parameter_memory_mb < memory_fp32.parameter_memory_mb);
-        assert!(
-            memory_fp16.parameter_memory_mb >= memory_fp32.parameter_memory_mb / 2
-        );
+        assert!(memory_fp16.parameter_memory_mb >= memory_fp32.parameter_memory_mb / 2);
     }
 
     #[test]

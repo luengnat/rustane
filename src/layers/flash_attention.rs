@@ -352,7 +352,8 @@ mod tests {
         let total_size = seq_len * head_dim;
 
         // Create identity-like Q, K, V
-        let q: Vec<f32> = (0..total_size).map(|i| if i % head_dim == 0 { 1.0 } else { 0.0 })
+        let q: Vec<f32> = (0..total_size)
+            .map(|i| if i % head_dim == 0 { 1.0 } else { 0.0 })
             .collect();
         let k: Vec<f32> = q.clone();
         let v: Vec<f32> = (0..total_size).map(|i| i as f32).collect();

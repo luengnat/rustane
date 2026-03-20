@@ -182,7 +182,8 @@ fn simulated_training_run() {
 
     for step in 0..20 {
         // Simulate training dynamics
-        let loss = 3.0_f64 * (0.95_f32).powi(step) as f64 + 0.1_f64 * (step as f32).sin().abs() as f64;
+        let loss =
+            3.0_f64 * (0.95_f32).powi(step) as f64 + 0.1_f64 * (step as f32).sin().abs() as f64;
         let accuracy = 1.0 - (loss / 4.0);
         let grad_norm = 2.0_f64 * (0.98_f32).powi(step) as f64 + 0.05_f64;
         let learning_rate = 0.001_f64 * (0.995_f32).powi(step) as f64;

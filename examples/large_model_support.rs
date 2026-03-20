@@ -97,19 +97,13 @@ fn memory_requirements_demo() {
         let memory = config.calculate_memory_requirements();
 
         println!("{}:", name);
-        println!(
-            "  Parameters: {:.2}B",
-            memory.parameter_count as f64 / 1e9
-        );
+        println!("  Parameters: {:.2}B", memory.parameter_count as f64 / 1e9);
         println!("  Parameter memory: {:4} MB", memory.parameter_memory_mb);
         println!("  Optimizer memory: {:4} MB", memory.optimizer_memory_mb);
         println!("  Activation memory: {:4} MB", memory.activation_memory_mb);
         println!("  Gradient memory:   {:4} MB", memory.gradient_memory_mb);
         println!("  Total memory:      {:4} MB", memory.total_memory_mb);
-        println!(
-            "  Total: {:.2} GB",
-            memory.total_memory_mb as f64 / 1024.0
-        );
+        println!("  Total: {:.2} GB", memory.total_memory_mb as f64 / 1024.0);
         println!();
     }
 
@@ -145,21 +139,21 @@ fn progressive_initialization_demo() {
     println!();
 
     let config = ModelPresets::model_7b();
-    let initializer = LargeModelInitializer::new(config)
-        .with_strategy(InitializationStrategy::LayerByLayer);
+    let initializer =
+        LargeModelInitializer::new(config).with_strategy(InitializationStrategy::LayerByLayer);
 
     let progress = initializer.initialize_progressively().unwrap();
 
     println!("Model configuration:");
     println!("  Total layers: {}", progress.total_layers());
-    println!("  Total parameters: {:.2}B", progress.total_params() as f64 / 1e9);
+    println!(
+        "  Total parameters: {:.2}B",
+        progress.total_params() as f64 / 1e9
+    );
     println!();
 
     println!("Initialization strategy: Layer-by-Layer");
-    println!(
-        "  Init memory: {:.2} MB",
-        progress.init_memory_mb() as f64
-    );
+    println!("  Init memory: {:.2} MB", progress.init_memory_mb() as f64);
     println!(
         "  Total memory: {:.2} MB",
         progress.total_memory_mb() as f64
@@ -170,8 +164,10 @@ fn progressive_initialization_demo() {
     );
     println!();
 
-    println!("→ Progressive initialization reduces peak memory by {:.1}%",
-        progress.memory_efficiency() * 100.0);
+    println!(
+        "→ Progressive initialization reduces peak memory by {:.1}%",
+        progress.memory_efficiency() * 100.0
+    );
 }
 
 /// Demonstrate parameter sharding
@@ -213,10 +209,7 @@ fn model_presets_demo() {
         let config = ModelPresets::model_7b();
         let memory = config.calculate_memory_requirements();
         println!("7B (LLaMA-7B):");
-        println!(
-            "  Parameters: {:.2}B",
-            memory.parameter_count as f64 / 1e9
-        );
+        println!("  Parameters: {:.2}B", memory.parameter_count as f64 / 1e9);
         println!("  Memory: {:.2} GB", memory.total_memory_mb as f64 / 1024.0);
         println!("  Devices: {}", config.num_devices);
         println!("  Mixed precision: {}", config.use_mixed_precision);
@@ -232,10 +225,7 @@ fn model_presets_demo() {
         let config = ModelPresets::model_13b();
         let memory = config.calculate_memory_requirements();
         println!("13B (LLaMA-13B):");
-        println!(
-            "  Parameters: {:.2}B",
-            memory.parameter_count as f64 / 1e9
-        );
+        println!("  Parameters: {:.2}B", memory.parameter_count as f64 / 1e9);
         println!("  Memory: {:.2} GB", memory.total_memory_mb as f64 / 1024.0);
         println!("  Devices: {}", config.num_devices);
         println!("  Mixed precision: {}", config.use_mixed_precision);
@@ -251,10 +241,7 @@ fn model_presets_demo() {
         let config = ModelPresets::model_30b();
         let memory = config.calculate_memory_requirements();
         println!("30B:");
-        println!(
-            "  Parameters: {:.2}B",
-            memory.parameter_count as f64 / 1e9
-        );
+        println!("  Parameters: {:.2}B", memory.parameter_count as f64 / 1e9);
         println!("  Memory: {:.2} GB", memory.total_memory_mb as f64 / 1024.0);
         println!("  Devices: {}", config.num_devices);
         println!("  Mixed precision: {}", config.use_mixed_precision);
@@ -270,10 +257,7 @@ fn model_presets_demo() {
         let config = ModelPresets::model_70b();
         let memory = config.calculate_memory_requirements();
         println!("70B (LLaMA-70B):");
-        println!(
-            "  Parameters: {:.2}B",
-            memory.parameter_count as f64 / 1e9
-        );
+        println!("  Parameters: {:.2}B", memory.parameter_count as f64 / 1e9);
         println!("  Memory: {:.2} GB", memory.total_memory_mb as f64 / 1024.0);
         println!("  Devices: {}", config.num_devices);
         println!("  Mixed precision: {}", config.use_mixed_precision);

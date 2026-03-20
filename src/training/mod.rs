@@ -278,12 +278,21 @@ pub use benchmark::BackwardBenchmark;
 pub use checkpoint::{
     checkpoint_filename, Checkpoint, LossScalerState, ModelConfig, OptimizerState,
 };
+pub use chunked_backward::{
+    ActivationCache, BackwardChunk, ChunkedBackwardConfig, ChunkedBackwardError,
+    ChunkedBackwardExecutor, ChunkedBackwardStats, ChunkedExecutionPlan,
+};
 pub use grad_accum::GradAccumulator;
+pub use large_models::{
+    InitializationStrategy, LargeModelConfig, LargeModelError, LargeModelInitializer,
+    LargeModelMemory, ModelPresets, ModelSizeCategory, ParameterSharding,
+    ProgressiveInitialization,
+};
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
 pub use loss_scale::LossScaler;
 pub use metrics::{
-    JsonLogger, FileLogger, ConsoleLogger, MetricsAggregator, MetricsLogger, MetricsTracker,
-    MetricStats,
+    ConsoleLogger, FileLogger, JsonLogger, MetricStats, MetricsAggregator, MetricsLogger,
+    MetricsTracker,
 };
 pub use model::Model;
 pub use model_parallel::{
@@ -291,20 +300,15 @@ pub use model_parallel::{
     ModelParallelGradAccumulator, ModelParallelism, ModelShard, ParallelismType,
 };
 pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
-pub use chunked_backward::{
-    ActivationCache, BackwardChunk, ChunkedBackwardConfig, ChunkedBackwardError,
-    ChunkedBackwardExecutor, ChunkedBackwardStats, ChunkedExecutionPlan,
-};
 pub use sequence_parallel::{
     DeviceCommunication, SequenceParallelConfig, SequenceParallelGradAccumulator,
     SequenceParallelism, SequenceShard,
 };
-pub use large_models::{
-    InitializationStrategy, LargeModelConfig, LargeModelError, LargeModelInitializer,
-    LargeModelMemory, ModelPresets, ModelSizeCategory, ParameterSharding, ProgressiveInitialization,
-};
 pub use tensor_sharding::{ShardStrategy, ShardedMILGenerator, TensorShard, TensorSharder};
-pub use trainer::{AdamOptimizer, AdamWOptimizer, LionOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
+pub use trainer::{
+    AdamOptimizer, AdamWOptimizer, LionOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder,
+    TrainerError,
+};
 pub use transformer_config::{MixedPrecisionConfig, Precision, TransformerConfig};
 pub use transformer_model::{
     ane_forward_block_summary, ParameterGroup, ParameterGroupKind, TransformerANE,

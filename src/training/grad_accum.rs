@@ -367,26 +367,26 @@ mod tests {
         let mut accum = GradAccumulator::new(2, 2);
         assert!(!accum.is_ready());
 
-        accum.accumulate(&vec![1.0, 2.0], 0.5, 0.5).unwrap();
+        accum.accumulate(&[1.0, 2.0], 0.5, 0.5).unwrap();
         assert!(!accum.is_ready());
 
-        accum.accumulate(&vec![1.0, 2.0], 0.5, 0.5).unwrap();
+        accum.accumulate(&[1.0, 2.0], 0.5, 0.5).unwrap();
         assert!(accum.is_ready());
     }
 
     #[test]
     fn test_loss_averaging() {
         let mut accum = GradAccumulator::new(2, 2);
-        accum.accumulate(&vec![1.0, 2.0], 2.0, 0.5).unwrap();
-        accum.accumulate(&vec![1.0, 2.0], 4.0, 0.5).unwrap();
+        accum.accumulate(&[1.0, 2.0], 2.0, 0.5).unwrap();
+        accum.accumulate(&[1.0, 2.0], 4.0, 0.5).unwrap();
         assert!((accum.average_loss() - 3.0).abs() < 1e-6); // (2.0 * 0.5) + (4.0 * 0.5)
     }
 
     #[test]
     fn test_reset() {
         let mut accum = GradAccumulator::new(2, 2);
-        accum.accumulate(&vec![1.0, 2.0], 1.0, 0.5).unwrap();
-        accum.accumulate(&vec![1.0, 2.0], 1.0, 0.5).unwrap();
+        accum.accumulate(&[1.0, 2.0], 1.0, 0.5).unwrap();
+        accum.accumulate(&[1.0, 2.0], 1.0, 0.5).unwrap();
 
         accum.reset();
         assert_eq!(accum.progress(), (0, 2));

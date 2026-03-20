@@ -66,7 +66,10 @@ fn compare_optimizers() {
     adamw.step(&grads, &mut params_adamw, lr).unwrap();
 
     println!("After step 1:");
-    println!("  Adam:  params = [{:.6}, {:.6}, {:.6}]", params_adam[0], params_adam[1], params_adam[2]);
+    println!(
+        "  Adam:  params = [{:.6}, {:.6}, {:.6}]",
+        params_adam[0], params_adam[1], params_adam[2]
+    );
     println!(
         "  AdamW: params = [{:.6}, {:.6}, {:.6}] (smaller due to weight decay)",
         params_adamw[0], params_adamw[1], params_adamw[2]

@@ -78,7 +78,8 @@ fn demonstrate_basic_usage() {
     let output = flash_attn.forward(&q, &k, &v).unwrap();
 
     println!("Output shape: [{} × {} × {}]", seq_len, num_heads, head_dim);
-    println!("Output range: [{:.4}, {:.4}]",
+    println!(
+        "Output range: [{:.4}, {:.4}]",
         output.iter().cloned().fold(f32::INFINITY, f32::min),
         output.iter().cloned().fold(f32::NEG_INFINITY, f32::max)
     );
@@ -99,7 +100,8 @@ fn demonstrate_memory_savings() {
         let flash_mb = flash_bytes as f64 / 1024.0 / 1024.0;
         let saving_pct = flash_attn.memory_saving_percentage(seq_len);
 
-        println!("{:7} | {:15.2} MB | {:14.2} MB | {:6.1}%",
+        println!(
+            "{:7} | {:15.2} MB | {:14.2} MB | {:6.1}%",
             seq_len, standard_mb, flash_mb, saving_pct
         );
     }
@@ -208,10 +210,8 @@ fn demonstrate_real_world_scenario() {
             (seq_len * seq_len * num_heads * 4) as f64 / 1024.0 / 1024.0 / 1024.0;
 
         // Flash attention memory: seq_len * block_size * 2 * num_heads * 4 bytes
-        let flash_memory_gb = (flash_attn.memory_usage(seq_len) * num_heads) as f64
-            / 1024.0
-            / 1024.0
-            / 1024.0;
+        let flash_memory_gb =
+            (flash_attn.memory_usage(seq_len) * num_heads) as f64 / 1024.0 / 1024.0 / 1024.0;
 
         let can_use_standard = if standard_memory_gb < 16.0 {
             "✓ Yes"

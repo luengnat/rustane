@@ -25,9 +25,9 @@
 //! kernel.execute(&inputs, &mut outputs)?;
 //! ```
 
-use crate::wrapper::ANEExecutor;
 use crate::error::{Error, Result};
 use crate::training::TransformerConfig;
+use crate::wrapper::ANEExecutor;
 
 /// Compiled ANE backward kernel ready for execution
 ///
@@ -90,8 +90,12 @@ impl ANEBackwardKernel {
         };
 
         // Compile the MIL code
-        let executor = compile_request.compile()
-            .map_err(|e| Error::Other(format!("Failed to compile MIL code for {}: {}", operation_name, e)))?;
+        let executor = compile_request.compile().map_err(|e| {
+            Error::Other(format!(
+                "Failed to compile MIL code for {}: {}",
+                operation_name, e
+            ))
+        })?;
 
         Ok(Self {
             executor,
