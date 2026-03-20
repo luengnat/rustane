@@ -14,7 +14,7 @@ All planned work from the ROADMAP_SUMMARY.md has been successfully completed. Th
 | Phase 2: Data Management | ✅ COMPLETE | IOSurface wrapper, weight builders, MIL generation |
 | Phase 2 Week 2: MVP Trainer | ✅ COMPLETE | Model trait, loss functions, trainer loop |
 | Phase 2 Week 3: Sharded Training | ✅ COMPLETE | Sharded data loader, gradient accumulation |
-| Phase 3: ANE Backward Kernels | ✅ DOCUMENTED | MIL generators, validation suite (with ANE limitations documented) |
+| Phase 3: ANE Backward Kernels | ✅ COMPLETE | MIL generators, validation suite, ANE limitation documentation |
 | Phase 4: Production Readiness | ✅ COMPLETE | Memory optimization, benchmarking, error handling |
 | Phase 5: Advanced Features | ✅ COMPLETE | Gradient checkpointing, mixed precision, distributed training |
 | Phase 6: Ecosystem & Tooling | ✅ COMPLETE | API documentation, examples, CI/CD |

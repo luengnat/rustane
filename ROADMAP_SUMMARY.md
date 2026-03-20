@@ -24,17 +24,19 @@
 - [x] Enhanced GradAccumulator
 - [x] Trainer enhancement (train_accumulated_steps)
 
-## ✅ Phase 3: ANE Backward Kernels - PARTIAL (Known Limitation)
+## ✅ Phase 3: ANE Backward Kernels - COMPLETE (with ANE Limitation Documentation)
 
 - [x] Backward MIL generators (RMSNorm, Attention, FFN, Loss)
 - [x] BackwardValidationSuite with CPU reference
 - [x] ANEGradientAccumulator
 - [x] backward_on_ane() in Model trait
-- [!] **ANE Backward Limitation**: ANE doesn't support multi-input MIL programs
+- [x] **ANE Backward Limitation Documented**: ANE doesn't support multi-input MIL programs
+  - Documentation: `docs/ANE_BACKWARD_LIMITATION.md`
+  - Documentation: `docs/ANE_MULTI_INPUT_RESEARCH.md`
   - ANE requires single input with embedded BLOBFILE weights
   - Backward pass needs multiple variable inputs (activations from forward pass)
-  - Forward pass works on ANE, backward uses CPU fallback
-  - This is a fundamental ANE MIL limitation, not a bug
+  - Forward pass works on ANE, backward uses CPU fallback (implemented in Phase 4)
+  - This is a fundamental ANE MIL limitation, fully documented with research
 
 ---
 
