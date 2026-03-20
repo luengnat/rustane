@@ -1,10 +1,13 @@
 //! Example: Training on sharded data with gradient accumulation.
 //!
 //! Demonstrates:
-//! - Creating synthetic shard files on disk
-//! - Discovering shards with `ShardedDataLoader`
-//! - Loading each shard into a `DataLoader`
-//! - Chunking batches and training with explicit accumulation steps
+//! - Loading FineWeb binary shards from disk
+//! - Streaming shards through DataLoader
+//! - Chunking batches and training with gradient accumulation
+//! - Integration with parameter-golf datasets
+//!
+//! Note: The SimpleModel is intentionally minimal to show the data pipeline.
+//! For realistic training, integrate with actual transformer models.
 
 use rustane::data::{
     Batch, DataLoader, Dataset, JsonlDataset, RandomSampler, ShardConfig, ShardedDataLoader,
@@ -487,21 +490,39 @@ struct SimpleModel {
 
 impl SimpleModel {
     fn new(vocab_size: usize) -> Self {
-        Self {
-            params: vec![0.01; vocab_size * 2],
-        }
+        // Initialize with larger values so loss is obvious
+        let params = vec![0.5; vocab_size];
+        Self { params }
     }
 }
 
 impl Model for SimpleModel {
     fn forward(&mut self, batch: &Batch) -> Result<ANETensor> {
-        let (batch_size, _seq_len) = batch.shape();
-        let logits = vec![0.0f32; batch_size * self.params.len()];
-        ANETensor::from_fp32(logits, vec![batch_size, self.params.len()])
+        let tokens = batch.tokens();
+        let vocab_size = self.params.len();
+
+        // Compute logits: for each token, predict next token using embedding
+        // This is a very simple next-token prediction model
+        let mut logits = vec![0.0f32; tokens.len() * vocab_size];
+
+        for (pos, &token_id) in tokens.iter().enumerate() {
+            let token_idx = (token_id as usize).min(vocab_size - 1);
+            let embedding = self.params[token_idx];
+
+            // Simple prediction: use embedding value + offset
+            for pred_id in 0..vocab_size {
+                let score = embedding * (pred_id as f32 - token_idx as f32).abs().max(1.0);
+                logits[pos * vocab_size + pred_id] = score;
+            }
+        }
+
+        ANETensor::from_fp32(logits, vec![tokens.len(), vocab_size])
     }
 
     fn backward(&mut self, loss: f32) -> Result<Vec<f32>> {
-        Ok(self.params.iter().map(|_| loss * 0.001).collect())
+        // Simple gradient: make all parameters move toward zero
+        // This will reduce embeddings and thus reduce model confidence
+        Ok(self.params.iter().map(|_p| loss * 0.001).collect())
     }
 
     fn parameters(&mut self) -> &mut [f32] {
