@@ -42,11 +42,13 @@ pub use self::dataset::{Dataset, SequentialDataset};
 pub use self::sampler::{RandomSampler, Sampler, SequentialSampler};
 pub use self::collate::{Collator, PadCollator, TruncateCollator};
 pub use self::filesystem::{JsonlDataset, TextDataset};
+pub use self::sharded_loader::{ShardConfig, ShardMetadata, ShardBatch};
 
 mod dataset;
 mod sampler;
 mod collate;
 mod filesystem;
+mod sharded_loader;
 
 /// A batch of tokenized samples, potentially padded or packed
 ///
