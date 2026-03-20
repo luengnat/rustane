@@ -3,7 +3,8 @@
 //! Provides helpers for training neural networks on Apple Neural Engine:
 //! - Loss scaling to prevent gradient underflow
 //! - Gradient accumulation for larger effective batch sizes
-//! - Integration with CPU-side training loops
+//! - Learning rate scheduling
+//! - Model trait and loss functions for flexible training
 
 pub mod grad_accum;
 pub mod loss;
@@ -16,7 +17,5 @@ pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
 pub use loss_scale::LossScaler;
 pub use model::Model;
-pub use scheduler::{
-    ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler,
-};
-pub use trainer::{StepMetrics, TrainerError};
+pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
+pub use trainer::{StepMetrics, Trainer, TrainerBuilder, TrainerError};
