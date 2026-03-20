@@ -71,7 +71,7 @@
 
 ## Current Status: Phase 5 & 6 COMPLETE ✅
 
-**Test Coverage: 394 tests passing**
+**Test Coverage: 407 tests passing**
 
 ### Key Achievements
 
@@ -101,13 +101,14 @@
 | CI/CD Pipeline | ✅ | GitHub Actions (test, release, security) |
 
 ### Test Breakdown
-- Library tests: 370
+- Library tests: 383
 - ANE backward integration: 19
 - ANE backward unit: 19
 - ANE integration: 10
 - Error handling: 50+
 - Benchmarks: 5
 - Mixed precision: 6
+- Distributed training: 13
 
 ### Timing Output Example
 ```
@@ -161,9 +162,11 @@ TOTAL: XX.XX ms
 - [x] MultiANEConfig for distributed training setup
 - [x] Batch distribution validation (per_device_batch_size)
 - [x] Distributed training example (distributed_training.rs)
+- [x] Gradient synchronization (AllReduce with Average/Sum/Min/Max modes)
+- [x] Distributed optimizer state (DistributedOptimizerState with sharding)
+- [x] DistributedSynchronizer for multi-device gradient aggregation
+- [x] Distributed tests (13 new tests)
 - [ ] Tensor sharding across ANEs (TODO - requires sharding MIL generation)
-- [ ] Gradient synchronization (TODO - requires all-reduce implementation)
-- [ ] Distributed optimizer state (TODO)
 
 ### ✅ Task 4: Model Export/Import (Checkpointing)
 - [x] Model state serialization (Checkpoint struct)
@@ -200,7 +203,10 @@ TOTAL: XX.XX ms
 | Device Detection | ✅ | detect_ane_devices(), ANEDeviceInfo |
 | Configuration | ✅ | MultiANEConfig for distributed training |
 | Batch Distribution | ✅ | per_device_batch_size() validation |
-| Tests | ✅ | 8 new multi-ANE tests |
+| Gradient Sync | ✅ | AllReduce with Average/Sum/Min/Max |
+| Optimizer State | ✅ | DistributedOptimizerState with sharding |
+| Synchronizer | ✅ | DistributedSynchronizer for gradient aggregation |
+| Tests | ✅ | 21 distributed/multi-ANE tests |
 | Example | ✅ | distributed_training.rs |
 
 #### Task 4: Model Checkpointing
@@ -214,11 +220,11 @@ TOTAL: XX.XX ms
 | Example | ✅ | checkpoint_training.rs |
 
 ### Test Coverage
-- Total tests: 389 passing
-- Phase 5 additions: 20 new tests
+- Total tests: 407 passing
+- Phase 5 additions: 38 new tests
 - Gradient checkpointing: 6 tests
-- Mixed precision: 2 tests
-- Multi-ANE: 8 tests
+- Mixed precision: 6 tests
+- Multi-ANE: 21 tests (8 detection + 13 distributed)
 - Checkpointing: 4 tests
 
 ---
