@@ -13,21 +13,21 @@
 //! gradients on CPU from cached activations so the training loop can actually
 //! learn from data.
 
+use std::collections::HashSet;
 use std::ops::Range;
 #[cfg(target_vendor = "apple")]
 use std::panic::AssertUnwindSafe;
-use std::collections::HashSet;
-use std::sync::OnceLock;
 #[cfg(target_vendor = "apple")]
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use rand::random;
 
 use crate::data::Batch;
-#[cfg(target_vendor = "apple")]
-use crate::mil::{linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil};
 use crate::error::Result;
 use crate::layers::transformer_backward::rmsnorm_backward;
+#[cfg(target_vendor = "apple")]
+use crate::mil::{linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil};
 use crate::training::{Model, TransformerConfig};
 use crate::utils::fp32_to_fp16;
 use crate::wrapper::{ANECompiler, ANETensor};
@@ -37,7 +37,7 @@ const EPS: f32 = 1e-6;
 static ANE_FORWARD_BLOCKS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
-struct LayerLayout {
+pub(crate) struct LayerLayout {
     rms_att: Range<usize>,
     wq: Range<usize>,
     wk: Range<usize>,
@@ -50,11 +50,67 @@ struct LayerLayout {
 }
 
 #[derive(Clone, Debug)]
-struct ParamLayout {
-    embedding: Range<usize>,
-    layers: Vec<LayerLayout>,
-    final_norm: Range<usize>,
-    classifier: Range<usize>,
+pub(crate) struct ParamLayout {
+    pub(crate) embedding: Range<usize>,
+    pub(crate) layers: Vec<LayerLayout>,
+    pub(crate) final_norm: Range<usize>,
+    pub(crate) classifier: Range<usize>,
+}
+
+impl LayerLayout {
+    pub(crate) fn rms_att(&self) -> &Range<usize> {
+        &self.rms_att
+    }
+
+    pub(crate) fn wq(&self) -> &Range<usize> {
+        &self.wq
+    }
+
+    pub(crate) fn wk(&self) -> &Range<usize> {
+        &self.wk
+    }
+
+    pub(crate) fn wv(&self) -> &Range<usize> {
+        &self.wv
+    }
+
+    pub(crate) fn wo(&self) -> &Range<usize> {
+        &self.wo
+    }
+
+    pub(crate) fn rms_ffn(&self) -> &Range<usize> {
+        &self.rms_ffn
+    }
+
+    pub(crate) fn w1(&self) -> &Range<usize> {
+        &self.w1
+    }
+
+    pub(crate) fn w3(&self) -> &Range<usize> {
+        &self.w3
+    }
+
+    pub(crate) fn w2(&self) -> &Range<usize> {
+        &self.w2
+    }
+}
+
+impl ParamLayout {
+    pub(crate) fn embedding(&self) -> &Range<usize> {
+        &self.embedding
+    }
+
+    pub(crate) fn layer(&self, idx: usize) -> &LayerLayout {
+        &self.layers[idx]
+    }
+
+    pub(crate) fn final_norm(&self) -> &Range<usize> {
+        &self.final_norm
+    }
+
+    pub(crate) fn classifier(&self) -> &Range<usize> {
+        &self.classifier
+    }
 }
 
 /// Parameter group kinds used by the training example to mirror train_gpt.py.
@@ -146,7 +202,11 @@ impl TransformerANE {
         let layout = build_layout(config);
         let mut trainable_params = vec![0.0f32; config.param_count()];
 
-        fill_embedding(&mut trainable_params[layout.embedding.clone()], config.vocab_size, config.dim);
+        fill_embedding(
+            &mut trainable_params[layout.embedding.clone()],
+            config.vocab_size,
+            config.dim,
+        );
 
         for layer in &layout.layers {
             fill_gamma(&mut trainable_params[layer.rms_att.clone()]);
@@ -377,7 +437,11 @@ impl TransformerANE {
         for layer_idx in 0..self.config.n_layers {
             let layer = self.layer(layer_idx);
             let x_attn_in = x.clone();
-            let x_attn_norm = rmsnorm_forward(&x_attn_in, &self.trainable_params[layer.rms_att.clone()], dim);
+            let x_attn_norm = rmsnorm_forward(
+                &x_attn_in,
+                &self.trainable_params[layer.rms_att.clone()],
+                dim,
+            );
 
             let (q, k, v) = if self.use_ane_head {
                 #[cfg(target_vendor = "apple")]
@@ -522,7 +586,11 @@ impl TransformerANE {
                 )
             };
             let x_ffn_in = add_residual(&x_attn_in, &attn_proj_out);
-            let x_ffn_norm = rmsnorm_forward(&x_ffn_in, &self.trainable_params[layer.rms_ffn.clone()], dim);
+            let x_ffn_norm = rmsnorm_forward(
+                &x_ffn_in,
+                &self.trainable_params[layer.rms_ffn.clone()],
+                dim,
+            );
 
             let (h1, h3) = if self.use_ane_head {
                 #[cfg(target_vendor = "apple")]
@@ -670,7 +738,7 @@ impl TransformerANE {
                     _ => {
                         log_ane_forward_block("final_norm", "CPU fallback");
                         rmsnorm_forward(&final_in, self.final_norm(), dim)
-                    },
+                    }
                 }
             }
             #[cfg(not(target_vendor = "apple"))]
@@ -747,11 +815,8 @@ impl TransformerANE {
         let positions = seq_len - 1;
         let mut d_final_norm = vec![0.0f32; cache.final_norm.len()];
 
-        let d_logits_proj = apply_logit_softcap_backward(
-            d_logits,
-            self.config.logit_softcap,
-            &cache.logits,
-        );
+        let d_logits_proj =
+            apply_logit_softcap_backward(d_logits, self.config.logit_softcap, &cache.logits);
         let (d_final_norm_from_logits, d_output_weights) = linear_backward(
             &cache.final_norm[..positions * dim],
             &d_logits_proj,
@@ -813,8 +878,11 @@ impl TransformerANE {
             add_slice(grads, layer.w3.start, &d_w3);
             add_slice(grads, layer.w2.start, &d_w2);
 
-            let (d_x_ffn_in_from_norm, d_ffn_gamma) =
-                rmsnorm_backward(&d_x_ffn_norm_from_ffn, &layer_cache.x_ffn_in, &self.trainable_params[layer.rms_ffn.clone()]);
+            let (d_x_ffn_in_from_norm, d_ffn_gamma) = rmsnorm_backward(
+                &d_x_ffn_norm_from_ffn,
+                &layer_cache.x_ffn_in,
+                &self.trainable_params[layer.rms_ffn.clone()],
+            );
             add_slice(grads, layer.rms_ffn.start, &d_ffn_gamma);
 
             let d_x_attn_input = add_residual(&d_current, &d_x_ffn_in_from_norm);
@@ -841,8 +909,11 @@ impl TransformerANE {
             add_slice(grads, layer.wv.start, &d_wv);
             add_slice(grads, layer.wo.start, &d_wo);
 
-            let (d_x_attn_in_from_norm, d_attn_gamma) =
-                rmsnorm_backward(&d_x_attn_norm_from_attn, &layer_cache.x_attn_in, &self.trainable_params[layer.rms_att.clone()]);
+            let (d_x_attn_in_from_norm, d_attn_gamma) = rmsnorm_backward(
+                &d_x_attn_norm_from_attn,
+                &layer_cache.x_attn_in,
+                &self.trainable_params[layer.rms_att.clone()],
+            );
             add_slice(grads, layer.rms_att.start, &d_attn_gamma);
 
             d_current = add_residual(&d_x_attn_input, &d_x_attn_in_from_norm);
@@ -1021,7 +1092,8 @@ impl TransformerANE {
         weights.extend_from_slice(w1);
         weights.extend_from_slice(w3);
         let weight_blob = WeightBlob::from_f32(&weights, 2 * hidden_dim, in_dim)?;
-        let request = linear_matmul_compile_request(positions, in_dim, 2 * hidden_dim, &weight_blob);
+        let request =
+            linear_matmul_compile_request(positions, in_dim, 2 * hidden_dim, &weight_blob);
         let mut executor = request.compile()?;
 
         let input_tensor = ANETensor::from_fp32(
@@ -1033,7 +1105,8 @@ impl TransformerANE {
 
         let mut output_bytes = vec![0u8; 2 * hidden_dim * positions * 4];
         executor.read_output(0, &mut output_bytes)?;
-        let output = transpose_row_major(&bytes_to_f32_vec(&output_bytes), 2 * hidden_dim, positions);
+        let output =
+            transpose_row_major(&bytes_to_f32_vec(&output_bytes), 2 * hidden_dim, positions);
         let split = hidden_dim * positions;
         Ok((output[0..split].to_vec(), output[split..].to_vec()))
     }
@@ -1068,7 +1141,10 @@ pub fn ane_forward_block_summary() -> Option<String> {
 
         let mut blocks: Vec<_> = guard.iter().copied().collect();
         blocks.sort_unstable();
-        Some(format!("ANE summary: attempted blocks = {}", blocks.join(", ")))
+        Some(format!(
+            "ANE summary: attempted blocks = {}",
+            blocks.join(", ")
+        ))
     }
     #[cfg(not(target_vendor = "apple"))]
     {
@@ -1148,7 +1224,12 @@ impl Model for TransformerANE {
                 vocab_size,
                 normalizer,
             )?;
-            self.backward_sample(sample_tokens, &self.cached.samples[sample_idx], &d_logits, &mut grads)?;
+            self.backward_sample(
+                sample_tokens,
+                &self.cached.samples[sample_idx],
+                &d_logits,
+                &mut grads,
+            )?;
         }
 
         Ok(grads)
@@ -1188,22 +1269,24 @@ impl Model for TransformerANE {
 impl TransformerANE {
     /// Full layer-by-layer ANE backward pass
     fn backward_on_ane_impl(&mut self, batch: &Batch, loss: f32) -> Result<Vec<f32>> {
-        use crate::layers::backward::{BackwardMILGenerator, RMSNormBackwardGen, FFNBackwardGen, AttentionBackwardGen};
         use crate::ane::ANECompileRequest;
-        
+        use crate::layers::backward::{
+            AttentionBackwardGen, BackwardMILGenerator, FFNBackwardGen, RMSNormBackwardGen,
+        };
+
         if self.cached.samples.is_empty() {
             return Err(crate::Error::Other("No cached activations".into()));
         }
-        
+
         let mut grads = vec![0f32; self.config.param_count()];
         let layout = crate::training::transformer_model::build_layout(&self.config);
         let config = &self.config;
         let cache = &self.cached;
         let sample = &cache.samples[0];
-        
+
         // Phase 4 Task 1: Process all layers on ANE
         // Start from output and work backwards through layers
-        
+
         // 1. Final RMSNorm backward (demonstration - already working)
         let dim = config.dim;
         let d_out = vec![0.01f32; sample.final_in.len()];
@@ -1213,52 +1296,68 @@ impl TransformerANE {
         let mut input = d_out;
         input.extend_from_slice(&sample.final_in);
         input.extend_from_slice(w);
-        let req = ANECompileRequest::new(&mil, vec![input.len()*4], vec![sample.final_in.len()*4, dim*4]);
-        
+        let req = ANECompileRequest::new(
+            &mil,
+            vec![input.len() * 4],
+            vec![sample.final_in.len() * 4, dim * 4],
+        );
+
         match req.compile() {
             Ok(mut ex) => {
-                let slice = unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u8, input.len()*4) };
+                let slice = unsafe {
+                    std::slice::from_raw_parts(input.as_ptr() as *const u8, input.len() * 4)
+                };
                 ex.write_input(0, slice)?;
                 ex.eval()?;
-                let mut dw_b = vec![0u8; dim*4];
+                let mut dw_b = vec![0u8; dim * 4];
                 ex.read_output(1, &mut dw_b)?;
-                let dw: Vec<f32> = dw_b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0],c[1],c[2],c[3]])).collect();
+                let dw: Vec<f32> = dw_b
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
                 grads[layout.final_norm.clone()].copy_from_slice(&dw);
             }
-            Err(e) => return Err(crate::Error::Other(format!("ANE final_norm compile: {:?}", e))),
+            Err(e) => {
+                return Err(crate::Error::Other(format!(
+                    "ANE final_norm compile: {:?}",
+                    e
+                )))
+            }
         }
-        
+
         // 2. Process each layer in reverse order
         for layer_idx in (0..config.n_layers).rev() {
-            let layer_cache = &cache.samples[0].layers[layer_idx];
-            let layer_layout = &layout.layers[layer_idx];
-            
+            let _layer_cache = &cache.samples[0].layers[layer_idx];
+            let _layer_layout = &layout.layers[layer_idx];
+
             // 2a. FFN backward on ANE (W1, W2, W3)
             // Note: Full implementation would execute FFNBackwardGen on ANE
             // For now, use CPU and mark for Phase 4 extension
             let ffn_gen = FFNBackwardGen::new();
             let _ffn_mil = ffn_gen.generate(config);
-            
+
             // 2b. Attention backward on ANE (Q, K, V, O)
             // Note: Full implementation would execute AttentionBackwardGen on ANE
             let attn_gen = AttentionBackwardGen::new();
             let _attn_mil = attn_gen.generate(config);
-            
+
             // Phase 4 TODO: Execute FFN and Attention backward on ANE
             // Current: Use CPU for these layers
         }
-        
+
         // 3. Use CPU for remaining gradients (Phase 4 will do all on ANE)
         let cpu = self.backward_with_batch(batch, loss)?;
         for i in 0..grads.len() {
-            if grads[i] == 0.0 { grads[i] = cpu[i]; }
+            if grads[i] == 0.0 {
+                grads[i] = cpu[i];
+            }
         }
-        
+
         Ok(grads)
     }
 }
 
-fn build_layout(config: &TransformerConfig) -> ParamLayout {
+pub(crate) fn build_layout(config: &TransformerConfig) -> ParamLayout {
     let mut offset = 0;
 
     let embedding = offset..offset + config.vocab_size * config.dim;
@@ -1349,7 +1448,12 @@ fn xavier_bound(fan_in: usize, fan_out: usize) -> f32 {
     (6.0f32 / (fan_in + fan_out).max(1) as f32).sqrt()
 }
 
-fn embedding_lookup(tokens: &[u32], embedding: &[f32], dim: usize, vocab_size: usize) -> Result<Vec<f32>> {
+fn embedding_lookup(
+    tokens: &[u32],
+    embedding: &[f32],
+    dim: usize,
+    vocab_size: usize,
+) -> Result<Vec<f32>> {
     let mut x = vec![0.0f32; tokens.len() * dim];
     for (idx, &token) in tokens.iter().enumerate() {
         let token_idx = token as usize;
@@ -1365,7 +1469,12 @@ fn embedding_lookup(tokens: &[u32], embedding: &[f32], dim: usize, vocab_size: u
     Ok(x)
 }
 
-fn embedding_backward(tokens: &[u32], d_x: &[f32], dim: usize, vocab_size: usize) -> Result<Vec<f32>> {
+fn embedding_backward(
+    tokens: &[u32],
+    d_x: &[f32],
+    dim: usize,
+    vocab_size: usize,
+) -> Result<Vec<f32>> {
     let mut d_embedding = vec![0.0f32; vocab_size * dim];
     for (idx, &token) in tokens.iter().enumerate() {
         let token_idx = token as usize;
@@ -1597,8 +1706,7 @@ fn causal_attention_forward(
                 let prob = scores[j] / sum;
                 attn_probs[(head * seq_len + t) * seq_len + j] = prob;
                 for d in 0..head_dim {
-                    attn_out[t * dim + head_offset + d] +=
-                        prob * v[j * dim + head_offset + d];
+                    attn_out[t * dim + head_offset + d] += prob * v[j * dim + head_offset + d];
                 }
             }
         }
@@ -1634,7 +1742,8 @@ fn causal_attention_backward(
     for head in 0..n_heads {
         let head_offset = head * head_dim;
         for t in 0..seq_len {
-            let prob_row = &attn_probs[(head * seq_len + t) * seq_len..(head * seq_len + t + 1) * seq_len];
+            let prob_row =
+                &attn_probs[(head * seq_len + t) * seq_len..(head * seq_len + t + 1) * seq_len];
             let d_out_row = &d_attn_out[t * dim + head_offset..t * dim + head_offset + head_dim];
 
             let mut d_scores = vec![0.0f32; t + 1];

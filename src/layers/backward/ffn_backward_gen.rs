@@ -32,7 +32,6 @@ impl FFNBackwardGen {
     /// Forward: output = SiLU(W1 @ x) * (W3 @ x) @ W2
     /// Backward: Computes gradients for W1, W2, W3, and x
     fn generate_mil_code(&self, config: &TransformerConfig) -> String {
-        let dim = config.hidden_dim;
         let hidden_dim = config.hidden_dim * 4; // Standard FFN expansion
 
         format!(
@@ -164,8 +163,7 @@ main ffn_backward(d_out: tensor<seq_lenxdimxf32>,
             packed_input.extend_from_slice(&val.to_le_bytes());
         }
 
-        let mut request =
-            ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
+        let request = ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
         let mut executor = request
             .compile()
             .map_err(|e| ANEError::EvalFailed(e.to_string()))?;

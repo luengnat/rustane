@@ -117,7 +117,7 @@ impl RMSNormBackwardGen {
             packed_input.extend_from_slice(&val.to_le_bytes());
         }
 
-        let mut request =
+        let request =
             crate::ane::ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
         let mut executor = request
             .compile()
