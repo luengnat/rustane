@@ -32,6 +32,7 @@
 
 mod sys;
 
+pub mod data;
 pub mod error;
 pub mod layers;
 pub mod mil;
@@ -44,6 +45,10 @@ pub mod wrapper;
 #[cfg(feature = "python")]
 pub mod python;
 
+pub use data::{
+    Batch, Collator, DataLoader, Dataset, PadCollator, RandomSampler, SequentialDataset,
+    SequentialSampler, TruncateCollator,
+};
 pub use error::{Error, Result};
 pub use layers::traits::Shape;
 pub use layers::{Conv2d, Layer, LayerBuilder, Linear, ReLU, SiLU, GELU};
