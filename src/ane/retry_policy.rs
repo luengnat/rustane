@@ -129,11 +129,19 @@ impl RetryConfig {
 #[derive(Debug, Clone)]
 pub enum RetryResult<T> {
     /// Operation succeeded after retries
-    Success { result: T, attempts: usize },
+    Success {
+        /// The successful result
+        result: T,
+        /// Number of attempts made
+        attempts: usize,
+    },
     /// Operation failed after all retries
     Failure {
+        /// The last error encountered
         last_error: ANEError,
+        /// Total number of attempts made
         total_attempts: usize,
+        /// All errors encountered
         errors: Vec<ANEError>,
     },
 }
@@ -327,6 +335,7 @@ impl Default for RetryPolicy {
 
 /// Helper trait for retryable ANE operations
 pub trait RetryableOperation {
+    /// The output type of the operation
     type Output;
 
     /// Execute operation with given batch fraction

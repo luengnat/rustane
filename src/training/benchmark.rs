@@ -148,6 +148,7 @@ impl Default for BackwardPassMetrics {
 /// ```
 pub struct TimingContext {
     metrics: BackwardPassMetrics,
+    #[allow(dead_code)]
     current_operation: Option<(String, Instant)>,
 }
 
@@ -169,7 +170,7 @@ impl TimingContext {
     /// # Returns
     ///
     /// A guard that records timing when dropped
-    pub fn time_operation(&mut self, operation_name: &str) -> TimingGuard {
+    pub fn time_operation(&mut self, operation_name: &str) -> TimingGuard<'_> {
         TimingGuard {
             context: self,
             name: operation_name.to_string(),

@@ -238,7 +238,7 @@ impl ErrorLog {
         }
 
         // Recent errors
-        if self.entries.len() > 0 {
+        if !self.entries.is_empty() {
             writeln!(output).ok();
             writeln!(output, "Recent Errors (last 5):").ok();
             for entry in self.recent(5) {

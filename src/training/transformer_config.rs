@@ -2,6 +2,54 @@
 
 use crate::ane::ANEError;
 
+/// Gradient checkpointing configuration for memory-efficient training.
+#[derive(Clone, Debug, Default)]
+pub struct GradientCheckpointingConfig {
+    /// Enable gradient checkpointing to reduce memory usage.
+    /// When enabled, only every `checkpoint_interval` layer activations are stored.
+    /// Missing activations are recomputed during the backward pass.
+    pub enabled: bool,
+    /// Store activations every N layers (default: 2).
+    /// For example, with 12 layers and interval 2, only layers 0, 2, 4, 6, 8, 10 are stored.
+    /// Lower values = more memory saved but more recomputation overhead.
+    pub checkpoint_interval: usize,
+}
+
+impl GradientCheckpointingConfig {
+    /// Create a new gradient checkpointing configuration.
+    pub fn new(enabled: bool, checkpoint_interval: usize) -> Self {
+        assert!(checkpoint_interval > 0, "checkpoint_interval must be > 0");
+        Self {
+            enabled,
+            checkpoint_interval,
+        }
+    }
+
+    /// Disable gradient checkpointing.
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            checkpoint_interval: 1,
+        }
+    }
+
+    /// Enable gradient checkpointing with specified interval.
+    pub fn with_interval(checkpoint_interval: usize) -> Self {
+        Self::new(true, checkpoint_interval)
+    }
+
+    /// Calculate memory savings factor (0.0 = no savings, 1.0 = 100% savings).
+    pub fn memory_savings_factor(&self, n_layers: usize) -> f32 {
+        if !self.enabled {
+            return 0.0;
+        }
+        // We save (interval - 1) / interval of the layer activations
+        let checkpoints = (n_layers + self.checkpoint_interval - 1) / self.checkpoint_interval;
+        let saved_layers = n_layers - checkpoints;
+        saved_layers as f32 / n_layers as f32
+    }
+}
+
 /// Transformer model configuration
 ///
 /// Defines the architecture of a transformer model with validation for ANE compatibility.
@@ -26,6 +74,8 @@ pub struct TransformerConfig {
     pub tie_embeddings: bool,
     /// Logit softcap used during the final projection
     pub logit_softcap: f32,
+    /// Gradient checkpointing configuration for memory-efficient training.
+    pub gradient_checkpointing: GradientCheckpointingConfig,
 }
 
 impl TransformerConfig {
@@ -91,12 +141,25 @@ impl TransformerConfig {
             seq_len,
             tie_embeddings: false,
             logit_softcap: 30.0,
+            gradient_checkpointing: GradientCheckpointingConfig::disabled(),
         })
     }
 
     /// Create a small default configuration used by tests and examples.
     pub fn tiny() -> Self {
         Self::new(256, 128, 256, 4, 2, 64).expect("tiny config should be valid")
+    }
+
+    /// Set gradient checkpointing configuration.
+    pub fn with_gradient_checkpointing(mut self, gradient_checkpointing: GradientCheckpointingConfig) -> Self {
+        self.gradient_checkpointing = gradient_checkpointing;
+        self
+    }
+
+    /// Enable gradient checkpointing with specified interval.
+    pub fn with_checkpoint_interval(mut self, checkpoint_interval: usize) -> Self {
+        self.gradient_checkpointing = GradientCheckpointingConfig::with_interval(checkpoint_interval);
+        self
     }
 
     /// Enable or disable tied input/output embeddings.
@@ -230,5 +293,51 @@ mod tests {
             .expect("valid config")
             .with_logit_softcap(12.5);
         assert_eq!(config.logit_softcap, 12.5);
+    }
+
+    #[test]
+    fn test_gradient_checkpointing_disabled_by_default() {
+        let config = TransformerConfig::tiny();
+        assert!(!config.gradient_checkpointing.enabled);
+    }
+
+    #[test]
+    fn test_gradient_checkpointing_enabled() {
+        let config = TransformerConfig::tiny()
+            .with_checkpoint_interval(2);
+        assert!(config.gradient_checkpointing.enabled);
+        assert_eq!(config.gradient_checkpointing.checkpoint_interval, 2);
+    }
+
+    #[test]
+    fn test_memory_savings_factor() {
+        let gc = GradientCheckpointingConfig::with_interval(2);
+        // With 12 layers and interval 2: store 0, 2, 4, 6, 8, 10 = 6 checkpoints
+        // Save 6 out of 12 = 50% savings
+        assert!((gc.memory_savings_factor(12) - 0.5).abs() < 0.01);
+
+        // With interval 1: store all layers = 0% savings
+        let gc_all = GradientCheckpointingConfig::with_interval(1);
+        assert_eq!(gc_all.memory_savings_factor(12), 0.0);
+
+        // Disabled = 0% savings
+        let gc_disabled = GradientCheckpointingConfig::disabled();
+        assert_eq!(gc_disabled.memory_savings_factor(12), 0.0);
+    }
+
+    #[test]
+    fn test_checkpoint_interval_validation() {
+        // interval 0 should panic
+        let result = std::panic::catch_unwind(|| {
+            GradientCheckpointingConfig::new(true, 0);
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_gradient_checkpointing_config_builder() {
+        let gc = GradientCheckpointingConfig::new(true, 3);
+        assert!(gc.enabled);
+        assert_eq!(gc.checkpoint_interval, 3);
     }
 }

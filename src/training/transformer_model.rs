@@ -56,16 +56,23 @@ pub struct BackwardTimingStats {
 #[cfg(target_vendor = "apple")]
 #[derive(Clone, Debug, Default)]
 pub struct LayerTimingStats {
+    /// Layer index
     pub layer_idx: usize,
+    /// FFN backward pass duration in milliseconds
     pub ffn_backward_ms: f64,
+    /// RMSNorm (FFN) duration in milliseconds
     pub rmsnorm_ffn_ms: f64,
+    /// Attention backward pass duration in milliseconds
     pub attention_backward_ms: f64,
+    /// RMSNorm (Attention) duration in milliseconds
     pub rmsnorm_attn_ms: f64,
+    /// Total layer duration in milliseconds
     pub total_ms: f64,
 }
 
 #[cfg(target_vendor = "apple")]
 impl BackwardTimingStats {
+    /// Create a new BackwardTimingStats instance
     pub fn new() -> Self {
         Self::default()
     }
@@ -195,6 +202,8 @@ pub struct ParameterGroup {
 
 #[derive(Clone, Debug, Default)]
 struct LayerCache {
+    /// Whether this layer's activations are checkpointed (stored) or need recomputation
+    is_checkpoint: bool,
     x_attn_in: Vec<f32>,
     x_attn_norm: Vec<f32>,
     q: Vec<f32>,
@@ -208,6 +217,55 @@ struct LayerCache {
     silu: Vec<f32>,
     h3: Vec<f32>,
     ffn_hidden: Vec<f32>,
+}
+
+impl LayerCache {
+    /// Create an empty (non-checkpointed) layer cache for recomputation.
+    fn empty() -> Self {
+        Self {
+            is_checkpoint: false,
+            ..Default::default()
+        }
+    }
+
+    /// Create a checkpointed layer cache with all activations stored.
+    fn checkpointed(
+        x_attn_in: Vec<f32>,
+        x_attn_norm: Vec<f32>,
+        q: Vec<f32>,
+        k: Vec<f32>,
+        v: Vec<f32>,
+        attn_probs: Vec<f32>,
+        attn_out: Vec<f32>,
+        x_ffn_in: Vec<f32>,
+        x_ffn_norm: Vec<f32>,
+        h1: Vec<f32>,
+        silu: Vec<f32>,
+        h3: Vec<f32>,
+        ffn_hidden: Vec<f32>,
+    ) -> Self {
+        Self {
+            is_checkpoint: true,
+            x_attn_in,
+            x_attn_norm,
+            q,
+            k,
+            v,
+            attn_probs,
+            attn_out,
+            x_ffn_in,
+            x_ffn_norm,
+            h1,
+            silu,
+            h3,
+            ffn_hidden,
+        }
+    }
+
+    /// Check if this cache has stored activations (is a checkpoint).
+    fn has_activations(&self) -> bool {
+        self.is_checkpoint
+    }
 }
 
 /// Forward activations cached for each sample in the most recent batch.
@@ -325,6 +383,17 @@ impl TransformerANE {
     /// Return the model configuration.
     pub fn config(&self) -> &TransformerConfig {
         &self.config
+    }
+
+    /// Check if a layer should be checkpointed (activations stored) based on gradient checkpointing config.
+    fn is_checkpoint_layer(&self, layer_idx: usize) -> bool {
+        if !self.config.gradient_checkpointing.enabled {
+            // No checkpointing: store all layers
+            true
+        } else {
+            // Checkpointing enabled: store only every checkpoint_interval layers
+            layer_idx % self.config.gradient_checkpointing.checkpoint_interval == 0
+        }
     }
 
     /// Enable or disable ANE-backed final projection during forward passes.
@@ -758,21 +827,29 @@ impl TransformerANE {
 
             x = add_residual(&x_ffn_in, &ffn_out);
 
-            sample_cache.layers.push(LayerCache {
-                x_attn_in,
-                x_attn_norm,
-                q,
-                k,
-                v,
-                attn_probs,
-                attn_out,
-                x_ffn_in,
-                x_ffn_norm,
-                h1,
-                silu,
-                h3,
-                ffn_hidden,
-            });
+            // Store layer cache based on checkpointing strategy
+            let is_checkpoint = self.is_checkpoint_layer(layer_idx);
+            let layer_cache = if is_checkpoint {
+                LayerCache::checkpointed(
+                    x_attn_in,
+                    x_attn_norm,
+                    q,
+                    k,
+                    v,
+                    attn_probs,
+                    attn_out,
+                    x_ffn_in,
+                    x_ffn_norm,
+                    h1,
+                    silu,
+                    h3,
+                    ffn_hidden,
+                )
+            } else {
+                // Don't store activations for non-checkpointed layers (will be recomputed)
+                LayerCache::empty()
+            };
+            sample_cache.layers.push(layer_cache);
         }
 
         let final_in = x;
@@ -906,6 +983,19 @@ impl TransformerANE {
             add_slice(grads, self.layout.embedding.start, &d_output_weights);
         } else {
             add_slice(grads, self.layout.classifier.start, &d_output_weights);
+        }
+
+        // For gradient checkpointing: verify all required activations are present
+        // TODO: Implement activation recomputation for non-checkpointed layers
+        if self.config.gradient_checkpointing.enabled {
+            for (idx, layer_cache) in cache.layers.iter().enumerate() {
+                if !layer_cache.has_activations() {
+                    return Err(crate::Error::Other(format!(
+                        "Layer {} activations not checkpointed. Recomputation not yet implemented.",
+                        idx
+                    )));
+                }
+            }
         }
 
         for layer_idx in (0..self.config.n_layers).rev() {
@@ -1395,7 +1485,7 @@ impl TransformerANE {
             // 2a. FFN backward on ANE - Execute W1, W2, W3 gradients
             let ffn_start = Instant::now();
             let ffn_gen = FFNBackwardGen::new();
-            if let Ok(ffn_mil) = ffn_gen.generate(&config) {
+            if let Ok(_ffn_mil) = ffn_gen.generate(&config) {
                 // FFN MIL generated - ready for ANE execution
                 // Phase 4: Full ANE execution with gradient chaining
             }
@@ -1404,7 +1494,7 @@ impl TransformerANE {
             // 2b. Attention backward on ANE - Execute WQ, WK, WV, WO gradients
             let attn_start = Instant::now();
             let attn_gen = AttentionBackwardGen::new();
-            if let Ok(attn_mil) = attn_gen.generate(&config) {
+            if let Ok(_attn_mil) = attn_gen.generate(&config) {
                 // Attention MIL generated - ready for ANE execution
                 // Phase 4: Full ANE execution with gradient chaining
             }
@@ -2008,5 +2098,99 @@ mod tests {
         model.parameters()[config.dim] += 0.5;
         let after = model.forward(&batch).unwrap().as_bytes().to_vec();
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn test_checkpoint_layer_detection() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 4, 64).unwrap();
+        let model = TransformerANE::new(&config).unwrap();
+
+        // Without checkpointing, all layers should be checkpoints
+        assert!(model.is_checkpoint_layer(0));
+        assert!(model.is_checkpoint_layer(1));
+        assert!(model.is_checkpoint_layer(2));
+        assert!(model.is_checkpoint_layer(3));
+    }
+
+    #[test]
+    fn test_checkpoint_layer_with_interval() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 6, 64)
+            .unwrap()
+            .with_checkpoint_interval(2);
+        let model = TransformerANE::new(&config).unwrap();
+
+        // With interval 2, layers 0, 2, 4 should be checkpoints
+        assert!(model.is_checkpoint_layer(0));
+        assert!(!model.is_checkpoint_layer(1));
+        assert!(model.is_checkpoint_layer(2));
+        assert!(!model.is_checkpoint_layer(3));
+        assert!(model.is_checkpoint_layer(4));
+        assert!(!model.is_checkpoint_layer(5));
+    }
+
+    #[test]
+    fn test_forward_without_checkpointing_stores_all_layers() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 1 * 64], 1, 64).unwrap();
+
+        let _ = model.forward(&batch).unwrap();
+
+        // All layers should have activations stored
+        assert_eq!(model.cached.samples.len(), 1);
+        let sample = &model.cached.samples[0];
+        assert_eq!(sample.layers.len(), 2);
+        assert!(sample.layers[0].has_activations());
+        assert!(sample.layers[1].has_activations());
+    }
+
+    #[test]
+    fn test_forward_with_checkpointing_stores_partial_layers() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 4, 64)
+            .unwrap()
+            .with_checkpoint_interval(2);
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 1 * 64], 1, 64).unwrap();
+
+        let _ = model.forward(&batch).unwrap();
+
+        // Layers 0, 2 should be checkpoints; 1, 3 should not
+        assert_eq!(model.cached.samples.len(), 1);
+        let sample = &model.cached.samples[0];
+        assert_eq!(sample.layers.len(), 4);
+        assert!(sample.layers[0].has_activations());
+        assert!(!sample.layers[1].has_activations());
+        assert!(sample.layers[2].has_activations());
+        assert!(!sample.layers[3].has_activations());
+    }
+
+    #[test]
+    fn test_backward_with_checkpointing_enabled_but_all_stored() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)
+            .unwrap()
+            .with_checkpoint_interval(1); // Store all layers
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 1 * 64], 1, 64).unwrap();
+
+        let _ = model.forward(&batch).unwrap();
+        let result = model.backward_with_batch(&batch, 0.5);
+
+        // Should succeed because all layers are stored
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_backward_with_missing_activations_fails() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 4, 64)
+            .unwrap()
+            .with_checkpoint_interval(2); // Only store 0, 2
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 1 * 64], 1, 64).unwrap();
+
+        let _ = model.forward(&batch).unwrap();
+        let result = model.backward_with_batch(&batch, 0.5);
+
+        // Should fail because layers 1, 3 are not stored and recomputation is not yet implemented
+        assert!(result.is_err());
     }
 }

@@ -124,12 +124,35 @@ TOTAL: XX.XX ms
 
 ---
 
-## 📋 Phase 5: Advanced Features - Next
+## 📋 Phase 5: Advanced Features - In Progress
 
-- [ ] Gradient checkpointing for memory efficiency
-- [ ] Mixed precision training (FP16/BF16)
-- [ ] Distributed training (multi-ANE)
-- [ ] Model export/import (checkpointing)
+### ✅ Task 1: Gradient Checkpointing
+- [x] GradientCheckpointingConfig with interval settings
+- [x] LayerCache with checkpoint tracking (is_checkpoint field)
+- [x] Checkpointed forward pass (selective activation storage)
+- [x] is_checkpoint_layer() helper method
+- [x] Memory savings estimation (memory_savings_factor)
+- [x] Comprehensive tests (6 new tests)
+- [x] Gradient checkpointing demo example
+- [ ] Activation recomputation during backward pass (TODO)
+
+### 📋 Task 2: Mixed Precision Training (FP16/BF16)
+- [ ] FP16/BF16 data type support
+- [ ] Loss scaling for FP16 gradients
+- [ ] ANE FP16 kernel compilation
+- [ ] Mixed precision forward/backward passes
+
+### 📋 Task 3: Distributed Training (Multi-ANE)
+- [ ] Multi-ANE device detection
+- [ ] Tensor sharding across ANEs
+- [ ] Gradient synchronization
+- [ ] Distributed optimizer state
+
+### 📋 Task 4: Model Export/Import (Checkpointing)
+- [ ] Model state serialization
+- [ ] Optimizer state checkpointing
+- [ ] Checkpoint save/load API
+- [ ] Training resumption from checkpoint
 
 ---
 
