@@ -1,7 +1,7 @@
 //! Collation strategies for preparing batches
 
-use crate::Result;
 use super::Batch;
+use crate::Result;
 
 /// Trait for collating samples into batches
 ///
@@ -158,10 +158,7 @@ mod tests {
     #[test]
     fn test_pad_collator_basic() {
         let collator = PadCollator::new(5, 0);
-        let samples = vec![
-            vec![1, 2],
-            vec![3, 4, 5],
-        ];
+        let samples = vec![vec![1, 2], vec![3, 4, 5]];
         let batch = collator.collate(samples).unwrap();
         assert_eq!(batch.shape(), (2, 5));
         // First sample: [1, 2, 0, 0, 0]
@@ -199,10 +196,7 @@ mod tests {
     #[test]
     fn test_truncate_collator_basic() {
         let collator = TruncateCollator::new(3, 0);
-        let samples = vec![
-            vec![1, 2, 3, 4, 5],
-            vec![6],
-        ];
+        let samples = vec![vec![1, 2, 3, 4, 5], vec![6]];
         let batch = collator.collate(samples).unwrap();
         assert_eq!(batch.shape(), (2, 3));
         // First sample truncated: [1, 2, 3]

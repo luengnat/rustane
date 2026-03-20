@@ -2,22 +2,20 @@
 
 use rustane::data::{DataLoader, Dataset, RandomSampler};
 use rustane::error::Result;
-use rustane::training::{
-    CrossEntropyLoss, Model, TrainerBuilder,
-};
+use rustane::training::{CrossEntropyLoss, Model, TrainerBuilder};
 use rustane::wrapper::ANETensor;
 use rustane::ConstantScheduler;
 
 /// Minimal model for testing: two linear layers
-/// 
+///
 /// Architecture:
 /// - Input: flattened batch tokens
 /// - Hidden: 64-dim dense layer
 /// - Output: 256 predictions (vocab size)
 struct ToyModel {
-    w1: Vec<f32>, // [256, 64]
-    w2: Vec<f32>, // [64, 256]
-    last_input: Option<Vec<f32>>, // Cache for backward pass
+    w1: Vec<f32>,                  // [256, 64]
+    w2: Vec<f32>,                  // [64, 256]
+    last_input: Option<Vec<f32>>,  // Cache for backward pass
     last_hidden: Option<Vec<f32>>, // Cache for backward pass
 }
 
@@ -52,11 +50,7 @@ impl ToyModel {
 impl Model for ToyModel {
     fn forward(&mut self, batch: &rustane::Batch) -> Result<ANETensor> {
         // Flatten batch tokens to f32
-        let input = batch
-            .tokens()
-            .iter()
-            .map(|&x| x as f32)
-            .collect::<Vec<_>>();
+        let input = batch.tokens().iter().map(|&x| x as f32).collect::<Vec<_>>();
 
         // Hidden layer: ReLU activation
         let hidden = Self::forward_linear(&input, &self.w1, batch.tokens().len(), 64);
@@ -73,13 +67,15 @@ impl Model for ToyModel {
     }
 
     fn backward(&mut self, loss: f32) -> Result<Vec<f32>> {
-        let _hidden = self.last_hidden.as_ref().ok_or_else(|| {
-            rustane::Error::Other("hidden layer not cached".to_string())
-        })?;
+        let _hidden = self
+            .last_hidden
+            .as_ref()
+            .ok_or_else(|| rustane::Error::Other("hidden layer not cached".to_string()))?;
 
-        let _input = self.last_input.as_ref().ok_or_else(|| {
-            rustane::Error::Other("input not cached".to_string())
-        })?;
+        let _input = self
+            .last_input
+            .as_ref()
+            .ok_or_else(|| rustane::Error::Other("input not cached".to_string()))?;
 
         // Simple gradient computation: scale by loss
         let mut grads = vec![0.0; self.w1.len() + self.w2.len()];

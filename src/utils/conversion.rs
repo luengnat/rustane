@@ -136,6 +136,78 @@ pub fn fp16_to_fp32(fp16_weights: &[u16]) -> Result<Vec<f32>> {
         .collect()
 }
 
+/// Convert FP32 weights to BF16 (brain float 16)
+///
+/// Uses BFloat16 format (1 sign bit, 8 exponent bits, 7 mantissa bits)
+/// BFloat16 preserves the exponent range of FP32, making it more stable for training
+/// than FP16 at the cost of precision.
+///
+/// # Arguments
+///
+/// * `fp32_weights` - FP32 weight values
+///
+/// # Returns
+///
+/// BF16 weights as u16 values (bit representation)
+///
+/// # Example
+///
+/// ```
+/// # use rustane::utils::fp32_to_bf16;
+/// let fp32 = vec![1.0f32, 2.0, 3.0];
+/// let bf16 = fp32_to_bf16(&fp32).unwrap();
+/// ```
+pub fn fp32_to_bf16(fp32_weights: &[f32]) -> Result<Vec<u16>> {
+    fp32_weights
+        .iter()
+        .map(|&val| {
+            if !val.is_finite() {
+                return Err(Error::InvalidParameter(format!(
+                    "Cannot convert non-finite value {} to BF16",
+                    val
+                )));
+            }
+
+            // Extract IEEE 754 binary32 representation
+            let bits = val.to_bits();
+
+            // BF16 truncation: keep upper 16 bits (sign + exponent + upper 7 mantissa bits)
+            // This is simpler than FP16 because BF16 keeps the same exponent as FP32
+            let bf16_bits = (bits >> 16) as u16;
+
+            Ok(bf16_bits)
+        })
+        .collect()
+}
+
+/// Convert BF16 weights to FP32
+///
+/// # Arguments
+///
+/// * `bf16_weights` - BF16 weights as u16 (bit representation)
+///
+/// # Returns
+///
+/// FP32 weight values
+///
+/// # Example
+///
+/// ```
+/// # use rustane::utils::bf16_to_fp32;
+/// let bf16 = vec![0x3f80u16, 0x4000]; // 1.0, 2.0 in BF16
+/// let fp32 = bf16_to_fp32(&bf16).unwrap();
+/// ```
+pub fn bf16_to_fp32(bf16_weights: &[u16]) -> Result<Vec<f32>> {
+    bf16_weights
+        .iter()
+        .map(|&bits| {
+            // Zero-extend lower 16 bits to get FP32
+            let fp32_bits = (bits as u32) << 16;
+            Ok(f32::from_bits(fp32_bits))
+        })
+        .collect()
+}
+
 /// Transpose weights from row-major to column-major (or vice versa)
 ///
 /// # Arguments
@@ -244,6 +316,37 @@ mod tests {
                 fp32[i]
             );
         }
+    }
+
+    #[test]
+    fn test_fp32_to_bf16_conversion() {
+        let fp32 = vec![1.0f32, 2.0, 0.5, -1.0, 0.0];
+        let bf16 = fp32_to_bf16(&fp32).unwrap();
+
+        assert_eq!(bf16.len(), 5);
+
+        // Convert back and check
+        let fp32_roundtrip = bf16_to_fp32(&bf16).unwrap();
+
+        for i in 0..fp32.len() {
+            // BF16 has less precision than FP32 but preserves exponent range
+            // For simple values like 1.0, 2.0, 0.5, -1.0, 0.0, it should be exact
+            assert_eq!(
+                fp32_roundtrip[i], fp32[i],
+                "Round-trip failed at index {}: {} vs {}",
+                i, fp32_roundtrip[i], fp32[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_bf16_preserves_special_values() {
+        // Test zeros
+        let zeros = vec![0.0f32, -0.0];
+        let bf16 = fp32_to_bf16(&zeros).unwrap();
+        let fp32_back = bf16_to_fp32(&bf16).unwrap();
+        assert_eq!(fp32_back[0].to_bits(), zeros[0].to_bits()); // +0.0
+        assert_eq!(fp32_back[1].to_bits(), zeros[1].to_bits()); // -0.0
     }
 
     #[test]

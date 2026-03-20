@@ -62,7 +62,10 @@ fn main() -> Result<()> {
     println!("  Heads:         {}", config.n_heads);
     println!("  Layers:        {}", config.n_layers);
     println!("  Hidden dim:    {}", config.hidden_dim);
-    println!("  Total params:  {:.2}M\n", config.param_count() as f32 / 1_000_000.0);
+    println!(
+        "  Total params:  {:.2}M\n",
+        config.param_count() as f32 / 1_000_000.0
+    );
 
     // ============================================================================
     // STEP 2: Dataset and DataLoader
@@ -90,7 +93,10 @@ fn main() -> Result<()> {
     // Create dataloader: batch samples into groups of 2
     let dataloader = DataLoader::new(dataset, sampler, 2)?;
     println!("  DataLoader configured with batch_size=2");
-    println!("  Total batches: {} (8 samples / 2 batch_size)\n", dataset_len / 2);
+    println!(
+        "  Total batches: {} (8 samples / 2 batch_size)\n",
+        dataset_len / 2
+    );
 
     // ============================================================================
     // STEP 3: Model Initialization

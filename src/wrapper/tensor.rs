@@ -228,7 +228,11 @@ impl ANETensor {
     ///
     /// Panics if the dtype is not FP32.
     pub fn to_vec_f32(&self) -> Vec<f32> {
-        assert_eq!(self.dtype, TensorDType::FP32, "to_vec_f32 called on non-FP32 tensor");
+        assert_eq!(
+            self.dtype,
+            TensorDType::FP32,
+            "to_vec_f32 called on non-FP32 tensor"
+        );
         self.data
             .chunks_exact(4)
             .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))

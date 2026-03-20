@@ -198,8 +198,10 @@ impl Default for ANEProfiler {
 pub enum DataType {
     /// 32-bit floating point values.
     FP32,
-    /// 16-bit floating point values.
+    /// 16-bit floating point values (IEEE 754 half precision).
     FP16,
+    /// Brain float 16 (BFloat16) - 8-bit exponent, 7-bit mantissa.
+    BF16,
     /// 8-bit signed integer values.
     INT8,
 }
@@ -210,6 +212,7 @@ impl DataType {
         match self {
             DataType::FP32 => 4,
             DataType::FP16 => 2,
+            DataType::BF16 => 2,
             DataType::INT8 => 1,
         }
     }

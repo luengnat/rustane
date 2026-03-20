@@ -19,11 +19,15 @@ fn main() -> Result<()> {
     println!("Rustane FineWeb Validation Example");
     println!("===================================\n");
 
-    let val_file = "/Users/nat/dev/parameter-golf/data/datasets/fineweb10B_sp1024/fineweb_val_000000.bin";
+    let val_file =
+        "/Users/nat/dev/parameter-golf/data/datasets/fineweb10B_sp1024/fineweb_val_000000.bin";
     let val_path = Path::new(val_file);
 
     if !val_path.exists() {
-        return Err(rustane::Error::Other(format!("Validation file not found: {}", val_file)));
+        return Err(rustane::Error::Other(format!(
+            "Validation file not found: {}",
+            val_file
+        )));
     }
 
     println!("Loading validation data from: {}\n", val_file);
@@ -47,7 +51,7 @@ fn main() -> Result<()> {
     println!("Computing validation metrics...\n");
 
     // Process chunks and accumulate loss
-    let chunk_size = 512;  // tokens per evaluation chunk
+    let chunk_size = 512; // tokens per evaluation chunk
     let chunks = batch.into_chunks(chunk_size)?;
     let mut total_loss = 0.0f32;
     let mut chunk_count = 0usize;
@@ -57,10 +61,7 @@ fn main() -> Result<()> {
         total_tokens += chunk.tokens().len();
 
         // Forward pass to get loss
-        let metrics = trainer.train_accumulated_steps(
-            vec![chunk].into_iter().map(Ok),
-            1,
-        )?;
+        let metrics = trainer.train_accumulated_steps(vec![chunk].into_iter().map(Ok), 1)?;
 
         total_loss += metrics.loss;
         chunk_count += 1;
@@ -110,7 +111,7 @@ struct SimpleModel {
 
 impl SimpleModel {
     fn new(hidden_dim: usize) -> Self {
-        let vocab_size = 1024;  // SentencePiece sp1024
+        let vocab_size = 1024; // SentencePiece sp1024
         let embed_size = vocab_size * hidden_dim;
         let output_size = hidden_dim * vocab_size;
 

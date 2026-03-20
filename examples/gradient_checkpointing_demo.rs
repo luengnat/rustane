@@ -27,9 +27,9 @@
 //! ```
 
 use rustane::data::Batch;
-use rustane::TrainingModel;
-use rustane::training::{TransformerANE, TransformerConfig};
 use rustane::training::transformer_config::GradientCheckpointingConfig;
+use rustane::training::{TransformerANE, TransformerConfig};
+use rustane::TrainingModel;
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,9 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_layers = 6;
     let seq_len = 64;
 
-    let base_config = TransformerConfig::new(
-        vocab_size, dim, hidden_dim, n_heads, n_layers, seq_len,
-    )?;
+    let base_config =
+        TransformerConfig::new(vocab_size, dim, hidden_dim, n_heads, n_layers, seq_len)?;
 
     println!("Configuration:");
     println!("  Layers: {}", n_layers);
@@ -63,9 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (name, gc_config) in configs {
         println!("--- {} ---", name);
 
-        let config = base_config
-            .clone()
-            .with_gradient_checkpointing(gc_config);
+        let config = base_config.clone().with_gradient_checkpointing(gc_config);
 
         // Create model
         let mut model = TransformerANE::new(&config)?;
@@ -82,17 +79,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Estimate memory usage (rough approximation)
         let total_activations = estimate_activation_memory(&config, batch_size, seq_len);
-        let memory_savings_pct =
-            config.gradient_checkpointing.memory_savings_factor(n_layers) * 100.0;
+        let memory_savings_pct = config
+            .gradient_checkpointing
+            .memory_savings_factor(n_layers)
+            * 100.0;
         let stored_activations_pct = 100.0 - memory_savings_pct;
-        let stored_activations = (total_activations as f32 * stored_activations_pct / 100.0) as usize;
+        let stored_activations =
+            (total_activations as f32 * stored_activations_pct / 100.0) as usize;
         let memory_saved_mb = (total_activations - stored_activations) * 4 / (1024 * 1024);
 
         println!("  Forward time: {:.2?}", forward_time);
-        println!(
-            "  Output shape: {:?}",
-            output.shape()
-        );
+        println!("  Output shape: {:?}", output.shape());
         println!(
             "  Estimated memory saved: {:.1} MB ({:.1}%)",
             memory_saved_mb, memory_savings_pct
@@ -110,7 +107,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Estimate activation memory per layer in elements (not bytes)
-fn estimate_activation_memory(config: &TransformerConfig, batch_size: usize, seq_len: usize) -> usize {
+fn estimate_activation_memory(
+    config: &TransformerConfig,
+    batch_size: usize,
+    seq_len: usize,
+) -> usize {
     // Approximate activations stored per layer:
     // - x_attn_in, x_attn_norm, q, k, v, attn_out, attn_probs
     // - x_ffn_in, x_ffn_norm, h1, silu, h3, ffn_hidden

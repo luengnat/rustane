@@ -12,20 +12,22 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use glob::glob;
-use rustane::data::{Batch, Dataset, DataLoader, SequentialSampler};
+use rustane::data::{Batch, DataLoader, Dataset, SequentialSampler};
 use rustane::error::Result;
 use rustane::training::{
-    ANEGradientAccumulator, ConstantScheduler, CpuTrainingBackend, CrossEntropyLoss, LossFn,
-    Model, TrainingBackend, WarmupCosineScheduler, WarmupLinearScheduler,
+    ANEGradientAccumulator, ConstantScheduler, CpuTrainingBackend, CrossEntropyLoss, LossFn, Model,
+    TrainingBackend, WarmupCosineScheduler, WarmupLinearScheduler,
 };
 use rustane::training::{TransformerANE, TransformerConfig};
 use sentencepiece_model::SentencePieceModel;
 
 fn main() -> Result<()> {
-    let data_path = std::env::var("DATA_PATH")
-        .unwrap_or_else(|_| "/Users/nat/dev/parameter-golf/data/datasets/fineweb10B_sp1024".to_string());
-    let tokenizer_path = std::env::var("TOKENIZER_PATH")
-        .unwrap_or_else(|_| "/Users/nat/dev/parameter-golf/data/tokenizers/fineweb_1024_bpe.model".to_string());
+    let data_path = std::env::var("DATA_PATH").unwrap_or_else(|_| {
+        "/Users/nat/dev/parameter-golf/data/datasets/fineweb10B_sp1024".to_string()
+    });
+    let tokenizer_path = std::env::var("TOKENIZER_PATH").unwrap_or_else(|_| {
+        "/Users/nat/dev/parameter-golf/data/tokenizers/fineweb_1024_bpe.model".to_string()
+    });
 
     let vocab_size = std::env::var("VOCAB_SIZE")
         .ok()
@@ -139,12 +141,20 @@ fn main() -> Result<()> {
     let lr_scale_peak = std::env::var("LR_SCALE_PEAK")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
-        .or_else(|| std::env::var("PEAK_LR").ok().and_then(|s| s.parse::<f32>().ok()))
+        .or_else(|| {
+            std::env::var("PEAK_LR")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+        })
         .unwrap_or(1.0);
     let lr_scale_min = std::env::var("LR_SCALE_MIN")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
-        .or_else(|| std::env::var("MIN_LR").ok().and_then(|s| s.parse::<f32>().ok()))
+        .or_else(|| {
+            std::env::var("MIN_LR")
+                .ok()
+                .and_then(|s| s.parse::<f32>().ok())
+        })
         .unwrap_or(0.01);
     let warmup_steps = std::env::var("WARMUP_STEPS")
         .ok()
@@ -208,9 +218,11 @@ fn main() -> Result<()> {
     let train_sampler = SequentialSampler::new(train_dataset.len());
     let mut train_iter = DataLoader::new(train_dataset.clone(), train_sampler, batch_size)?.iter();
 
-    let config = TransformerConfig::new(vocab_size, model_dim, hidden_dim, num_heads, num_layers, seq_len)?
-        .with_tie_embeddings(tie_embeddings)
-        .with_logit_softcap(logit_softcap);
+    let config = TransformerConfig::new(
+        vocab_size, model_dim, hidden_dim, num_heads, num_layers, seq_len,
+    )?
+    .with_tie_embeddings(tie_embeddings)
+    .with_logit_softcap(logit_softcap);
     let mut model = TransformerANE::new(&config)?;
     model.enable_ane_head(ane_forward_head);
     let mut backend = CpuTrainingBackend::new(
@@ -256,9 +268,9 @@ fn main() -> Result<()> {
                     batch_size,
                 )?
                 .iter();
-                train_iter
-                    .next()
-                    .ok_or_else(|| rustane::Error::Other("training dataset produced no batch".to_string()))??
+                train_iter.next().ok_or_else(|| {
+                    rustane::Error::Other("training dataset produced no batch".to_string())
+                })??
             }
         };
 
@@ -287,7 +299,9 @@ fn main() -> Result<()> {
             }
             let grad_norm = l2_norm(&grads);
             if !grad_norm.is_finite() {
-                return Err(rustane::Error::Other(format!("invalid grad norm: {grad_norm}")));
+                return Err(rustane::Error::Other(format!(
+                    "invalid grad norm: {grad_norm}"
+                )));
             }
             let mut clipped = grads;
             if grad_clip_norm > 0.0 && grad_norm > grad_clip_norm {
@@ -318,7 +332,8 @@ fn main() -> Result<()> {
         };
         total_train_batches += 1;
 
-        let should_validate = val_loss_every > 0 && (step == 0 || (step + 1) % val_loss_every == 0 || step + 1 == train_steps);
+        let should_validate = val_loss_every > 0
+            && (step == 0 || (step + 1) % val_loss_every == 0 || step + 1 == train_steps);
         let mut val_note = String::from("-");
         if should_validate {
             let (val_loss, val_bpb, val_tokens) = evaluate_validation(
@@ -331,10 +346,15 @@ fn main() -> Result<()> {
             )?;
             last_val_loss = Some(val_loss);
             last_val_bpb = Some(val_bpb);
-            val_note = format!("val_loss:{:.4} val_bpb:{:.4} tokens:{}", val_loss, val_bpb, val_tokens);
+            val_note = format!(
+                "val_loss:{:.4} val_bpb:{:.4} tokens:{}",
+                val_loss, val_bpb, val_tokens
+            );
         }
 
-        if train_log_every > 0 && (step < 10 || (step + 1) % train_log_every == 0 || step + 1 == train_steps) {
+        if train_log_every > 0
+            && (step < 10 || (step + 1) % train_log_every == 0 || step + 1 == train_steps)
+        {
             println!(
                 "{:>4} | {:>10.6} | {:>10.6} | {:>8.6} | {}",
                 step, metrics.loss, metrics.grad_norm, metrics.learning_rate, val_note
@@ -347,7 +367,10 @@ fn main() -> Result<()> {
     let elapsed_ms = train_start.elapsed().as_secs_f64() * 1000.0;
     println!("  Elapsed time:     {:.0} ms", elapsed_ms);
     if total_train_batches > 0 {
-        println!("  Avg step time:    {:.2} ms", elapsed_ms / total_train_batches as f64);
+        println!(
+            "  Avg step time:    {:.2} ms",
+            elapsed_ms / total_train_batches as f64
+        );
     }
     if let Some(loss) = last_val_loss {
         println!("  Final val loss:   {:.6}", loss);
@@ -419,9 +442,18 @@ fn build_scheduler(
     min_lr: f32,
 ) -> Box<dyn rustane::training::LRScheduler> {
     match name.to_ascii_lowercase().as_str() {
-        "linear" => Box::new(WarmupLinearScheduler::new(peak_lr, warmup_steps, total_steps)),
+        "linear" => Box::new(WarmupLinearScheduler::new(
+            peak_lr,
+            warmup_steps,
+            total_steps,
+        )),
         "constant" => Box::new(ConstantScheduler::new(peak_lr)),
-        _ => Box::new(WarmupCosineScheduler::new(peak_lr, warmup_steps, total_steps, min_lr)),
+        _ => Box::new(WarmupCosineScheduler::new(
+            peak_lr,
+            warmup_steps,
+            total_steps,
+            min_lr,
+        )),
     }
 }
 
@@ -531,8 +563,9 @@ struct SentencePieceStats {
 
 impl SentencePieceStats {
     fn load(path: &str) -> Result<Self> {
-        let model = SentencePieceModel::from_file(path)
-            .map_err(|e| rustane::Error::Other(format!("failed to load tokenizer model {}: {}", path, e)))?;
+        let model = SentencePieceModel::from_file(path).map_err(|e| {
+            rustane::Error::Other(format!("failed to load tokenizer model {}: {}", path, e))
+        })?;
 
         let vocab_size = model.pieces().len();
         let mut base_bytes = vec![0u32; vocab_size];
@@ -540,10 +573,9 @@ impl SentencePieceStats {
         let mut is_boundary_token = vec![true; vocab_size];
 
         for (idx, piece) in model.pieces().iter().enumerate() {
-            let text = piece
-                .piece
-                .as_ref()
-                .ok_or_else(|| rustane::Error::Other(format!("token {} missing piece string", idx)))?;
+            let text = piece.piece.as_ref().ok_or_else(|| {
+                rustane::Error::Other(format!("token {} missing piece string", idx))
+            })?;
             let ty = piece.r#type.unwrap_or(1);
             let is_control = ty == 3 || ty == 2 || ty == 5;
             let is_byte = ty == 6;
@@ -587,13 +619,22 @@ impl SentencePieceStats {
                 let prev_id = batch.tokens()[sample_offset + pos] as usize;
                 let tgt_id = batch.tokens()[sample_offset + pos + 1] as usize;
                 let base = *self.base_bytes.get(tgt_id).ok_or_else(|| {
-                    rustane::Error::Other(format!("token id {} out of bounds for tokenizer", tgt_id))
+                    rustane::Error::Other(format!(
+                        "token id {} out of bounds for tokenizer",
+                        tgt_id
+                    ))
                 })? as usize;
                 let has_space = *self.has_leading_space.get(tgt_id).ok_or_else(|| {
-                    rustane::Error::Other(format!("token id {} out of bounds for tokenizer", tgt_id))
+                    rustane::Error::Other(format!(
+                        "token id {} out of bounds for tokenizer",
+                        tgt_id
+                    ))
                 })?;
                 let boundary = *self.is_boundary_token.get(prev_id).ok_or_else(|| {
-                    rustane::Error::Other(format!("token id {} out of bounds for tokenizer", prev_id))
+                    rustane::Error::Other(format!(
+                        "token id {} out of bounds for tokenizer",
+                        prev_id
+                    ))
                 })?;
                 bytes += base + if has_space && !boundary { 1 } else { 0 };
             }

@@ -128,9 +128,7 @@ fn test_loss_backward_mil_generation() {
     let mil_code = gen.generate(&config).unwrap();
 
     // Verify MIL code structure
-    assert!(
-        !mil_code.is_empty()
-    );
+    assert!(!mil_code.is_empty());
     // MIL generation successful
 }
 
@@ -202,9 +200,7 @@ fn test_rmsnorm_backward_mil_contains_expected_operations() {
     let mil_code = gen.generate(&config).unwrap();
 
     // RMSNorm backward should contain normalization-related operations
-    assert!(
-        true  // MIL generation works
-    );
+    assert!(true, "MIL generation works");
 }
 
 #[test]
@@ -214,9 +210,7 @@ fn test_attention_backward_mil_contains_expected_operations() {
     let mil_code = gen.generate(&config).unwrap();
 
     // Attention backward should contain matrix operations
-    assert!(
-        true  // MIL generation works
-    );
+    assert!(true, "MIL generation works");
 }
 
 #[test]
@@ -226,9 +220,7 @@ fn test_ffn_backward_mil_contains_expected_operations() {
     let mil_code = gen.generate(&config).unwrap();
 
     // FFN backward should contain activation-related operations
-    assert!(
-        true  // MIL generation works
-    );
+    assert!(true, "MIL generation works");
 }
 
 #[test]
@@ -238,7 +230,5 @@ fn test_loss_backward_mil_contains_expected_operations() {
     let mil_code = gen.generate(&config).unwrap();
 
     // Loss backward should contain softmax-related operations
-    assert!(
-        true  // MIL generation works
-    );
+    assert!(true, "MIL generation works");
 }

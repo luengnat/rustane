@@ -24,11 +24,7 @@ use crate::ane::Result;
 /// - `(d_x, dw)` where:
 ///   - `d_x`: Gradient w.r.t. input [seq_len * dim]
 ///   - `dw`: Gradient w.r.t. weights [dim]
-pub fn rmsnorm_backward(
-    d_out: &[f32],
-    x: &[f32],
-    w: &[f32],
-) -> (Vec<f32>, Vec<f32>) {
+pub fn rmsnorm_backward(d_out: &[f32], x: &[f32], w: &[f32]) -> (Vec<f32>, Vec<f32>) {
     assert_eq!(d_out.len(), x.len());
 
     let seq_len = d_out.len() / w.len();
@@ -60,9 +56,7 @@ pub fn rmsnorm_backward(
 
         // Gradient w.r.t. input
         // dL/dx = (dL/d_out * w / rms) - (mean(dL/d_out * w * norm_x) * x / rms^3)
-        let weighted_grad_sum: f32 = (0..dim)
-            .map(|j| d_out_pos[j] * w[j] * norm_x[j])
-            .sum();
+        let weighted_grad_sum: f32 = (0..dim).map(|j| d_out_pos[j] * w[j] * norm_x[j]).sum();
 
         for i in 0..dim {
             let first_term = d_out_pos[i] * w[i] / rms;
@@ -89,11 +83,7 @@ pub fn rmsnorm_backward(
 ///
 /// # Returns
 /// Gradient w.r.t. logits [seq_len * vocab_size]
-pub fn cross_entropy_backward(
-    logits: &[f32],
-    targets: &[u32],
-    vocab_size: usize,
-) -> Vec<f32> {
+pub fn cross_entropy_backward(logits: &[f32], targets: &[u32], vocab_size: usize) -> Vec<f32> {
     let seq_len = targets.len();
     assert_eq!(logits.len(), seq_len * vocab_size);
 
@@ -106,15 +96,9 @@ pub fn cross_entropy_backward(
 
         // Compute softmax with numerical stability
         // Subtract maximum for numerical stability (prevents overflow)
-        let max_logit = pos_logits
-            .iter()
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max);
+        let max_logit = pos_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-        let exp_logits: Vec<f32> = pos_logits
-            .iter()
-            .map(|&l| (l - max_logit).exp())
-            .collect();
+        let exp_logits: Vec<f32> = pos_logits.iter().map(|&l| (l - max_logit).exp()).collect();
 
         let sum_exp: f32 = exp_logits.iter().sum();
 

@@ -12,6 +12,6 @@ pub mod loading;
 pub mod profiling;
 
 pub use benchmark::{benchmark_inference, BenchmarkResults};
-pub use conversion::{fp16_to_fp32, fp32_to_fp16, transpose_weights};
+pub use conversion::{bf16_to_fp32, fp16_to_fp32, fp32_to_bf16, fp32_to_fp16, transpose_weights};
 pub use loading::{load_weights_from_file, save_weights_to_file};
 pub use profiling::{ANEProfiler, MemoryProfiler, ProfileReport};

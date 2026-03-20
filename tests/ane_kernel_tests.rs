@@ -55,7 +55,7 @@ fn test_ane_kernel_write_input_size_mismatch() {
 
     assert!(result.is_err());
     match result {
-        Err(rustane::Error::Io(_)) => {}, // Expected
+        Err(rustane::Error::Io(_)) => {} // Expected
         _ => panic!("Expected size mismatch error"),
     }
 }
@@ -81,13 +81,17 @@ fn test_ane_kernel_read_output_valid() {
     let mut kernel = ANEKernel::new(input_sizes, output_sizes).unwrap();
 
     // Write some data to the output surface first
-    let write_data = vec![1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32];
-    kernel.io_outputs[0].write(&unsafe {
-        std::slice::from_raw_parts(
-            write_data.as_ptr() as *const u8,
-            write_data.len() * std::mem::size_of::<f32>(),
-        )
-    }).unwrap();
+    let write_data = vec![
+        1.0f32, 2.0f32, 3.0f32, 4.0f32, 5.0f32, 6.0f32, 7.0f32, 8.0f32,
+    ];
+    kernel.io_outputs[0]
+        .write(&unsafe {
+            std::slice::from_raw_parts(
+                write_data.as_ptr() as *const u8,
+                write_data.len() * std::mem::size_of::<f32>(),
+            )
+        })
+        .unwrap();
 
     let result = kernel.read_output(0);
     assert!(result.is_ok());

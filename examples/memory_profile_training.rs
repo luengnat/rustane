@@ -43,8 +43,7 @@ impl MemoryStats {
     }
 
     pub fn current_heap_usage(&self) -> usize {
-        self.heap_allocated.load(Ordering::Relaxed)
-            - self.heap_deallocated.load(Ordering::Relaxed)
+        self.heap_allocated.load(Ordering::Relaxed) - self.heap_deallocated.load(Ordering::Relaxed)
     }
 
     pub fn update_peak(&self) {
@@ -67,7 +66,9 @@ impl MemoryStats {
         MemoryReport {
             current_heap_mb: self.current_heap_usage() as f64 / 1024.0 / 1024.0,
             peak_heap_mb: self.peak_heap_usage.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0,
-            ane_iosurface_mb: self.ane_iosurface_bytes.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0,
+            ane_iosurface_mb: self.ane_iosurface_bytes.load(Ordering::Relaxed) as f64
+                / 1024.0
+                / 1024.0,
         }
     }
 }
@@ -139,7 +140,11 @@ impl MemoryProfiler {
 
     pub fn record_step(&mut self, step: usize, duration_ms: f64) {
         let current = self.snapshot();
-        let before = self.profiles.last().map(|p| p.after.clone()).unwrap_or(current.clone());
+        let before = self
+            .profiles
+            .last()
+            .map(|p| p.after.clone())
+            .unwrap_or(current.clone());
         let profile = StepMemoryProfile::new(step, before, current, duration_ms);
         self.stats.update_peak();
         profile.report();
@@ -148,20 +153,25 @@ impl MemoryProfiler {
 
     pub fn summary(&self) -> MemoryProfileSummary {
         let total_delta: f64 = self.profiles.iter().map(|p| p.delta_heap_mb).sum();
-        let max_delta = self.profiles.iter()
+        let max_delta = self
+            .profiles
+            .iter()
             .map(|p| p.delta_heap_mb)
             .fold(f64::NEG_INFINITY, f64::max);
-        let avg_duration_ms = self.profiles.iter()
-            .map(|p| p.duration_ms)
-            .sum::<f64>() / self.profiles.len() as f64;
+        let avg_duration_ms =
+            self.profiles.iter().map(|p| p.duration_ms).sum::<f64>() / self.profiles.len() as f64;
 
         MemoryProfileSummary {
             total_steps: self.profiles.len(),
             total_heap_growth_mb: total_delta,
             max_step_growth_mb: max_delta,
             avg_step_duration_ms: avg_duration_ms,
-            peak_heap_mb: self.stats.peak_heap_usage.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0,
-            ane_iosurface_mb: self.stats.ane_iosurface_bytes.load(Ordering::Relaxed) as f64 / 1024.0 / 1024.0,
+            peak_heap_mb: self.stats.peak_heap_usage.load(Ordering::Relaxed) as f64
+                / 1024.0
+                / 1024.0,
+            ane_iosurface_mb: self.stats.ane_iosurface_bytes.load(Ordering::Relaxed) as f64
+                / 1024.0
+                / 1024.0,
         }
     }
 }
@@ -183,9 +193,17 @@ impl std::fmt::Display for MemoryProfileSummary {
         writeln!(f, "Memory Profile Summary")?;
         writeln!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")?;
         writeln!(f, "  Total Steps: {}", self.total_steps)?;
-        writeln!(f, "  Total Heap Growth: {:.2} MB", self.total_heap_growth_mb)?;
+        writeln!(
+            f,
+            "  Total Heap Growth: {:.2} MB",
+            self.total_heap_growth_mb
+        )?;
         writeln!(f, "  Max Step Growth: {:.2} MB", self.max_step_growth_mb)?;
-        writeln!(f, "  Avg Step Duration: {:.2} ms", self.avg_step_duration_ms)?;
+        writeln!(
+            f,
+            "  Avg Step Duration: {:.2} ms",
+            self.avg_step_duration_ms
+        )?;
         writeln!(f, "  Peak Heap Usage: {:.2} MB", self.peak_heap_mb)?;
         writeln!(f, "  ANE IOSurface: {:.2} MB", self.ane_iosurface_mb)?;
         writeln!(f, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")?;

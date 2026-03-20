@@ -9,8 +9,8 @@
 //! cargo run --example model_serialization
 //! ```
 
-use rustane::training::{Model, TransformerANE, TransformerConfig};
 use rustane::data::Batch;
+use rustane::training::{Model, TransformerANE, TransformerConfig};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -53,11 +53,14 @@ fn save_model(
     // Serialize as raw FP32 binary (little-endian)
     let weights_path = model_path.join("weights.bin");
     let mut file = fs::File::create(&weights_path)?;
-    let bytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(params.as_ptr() as *const u8, params.len() * 4)
-    };
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(params.as_ptr() as *const u8, params.len() * 4) };
     file.write_all(bytes)?;
-    println!("  ✓ Weights → {} ({} bytes)", weights_path.display(), bytes.len());
+    println!(
+        "  ✓ Weights → {} ({} bytes)",
+        weights_path.display(),
+        bytes.len()
+    );
 
     // Save metadata as JSON using serde_json::json! macro
     let metadata_path = model_path.join("metadata.json");
@@ -83,9 +86,7 @@ fn save_model(
 }
 
 /// Load TransformerANE weights from disk
-fn load_model(
-    name: &str,
-) -> Result<(Vec<f32>, ModelMetadata), Box<dyn std::error::Error>> {
+fn load_model(name: &str) -> Result<(Vec<f32>, ModelMetadata), Box<dyn std::error::Error>> {
     println!("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("Loading Model: {}", name);
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -115,8 +116,10 @@ fn load_model(
 
     println!("  Name:    {}", meta.name);
     println!("  Version: {}", meta.version);
-    println!("  Config:  vocab={} dim={} heads={} layers={}",
-        meta.vocab_size, meta.dim, meta.n_heads, meta.n_layers);
+    println!(
+        "  Config:  vocab={} dim={} heads={} layers={}",
+        meta.vocab_size, meta.dim, meta.n_heads, meta.n_layers
+    );
 
     // Load weights binary
     let weights_path = model_path.join("weights.bin");
@@ -129,7 +132,11 @@ fn load_model(
         .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
         .collect();
 
-    println!("  ✓ Loaded {} parameters ({} bytes)", weights.len(), bytes.len());
+    println!(
+        "  ✓ Loaded {} parameters ({} bytes)",
+        weights.len(),
+        bytes.len()
+    );
     Ok((weights, meta))
 }
 
@@ -146,25 +153,37 @@ fn verify_round_trip(
     // Create a fresh model and inject loaded weights
     let mut restored = TransformerANE::new(config)?;
     let params = restored.parameters();
-    assert_eq!(params.len(), loaded_weights.len(),
-        "Parameter count mismatch: {} vs {}", params.len(), loaded_weights.len());
+    assert_eq!(
+        params.len(),
+        loaded_weights.len(),
+        "Parameter count mismatch: {} vs {}",
+        params.len(),
+        loaded_weights.len()
+    );
     params.copy_from_slice(loaded_weights);
     println!("  ✓ Weights injected into fresh model");
 
     // Run the same forward pass on both models
-    let tokens: Vec<u32> = (0..config.seq_len as u32).map(|i| i % config.vocab_size as u32).collect();
+    let tokens: Vec<u32> = (0..config.seq_len as u32)
+        .map(|i| i % config.vocab_size as u32)
+        .collect();
     let batch = Batch::new(tokens, 1, config.seq_len)?;
 
     let original_out = original.forward(&batch)?;
     let restored_out = restored.forward(&batch)?;
 
-    assert_eq!(original_out.num_elements(), restored_out.num_elements(),
-        "Output shape mismatch");
+    assert_eq!(
+        original_out.num_elements(),
+        restored_out.num_elements(),
+        "Output shape mismatch"
+    );
 
     // Check all outputs match within floating-point precision
     let orig_data = original_out.to_vec_f32();
     let rest_data = restored_out.to_vec_f32();
-    let max_diff = orig_data.iter().zip(rest_data.iter())
+    let max_diff = orig_data
+        .iter()
+        .zip(rest_data.iter())
         .map(|(a, b)| (a - b).abs())
         .fold(0.0f32, f32::max);
 
@@ -172,7 +191,10 @@ fn verify_round_trip(
     if max_diff < 1e-5 {
         println!("  ✓ Round-trip verification PASSED (max diff < 1e-5)");
     } else {
-        println!("  ✗ Round-trip verification FAILED (max diff = {:.2e})", max_diff);
+        println!(
+            "  ✗ Round-trip verification FAILED (max diff = {:.2e})",
+            max_diff
+        );
         return Err("Round-trip verification failed".into());
     }
 
@@ -185,12 +207,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Configure and initialize TransformerANE model
     let config = TransformerConfig::new(
-        512,  // vocab_size
-        128,  // dim
-        256,  // hidden_dim
-        4,    // n_heads
-        2,    // n_layers
-        64,   // seq_len
+        512, // vocab_size
+        128, // dim
+        256, // hidden_dim
+        4,   // n_heads
+        2,   // n_layers
+        64,  // seq_len
     )?;
 
     println!("Step 1: Initializing TransformerANE...");
@@ -241,8 +263,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("    ├── metadata.json   # Config, version, param count");
     println!("    └── weights.bin     # Raw FP32 (little-endian)");
     println!("\n  Weight layout: contiguous f32 parameter vector");
-    println!("  Size: {} params × 4 bytes = {} KB",
-        config.param_count(), config.param_count() * 4 / 1024);
+    println!(
+        "  Size: {} params × 4 bytes = {} KB",
+        config.param_count(),
+        config.param_count() * 4 / 1024
+    );
 
     println!("\n✅ ANE model serialization example completed!");
     Ok(())

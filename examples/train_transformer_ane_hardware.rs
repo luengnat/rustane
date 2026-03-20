@@ -12,10 +12,10 @@
 //! ```
 
 use rustane::data::Batch;
-use rustane::layers::backward::{RMSNormBackwardGen, BackwardMILGenerator};
+use rustane::layers::backward::{BackwardMILGenerator, RMSNormBackwardGen};
 use rustane::training::{
-    ANEGradientBuffer, ANEBackwardKernel, ANEBackwardKernelCache,
-    CrossEntropyLoss, LossFn, Model, TransformerANE, TransformerConfig,
+    ANEBackwardKernel, ANEBackwardKernelCache, ANEGradientBuffer, CrossEntropyLoss, LossFn, Model,
+    TransformerANE, TransformerConfig,
 };
 
 fn main() -> rustane::Result<()> {
@@ -27,12 +27,12 @@ fn main() -> rustane::Result<()> {
     // Step 1: Create model configuration
     println!("Step 1: Creating model configuration...");
     let config = TransformerConfig::new(
-        512,   // vocab_size
-        128,   // dim
-        256,   // hidden_dim
-        4,     // n_heads
-        2,     // n_layers
-        64,    // seq_len
+        512, // vocab_size
+        128, // dim
+        256, // hidden_dim
+        4,   // n_heads
+        2,   // n_layers
+        64,  // seq_len
     )?;
     println!("  Parameters: {}\n", config.param_count());
 
@@ -44,11 +44,11 @@ fn main() -> rustane::Result<()> {
     // Step 3: Compile backward kernels
     println!("Step 3: Compiling backward kernels to ANE...");
     let mut kernel_cache = ANEBackwardKernelCache::new();
-    
+
     // Compile RMSNorm backward kernel as example
     let rmsnorm_gen = RMSNormBackwardGen::new();
     let mil_code = rmsnorm_gen.generate(&config)?;
-    
+
     match ANEBackwardKernel::compile(&mil_code, &config, "rmsnorm_backward") {
         Ok(kernel) => {
             println!("  ✓ RMSNorm backward kernel compiled");
@@ -128,7 +128,7 @@ fn main() -> rustane::Result<()> {
             } else {
                 grads.iter().map(|g| g.abs()).fold(0.0f32, f32::max)
             };
-            
+
             println!(
                 "  Step {}: loss={:.4}, grad_norm={:.4e}",
                 step, loss, grad_norm

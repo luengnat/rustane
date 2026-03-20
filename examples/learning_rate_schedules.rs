@@ -43,13 +43,31 @@ fn main() {
     let scheduler = WarmupCosineScheduler::new(1e-4, 500, 10000, 1e-6);
 
     println!("Learning rate progression:");
-    println!("  Step 0:    LR = {:.6e} (start warmup)", scheduler.get_lr(0));
-    println!("  Step 250:  LR = {:.6e} (mid warmup)", scheduler.get_lr(250));
-    println!("  Step 500:  LR = {:.6e} (end warmup, start cosine)", scheduler.get_lr(500));
-    println!("  Step 2500: LR = {:.6e} (mid training)", scheduler.get_lr(2500));
+    println!(
+        "  Step 0:    LR = {:.6e} (start warmup)",
+        scheduler.get_lr(0)
+    );
+    println!(
+        "  Step 250:  LR = {:.6e} (mid warmup)",
+        scheduler.get_lr(250)
+    );
+    println!(
+        "  Step 500:  LR = {:.6e} (end warmup, start cosine)",
+        scheduler.get_lr(500)
+    );
+    println!(
+        "  Step 2500: LR = {:.6e} (mid training)",
+        scheduler.get_lr(2500)
+    );
     println!("  Step 5000: LR = {:.6e} (halfway)", scheduler.get_lr(5000));
-    println!("  Step 7500: LR = {:.6e} (3/4 done)", scheduler.get_lr(7500));
-    println!("  Step 9999: LR = {:.6e} (near end)", scheduler.get_lr(9999));
+    println!(
+        "  Step 7500: LR = {:.6e} (3/4 done)",
+        scheduler.get_lr(7500)
+    );
+    println!(
+        "  Step 9999: LR = {:.6e} (near end)",
+        scheduler.get_lr(9999)
+    );
     println!();
 
     // Example 5: Compare schedules
@@ -67,10 +85,7 @@ fn main() {
         let c_lr = format!("{:.6}", constant.get_lr(step));
         let l_lr = format!("{:.6}", linear.get_lr(step));
         let co_lr = format!("{:.6}", cosine.get_lr(step));
-        println!(
-            "{:4} | {}  | {}    | {}",
-            step, c_lr, l_lr, co_lr
-        );
+        println!("{:4} | {}  | {}    | {}", step, c_lr, l_lr, co_lr);
     }
 
     println!("\n✓ Example completed!");

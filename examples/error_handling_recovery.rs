@@ -4,8 +4,8 @@
 //! and graceful degradation strategies introduced in Phase 4.
 
 use rustane::ane::{
-    ANEError, ErrorDiagnostic, ErrorLog, ErrorReporter, ErrorSeverity,
-    FallbackExecutor, FallbackStrategy, RetryConfig, RetryPolicy,
+    ANEError, ErrorDiagnostic, ErrorLog, ErrorReporter, ErrorSeverity, FallbackExecutor,
+    FallbackStrategy, RetryConfig, RetryPolicy,
 };
 
 /// Example 1: Basic Error Diagnostics
@@ -29,7 +29,10 @@ fn example_error_diagnostics() {
 
         println!("Error: {}", error);
         println!("Category: {:?}", diagnostic.category);
-        println!("Severity: {:?}", ErrorSeverity::from_category(diagnostic.category));
+        println!(
+            "Severity: {:?}",
+            ErrorSeverity::from_category(diagnostic.category)
+        );
         println!("Root Cause: {}", diagnostic.root_cause);
         println!("Recoverable: {}", diagnostic.retry_recommended);
 
@@ -65,7 +68,10 @@ fn example_retry_with_batch_reduction() {
     let mut attempt = 0;
     let result = policy.execute(|batch_fraction| -> Result<Vec<f32>, ANEError> {
         attempt += 1;
-        println!("Attempt {} with batch fraction {:.2}", attempt, batch_fraction);
+        println!(
+            "Attempt {} with batch fraction {:.2}",
+            attempt, batch_fraction
+        );
 
         if attempt < 3 {
             Err(ANEError::EvalFailed("Simulated failure".to_string()))
@@ -164,9 +170,18 @@ fn example_global_error_reporting() {
 
     // Simulate errors from different parts of the application
     let errors = vec![
-        ("forward_pass", ANEError::EvalFailed("OOM during forward".to_string())),
-        ("backward_pass", ANEError::EvalFailed("Timeout during backward".to_string())),
-        ("gradient_accum", ANEError::IOSurfaceError("Surface transfer failed".to_string())),
+        (
+            "forward_pass",
+            ANEError::EvalFailed("OOM during forward".to_string()),
+        ),
+        (
+            "backward_pass",
+            ANEError::EvalFailed("Timeout during backward".to_string()),
+        ),
+        (
+            "gradient_accum",
+            ANEError::IOSurfaceError("Surface transfer failed".to_string()),
+        ),
     ];
 
     for (operation, error) in errors {

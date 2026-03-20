@@ -3,7 +3,7 @@
 //! Provides structured logging infrastructure for ANE errors with
 //! severity levels, context capture, and error aggregation.
 
-use crate::ane::error_diagnostics::{ErrorDiagnostic, ErrorCategory};
+use crate::ane::error_diagnostics::{ErrorCategory, ErrorDiagnostic};
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -103,7 +103,10 @@ impl ErrorLogEntry {
             .unwrap_or(0);
 
         let op_str = self.operation.as_deref().unwrap_or("unknown");
-        let layer_str = self.layer_idx.map(|l| format!("[layer {}] ", l)).unwrap_or_default();
+        let layer_str = self
+            .layer_idx
+            .map(|l| format!("[layer {}] ", l))
+            .unwrap_or_default();
 
         format!(
             "{} [{:?}] {}{} - {}",
@@ -169,17 +172,25 @@ impl ErrorLog {
 
     /// Get entry count by severity
     pub fn count_by_severity(&self, severity: ErrorSeverity) -> usize {
-        self.entries.iter().filter(|e| e.severity == severity).count()
+        self.entries
+            .iter()
+            .filter(|e| e.severity == severity)
+            .count()
     }
 
     /// Get entry count by category
     pub fn count_by_category(&self, category: ErrorCategory) -> usize {
-        self.entries.iter().filter(|e| e.category == category).count()
+        self.entries
+            .iter()
+            .filter(|e| e.category == category)
+            .count()
     }
 
     /// Check if log has any critical errors
     pub fn has_critical_errors(&self) -> bool {
-        self.entries.iter().any(|e| e.severity == ErrorSeverity::Critical)
+        self.entries
+            .iter()
+            .any(|e| e.severity == ErrorSeverity::Critical)
     }
 
     /// Get most recent n entries

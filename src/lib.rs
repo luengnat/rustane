@@ -47,9 +47,9 @@ pub mod wrapper;
 pub mod python;
 
 pub use data::{
-    Batch, ChunkIterator, Collator, DataLoader, Dataset, JsonlDataset, PadCollator,
-    RandomSampler, Sampler, SequentialDataset, SequentialSampler, ShardConfig,
-    ShardMetadata, ShardBatch, ShardedDataLoader, TextDataset, TruncateCollator,
+    Batch, ChunkIterator, Collator, DataLoader, Dataset, JsonlDataset, PadCollator, RandomSampler,
+    Sampler, SequentialDataset, SequentialSampler, ShardBatch, ShardConfig, ShardMetadata,
+    ShardedDataLoader, TextDataset, TruncateCollator,
 };
 pub use error::{Error, Result};
 pub use layers::traits::Shape;
@@ -64,9 +64,9 @@ pub use mil::{
 };
 pub use platform::ANEAvailability;
 pub use training::{
-    ConstantScheduler, CrossEntropyLoss, GradAccumulator, LRScheduler, LossFn, LossScaler,
-    Model as TrainingModel, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError,
-    WarmupCosineScheduler, WarmupLinearScheduler, ANEGradientAccumulator, ANEBackwardModel,
+    ANEBackwardModel, ANEGradientAccumulator, ConstantScheduler, CrossEntropyLoss, GradAccumulator,
+    LRScheduler, LossFn, LossScaler, Model as TrainingModel, Optimizer, StepMetrics, Trainer,
+    TrainerBuilder, TrainerError, WarmupCosineScheduler, WarmupLinearScheduler,
 };
 pub use wrapper::{ANECompiler, ANEExecutor, ANERuntime, ANETensor, KernelCache};
 

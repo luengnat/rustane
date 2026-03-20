@@ -151,14 +151,18 @@ impl TransformerConfig {
     }
 
     /// Set gradient checkpointing configuration.
-    pub fn with_gradient_checkpointing(mut self, gradient_checkpointing: GradientCheckpointingConfig) -> Self {
+    pub fn with_gradient_checkpointing(
+        mut self,
+        gradient_checkpointing: GradientCheckpointingConfig,
+    ) -> Self {
         self.gradient_checkpointing = gradient_checkpointing;
         self
     }
 
     /// Enable gradient checkpointing with specified interval.
     pub fn with_checkpoint_interval(mut self, checkpoint_interval: usize) -> Self {
-        self.gradient_checkpointing = GradientCheckpointingConfig::with_interval(checkpoint_interval);
+        self.gradient_checkpointing =
+            GradientCheckpointingConfig::with_interval(checkpoint_interval);
         self
     }
 
@@ -303,8 +307,7 @@ mod tests {
 
     #[test]
     fn test_gradient_checkpointing_enabled() {
-        let config = TransformerConfig::tiny()
-            .with_checkpoint_interval(2);
+        let config = TransformerConfig::tiny().with_checkpoint_interval(2);
         assert!(config.gradient_checkpointing.enabled);
         assert_eq!(config.gradient_checkpointing.checkpoint_interval, 2);
     }

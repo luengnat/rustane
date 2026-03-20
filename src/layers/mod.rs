@@ -164,6 +164,6 @@ pub use sequential::{Sequential, SequentialBuilder, SharedLayer};
 pub use swiglu::{SiLU as SwiGLUSiLU, SwiGLU, SwiGLUBuilder};
 pub use traits::{BiasLayer, Layer, LayerBuilder, Shape, WeightsLayer};
 pub use transformer_backward::{
-    rmsnorm_backward, cross_entropy_backward, attention_backward, ffn_backward,
-    AttentionConfig, FFNConfig,
+    attention_backward, cross_entropy_backward, ffn_backward, rmsnorm_backward, AttentionConfig,
+    FFNConfig,
 };

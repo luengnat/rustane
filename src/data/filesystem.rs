@@ -45,9 +45,8 @@ impl JsonlDataset {
     /// - Any line is not valid JSON
     /// - Any JSON array contains non-integer values
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = File::open(path).map_err(|e| {
-            crate::Error::Io(format!("Failed to open file: {}", e))
-        })?;
+        let file = File::open(path)
+            .map_err(|e| crate::Error::Io(format!("Failed to open file: {}", e)))?;
 
         let reader = BufReader::new(file);
         let mut samples = Vec::new();
@@ -62,13 +61,9 @@ impl JsonlDataset {
                 continue;
             }
 
-            let sample: Vec<u32> = serde_json::from_str(&line)
-                .map_err(|e| {
-                    crate::Error::Other(format!(
-                        "Failed to parse line {}: {}",
-                        line_num, e
-                    ))
-                })?;
+            let sample: Vec<u32> = serde_json::from_str(&line).map_err(|e| {
+                crate::Error::Other(format!("Failed to parse line {}: {}", line_num, e))
+            })?;
 
             samples.push(sample);
         }
@@ -134,9 +129,8 @@ impl TextDataset {
     /// - File cannot be opened
     /// - Any token cannot be parsed as u32
     pub fn load_space_separated<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = File::open(path).map_err(|e| {
-            crate::Error::Io(format!("Failed to open file: {}", e))
-        })?;
+        let file = File::open(path)
+            .map_err(|e| crate::Error::Io(format!("Failed to open file: {}", e)))?;
 
         let reader = BufReader::new(file);
         let mut samples = Vec::new();
@@ -179,9 +173,8 @@ impl TextDataset {
     ///
     /// Each line contains token IDs separated by commas.
     pub fn load_comma_separated<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = File::open(path).map_err(|e| {
-            crate::Error::Io(format!("Failed to open file: {}", e))
-        })?;
+        let file = File::open(path)
+            .map_err(|e| crate::Error::Io(format!("Failed to open file: {}", e)))?;
 
         let reader = BufReader::new(file);
         let mut samples = Vec::new();
@@ -251,16 +244,13 @@ mod tests {
     #[test]
     fn test_jsonl_dataset_basic() -> Result<()> {
         // Create a temporary JSONL file
-        let mut file = NamedTempFile::new().map_err(|e| {
-            crate::Error::Io(format!("Failed to create temp file: {}", e))
-        })?;
+        let mut file = NamedTempFile::new()
+            .map_err(|e| crate::Error::Io(format!("Failed to create temp file: {}", e)))?;
 
-        writeln!(file, "[0, 1, 2]").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
-        writeln!(file, "[3, 4, 5]").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
+        writeln!(file, "[0, 1, 2]")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
+        writeln!(file, "[3, 4, 5]")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
 
         let dataset = JsonlDataset::load(file.path())?;
         assert_eq!(dataset.len(), 2);
@@ -272,19 +262,14 @@ mod tests {
 
     #[test]
     fn test_jsonl_dataset_empty_lines() -> Result<()> {
-        let mut file = NamedTempFile::new().map_err(|e| {
-            crate::Error::Io(format!("Failed to create temp file: {}", e))
-        })?;
+        let mut file = NamedTempFile::new()
+            .map_err(|e| crate::Error::Io(format!("Failed to create temp file: {}", e)))?;
 
-        writeln!(file, "[1, 2]").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
-        writeln!(file).map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?; // Empty line
-        writeln!(file, "[3, 4]").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
+        writeln!(file, "[1, 2]")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
+        writeln!(file).map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?; // Empty line
+        writeln!(file, "[3, 4]")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
 
         let dataset = JsonlDataset::load(file.path())?;
         assert_eq!(dataset.len(), 2); // Empty line skipped
@@ -296,16 +281,12 @@ mod tests {
 
     #[test]
     fn test_text_dataset_space_separated() -> Result<()> {
-        let mut file = NamedTempFile::new().map_err(|e| {
-            crate::Error::Io(format!("Failed to create temp file: {}", e))
-        })?;
+        let mut file = NamedTempFile::new()
+            .map_err(|e| crate::Error::Io(format!("Failed to create temp file: {}", e)))?;
 
-        writeln!(file, "0 1 2 3").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
-        writeln!(file, "4 5 6").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
+        writeln!(file, "0 1 2 3")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
+        writeln!(file, "4 5 6").map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
 
         let dataset = TextDataset::load_space_separated(file.path())?;
         assert_eq!(dataset.len(), 2);
@@ -317,16 +298,13 @@ mod tests {
 
     #[test]
     fn test_text_dataset_comma_separated() -> Result<()> {
-        let mut file = NamedTempFile::new().map_err(|e| {
-            crate::Error::Io(format!("Failed to create temp file: {}", e))
-        })?;
+        let mut file = NamedTempFile::new()
+            .map_err(|e| crate::Error::Io(format!("Failed to create temp file: {}", e)))?;
 
-        writeln!(file, "0,1,2,3").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
-        writeln!(file, "4, 5, 6").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?; // With spaces
+        writeln!(file, "0,1,2,3")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
+        writeln!(file, "4, 5, 6")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?; // With spaces
 
         let dataset = TextDataset::load_comma_separated(file.path())?;
         assert_eq!(dataset.len(), 2);
@@ -338,13 +316,11 @@ mod tests {
 
     #[test]
     fn test_text_dataset_space_with_extra_whitespace() -> Result<()> {
-        let mut file = NamedTempFile::new().map_err(|e| {
-            crate::Error::Io(format!("Failed to create temp file: {}", e))
-        })?;
+        let mut file = NamedTempFile::new()
+            .map_err(|e| crate::Error::Io(format!("Failed to create temp file: {}", e)))?;
 
-        writeln!(file, "  0   1  2  ").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
+        writeln!(file, "  0   1  2  ")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
 
         let dataset = TextDataset::load_space_separated(file.path())?;
         assert_eq!(dataset.len(), 1);
@@ -355,13 +331,11 @@ mod tests {
 
     #[test]
     fn test_text_dataset_invalid_token() -> Result<()> {
-        let mut file = NamedTempFile::new().map_err(|e| {
-            crate::Error::Io(format!("Failed to create temp file: {}", e))
-        })?;
+        let mut file = NamedTempFile::new()
+            .map_err(|e| crate::Error::Io(format!("Failed to create temp file: {}", e)))?;
 
-        writeln!(file, "0 1 invalid 3").map_err(|e| {
-            crate::Error::Io(format!("Failed to write: {}", e))
-        })?;
+        writeln!(file, "0 1 invalid 3")
+            .map_err(|e| crate::Error::Io(format!("Failed to write: {}", e)))?;
 
         let result = TextDataset::load_space_separated(file.path());
         assert!(result.is_err());

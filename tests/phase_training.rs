@@ -85,7 +85,11 @@ fn phase1_single_layer_loss_decreases() {
     println!("\nLoss trajectory:");
     println!("  Initial: {}", first);
     println!("  Final: {}", last);
-    println!("  Change: {} ({:.2}%)", last - first, ((last - first) / first) * 100.0);
+    println!(
+        "  Change: {} ({:.2}%)",
+        last - first,
+        ((last - first) / first) * 100.0
+    );
 
     assert!(last < first, "Loss should decrease over training steps");
     println!("✅ Loss converged correctly");
@@ -116,7 +120,11 @@ fn phase2_gradient_accumulation() {
         accumulator.accumulate_fp32(&grads, 1.0);
 
         println!("  Step {}: accumulated {} params", step, num_params);
-        println!("    Completion: {}/{}", accumulator.current_step(), accum_steps);
+        println!(
+            "    Completion: {}/{}",
+            accumulator.current_step(),
+            accum_steps
+        );
 
         if accumulator.is_complete() {
             println!("    ✅ Accumulation complete - ready for optimizer update");
@@ -125,7 +133,11 @@ fn phase2_gradient_accumulation() {
 
     // Verify finalization
     let averaged = accumulator.finalize_averaged();
-    assert_eq!(averaged.len(), num_params, "Averaged gradients size mismatch");
+    assert_eq!(
+        averaged.len(),
+        num_params,
+        "Averaged gradients size mismatch"
+    );
 
     // Expected average: (0.5 + 1.0 + 1.5 + 2.0) / 4 = 1.25
     let expected_avg = 1.25;
@@ -222,8 +234,9 @@ fn phase4_full_training_pipeline() {
         let scaled_loss = scaler.scale_loss(loss);
 
         // Synthetic gradients
-        let grads: Vec<f32> =
-            (0..num_params).map(|_| scaled_loss / 100.0 + 0.001).collect();
+        let grads: Vec<f32> = (0..num_params)
+            .map(|_| scaled_loss / 100.0 + 0.001)
+            .collect();
 
         // Accumulate
         accumulator.accumulate_fp32(&grads, 1.0);
@@ -271,7 +284,10 @@ fn phase_benchmark_comprehensive() {
     ];
 
     println!("\nBenchmarking configurations:");
-    println!("{:<10} {:<15} {:<15} {:<20}", "Config", "Embedding Dim", "Params", "Avg ms/step");
+    println!(
+        "{:<10} {:<15} {:<15} {:<20}",
+        "Config", "Embedding Dim", "Params", "Avg ms/step"
+    );
     println!("{}", "-".repeat(60));
 
     for (name, dim, num_params) in configs {
@@ -325,8 +341,16 @@ fn phase_hardware_alignment_validation() {
 
     println!("\nParameter-golf Config:");
     println!("  dim: {} (divisible by 128? {})", dim, dim % 128 == 0);
-    println!("  hidden: {} (divisible by 16? {})", hidden, hidden % 16 == 0);
-    println!("  seq_len: {} (multiple of 16? {})", seq_len, seq_len % 16 == 0);
+    println!(
+        "  hidden: {} (divisible by 16? {})",
+        hidden,
+        hidden % 16 == 0
+    );
+    println!(
+        "  seq_len: {} (multiple of 16? {})",
+        seq_len,
+        seq_len % 16 == 0
+    );
     println!("  dim ≤ 4096? {}", dim <= 4096);
 
     // All validations

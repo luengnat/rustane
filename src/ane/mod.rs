@@ -208,7 +208,7 @@ pub mod weight_blob;
 pub use error::ANEError;
 pub use error_diagnostics::{ErrorAggregator, ErrorCategory, ErrorDiagnostic};
 pub use error_logging::{ErrorLog, ErrorLogEntry, ErrorReporter, ErrorSeverity};
-pub use fallback::{FallbackExecutor, FallbackResult, FallbackStrategy, FallbackStats};
+pub use fallback::{FallbackExecutor, FallbackResult, FallbackStats, FallbackStrategy};
 pub use io_surface::IOSurface;
 pub use kernel::ANEKernel;
 pub use retry_policy::{

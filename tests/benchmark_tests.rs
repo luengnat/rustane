@@ -6,10 +6,10 @@
 #[cfg(target_vendor = "apple")]
 #[cfg(test)]
 mod benchmarks {
-    use rustane::data::Batch;
-    use rustane::training::{Model, TransformerANE, TransformerConfig, ANEGradientAccumulator};
-    use rustane::layers::backward::{BackwardMILGenerator, RMSNormBackwardGen};
     use rustane::ane::ANECompileRequest;
+    use rustane::data::Batch;
+    use rustane::layers::backward::{BackwardMILGenerator, RMSNormBackwardGen};
+    use rustane::training::{ANEGradientAccumulator, Model, TransformerANE, TransformerConfig};
     use std::time::Instant;
 
     /// Benchmark helper for measuring execution time
@@ -125,9 +125,8 @@ mod benchmarks {
             vec![seq_len * dim * 4, dim * 4],
         );
         let mut ex = req.compile().unwrap();
-        let slice = unsafe {
-            std::slice::from_raw_parts(input.as_ptr() as *const u8, input.len() * 4)
-        };
+        let slice =
+            unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u8, input.len() * 4) };
         let _ = ex.write_input(0, slice);
         let _ = ex.eval();
 
@@ -135,9 +134,8 @@ mod benchmarks {
         let mut times = Vec::new();
         for _ in 0..10 {
             let start = Instant::now();
-            let slice = unsafe {
-                std::slice::from_raw_parts(input.as_ptr() as *const u8, input.len() * 4)
-            };
+            let slice =
+                unsafe { std::slice::from_raw_parts(input.as_ptr() as *const u8, input.len() * 4) };
             let _ = ex.write_input(0, slice);
             let _ = ex.eval();
             let _ = ex.read_output(0, &mut vec![0u8; seq_len * dim * 4]);

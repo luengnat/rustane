@@ -90,8 +90,9 @@ pub fn benchmark_training_config(
         let scaled_loss = scaler.scale_loss(loss);
 
         // Synthetic gradients
-        let grads: Vec<f32> =
-            (0..num_params).map(|_| scaled_loss / 100.0 + 0.0001).collect();
+        let grads: Vec<f32> = (0..num_params)
+            .map(|_| scaled_loss / 100.0 + 0.0001)
+            .collect();
 
         // Accumulate
         accumulator.accumulate_fp32(&grads, 1.0);
@@ -127,8 +128,10 @@ pub fn param_sweep_benchmark(configs: &[(&str, usize, usize)]) {
     println!("BENCHMARK: Parameter Sweep");
     println!("{}", "=".repeat(90));
 
-    println!("\n{:<15} {:<12} {:<12} {:<12} {:<15} {:<12}",
-        "Config", "Params", "Layers", "Mem (MB)", "Avg Step (ms)", "Updates");
+    println!(
+        "\n{:<15} {:<12} {:<12} {:<12} {:<15} {:<12}",
+        "Config", "Params", "Layers", "Mem (MB)", "Avg Step (ms)", "Updates"
+    );
     println!("{}", "-".repeat(90));
 
     let mut all_metrics = Vec::new();
@@ -192,9 +195,9 @@ mod tests {
     #[ignore] // Run with: cargo test benchmark_param_sweep -- --ignored --nocapture
     fn benchmark_param_sweep() {
         let configs = vec![
-            ("param-golf-baseline", 8192, 2),      // 512*16*1 params
-            ("param-golf-scaled-2x", 16384, 2),    // 512*16*2 params
-            ("param-golf-scaled-4x", 32768, 4),    // 512*16*4 params
+            ("param-golf-baseline", 8192, 2),   // 512*16*1 params
+            ("param-golf-scaled-2x", 16384, 2), // 512*16*2 params
+            ("param-golf-scaled-4x", 32768, 4), // 512*16*4 params
         ];
 
         param_sweep_benchmark(&configs);

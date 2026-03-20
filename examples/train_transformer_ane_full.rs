@@ -28,11 +28,42 @@ fn main() -> rustane::Result<()> {
     println!("Step 1: Running backward validation suite...");
     let validation_report = quick_validate()?;
 
-    println!("  RMSNorm backward: {}", if validation_report.rmsnorm_passed { "✓ PASS" } else { "✗ FAIL" });
-    println!("  Attention backward: {}", if validation_report.attention_passed { "✓ PASS" } else { "✗ FAIL" });
-    println!("  FFN backward: {}", if validation_report.ffn_passed { "✓ PASS" } else { "✗ FAIL" });
-    println!("  Loss backward: {}", if validation_report.loss_passed { "✓ PASS" } else { "✗ FAIL" });
-    println!("  Max relative error: {:.2e}", validation_report.max_relative_error);
+    println!(
+        "  RMSNorm backward: {}",
+        if validation_report.rmsnorm_passed {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        }
+    );
+    println!(
+        "  Attention backward: {}",
+        if validation_report.attention_passed {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        }
+    );
+    println!(
+        "  FFN backward: {}",
+        if validation_report.ffn_passed {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        }
+    );
+    println!(
+        "  Loss backward: {}",
+        if validation_report.loss_passed {
+            "✓ PASS"
+        } else {
+            "✗ FAIL"
+        }
+    );
+    println!(
+        "  Max relative error: {:.2e}",
+        validation_report.max_relative_error
+    );
 
     if !validation_report.all_passed() {
         eprintln!("\nValidation failed! Aborting training.");
@@ -46,12 +77,12 @@ fn main() -> rustane::Result<()> {
     // Step 2: Create model configuration
     println!("Step 2: Creating model configuration...");
     let config = TransformerConfig::new(
-        512,   // vocab_size
-        128,   // dim
-        256,   // hidden_dim
-        4,     // n_heads
-        2,     // n_layers
-        64,    // seq_len
+        512, // vocab_size
+        128, // dim
+        256, // hidden_dim
+        4,   // n_heads
+        2,   // n_layers
+        64,  // seq_len
     )?;
     println!("  Vocab size: {}", config.vocab_size);
     println!("  Dimension: {}", config.dim);
@@ -69,7 +100,10 @@ fn main() -> rustane::Result<()> {
     // Step 4: Create gradient accumulator
     println!("Step 4: Creating ANE gradient accumulator...");
     let mut accumulator = ANEGradientAccumulator::from_config(&config)?;
-    println!("  ✓ Accumulator ready ({} parameters)\n", accumulator.num_params());
+    println!(
+        "  ✓ Accumulator ready ({} parameters)\n",
+        accumulator.num_params()
+    );
 
     // Step 5: Generate synthetic training data
     println!("Step 5: Generating synthetic training data...");
@@ -85,7 +119,10 @@ fn main() -> rustane::Result<()> {
         let batch = Batch::new(tokens, batch_size, seq_len)?;
         batches.push(batch);
     }
-    println!("  Generated {} batches (batch_size={}, seq_len={})\n", num_batches, batch_size, seq_len);
+    println!(
+        "  Generated {} batches (batch_size={}, seq_len={})\n",
+        num_batches, batch_size, seq_len
+    );
 
     // Step 6: Training loop
     println!("Step 6: Starting training loop...");

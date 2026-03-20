@@ -217,7 +217,9 @@ pub fn conv1x1_mil(seq_len: usize, in_dim: usize, out_dim: usize) -> String {
         "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
         in_dim, seq_len
     ));
-    mil.push_str("        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n");
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
     mil.push_str(&format!(
         "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
         in_dim, seq_len
@@ -235,7 +237,9 @@ pub fn conv1x1_mil(seq_len: usize, in_dim: usize, out_dim: usize) -> String {
         "        tensor<fp16, [1, {}, 1, {}]> y16 = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W, x = x16)[name = string(\"conv\")];\n",
         out_dim, seq_len
     ));
-    mil.push_str("        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n");
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
     mil.push_str(&format!(
         "        tensor<fp32, [1, {}, 1, {}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n",
         out_dim, seq_len

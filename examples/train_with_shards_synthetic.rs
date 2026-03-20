@@ -11,9 +11,7 @@
 //! This example uses synthetic data to be self-contained and fast.
 //! The same pipeline works with real data sources (FineWeb, parameter-golf, etc.)
 
-use rustane::data::{
-    Batch, DataLoader, Dataset, JsonlDataset, SequentialSampler,
-};
+use rustane::data::{Batch, DataLoader, Dataset, JsonlDataset, SequentialSampler};
 use rustane::error::Result;
 use rustane::training::{CrossEntropyLoss, Model, Optimizer, TrainerBuilder};
 use rustane::wrapper::ANETensor;
@@ -32,7 +30,7 @@ fn main() -> Result<()> {
     let samples_per_shard = 16;
     let seq_len = 32;
     let batch_size = 4;
-    let max_chunk_tokens = 64;  // Will create chunks of (batch_size × seq_len) / max_chunk_tokens
+    let max_chunk_tokens = 64; // Will create chunks of (batch_size × seq_len) / max_chunk_tokens
     let steps_per_shard = 2;
     let vocab_size = 256;
 
@@ -48,7 +46,11 @@ fn main() -> Result<()> {
     // Step 1: Create synthetic shards
     println!("Step 1: Creating synthetic shards...");
     let shard_dir = create_synthetic_shards(shard_count, samples_per_shard, seq_len)?;
-    println!("  Created {} shards in {}", shard_count, shard_dir.display());
+    println!(
+        "  Created {} shards in {}",
+        shard_count,
+        shard_dir.display()
+    );
     println!("  Each shard: ~{} bytes\n", samples_per_shard * seq_len * 4);
 
     // Step 2: Create model and trainer
@@ -85,13 +87,16 @@ fn main() -> Result<()> {
 
         // Create dataloader with batching
         let dataloader = DataLoader::new(dataset, sampler, batch_size)?;
-        println!("  [Shard {}] Created dataloader (batch_size={})", shard_idx, batch_size);
+        println!(
+            "  [Shard {}] Created dataloader (batch_size={})",
+            shard_idx, batch_size
+        );
 
         // Iterate over batches within shard
         let mut batch_idx = 0usize;
         for batch_result in dataloader.iter() {
             if batch_idx >= steps_per_shard {
-                break;  // Limit steps per shard for demo
+                break; // Limit steps per shard for demo
             }
 
             let batch = batch_result?;
@@ -102,15 +107,18 @@ fn main() -> Result<()> {
             let chunk_count = chunks.len();
 
             // Step 5: Train with accumulated steps
-            let metrics = trainer.train_accumulated_steps(
-                chunks.into_iter().map(Ok),
-                chunk_count,
-            )?;
+            let metrics =
+                trainer.train_accumulated_steps(chunks.into_iter().map(Ok), chunk_count)?;
 
             // Step 6: Report metrics
             println!(
                 "  {:>6} │ {:>5} │ {:.6} │ {:.6} │ {:.6} │ {}",
-                shard_idx, batch_idx, metrics.loss, metrics.grad_norm, metrics.learning_rate, chunk_count
+                shard_idx,
+                batch_idx,
+                metrics.loss,
+                metrics.grad_norm,
+                metrics.learning_rate,
+                chunk_count
             );
 
             batch_idx += 1;
@@ -156,28 +164,29 @@ fn main() -> Result<()> {
 }
 
 /// Create synthetic shards with random token data
-fn create_synthetic_shards(shard_count: usize, samples_per_shard: usize, seq_len: usize) -> Result<PathBuf> {
-    let shard_dir = env::temp_dir().join(format!("rustane-synthetic-shards-{}", std::process::id()));
+fn create_synthetic_shards(
+    shard_count: usize,
+    samples_per_shard: usize,
+    seq_len: usize,
+) -> Result<PathBuf> {
+    let shard_dir =
+        env::temp_dir().join(format!("rustane-synthetic-shards-{}", std::process::id()));
     fs::create_dir_all(&shard_dir).map_err(|e| rustane::Error::Io(e.to_string()))?;
 
     for shard_idx in 0..shard_count {
         let shard_path = shard_dir.join(format!("shard_{:03}.jsonl", shard_idx));
-        let mut file = File::create(&shard_path)
-            .map_err(|e| rustane::Error::Io(e.to_string()))?;
+        let mut file = File::create(&shard_path).map_err(|e| rustane::Error::Io(e.to_string()))?;
 
         // Generate synthetic samples for this shard
         for sample_idx in 0..samples_per_shard {
             // Create a sample with seq_len tokens
             // Use a deterministic pattern: (shard * 1000 + sample) as base offset
             let base = (shard_idx * 1000 + sample_idx) as u32;
-            let sample: Vec<u32> = (0..seq_len)
-                .map(|i| (base + i as u32) % 256)
-                .collect();
+            let sample: Vec<u32> = (0..seq_len).map(|i| (base + i as u32) % 256).collect();
 
-            let line = serde_json::to_string(&sample)
-                .map_err(|e| rustane::Error::Other(e.to_string()))?;
-            writeln!(file, "{}", line)
-                .map_err(|e| rustane::Error::Io(e.to_string()))?;
+            let line =
+                serde_json::to_string(&sample).map_err(|e| rustane::Error::Other(e.to_string()))?;
+            writeln!(file, "{}", line).map_err(|e| rustane::Error::Io(e.to_string()))?;
         }
     }
 
@@ -229,23 +238,22 @@ impl Model for SimpleLanguageModel {
         for &token in tokens.iter().take(num_positions) {
             let token_idx = (token as usize) % self.vocab_size;
             let row_start = token_idx * self.vocab_size;
-            logits.extend_from_slice(
-                &self.logits[row_start..row_start + self.vocab_size]
-            );
+            logits.extend_from_slice(&self.logits[row_start..row_start + self.vocab_size]);
         }
 
         self.last_logits = Some(logits.clone());
 
-        ANETensor::from_fp32(
-            logits,
-            vec![num_positions, self.vocab_size],
-        )
+        ANETensor::from_fp32(logits, vec![num_positions, self.vocab_size])
     }
 
     fn backward(&mut self, _loss: f32) -> Result<Vec<f32>> {
-        let tokens = self.last_tokens.as_ref()
+        let tokens = self
+            .last_tokens
+            .as_ref()
             .ok_or_else(|| rustane::Error::Other("no tokens cached".to_string()))?;
-        let logits = self.last_logits.as_ref()
+        let logits = self
+            .last_logits
+            .as_ref()
             .ok_or_else(|| rustane::Error::Other("no logits cached".to_string()))?;
 
         let num_positions = tokens.len().saturating_sub(1).max(1);
@@ -258,7 +266,9 @@ impl Model for SimpleLanguageModel {
             }
 
             let logits_at_pos = &logits[pos * self.vocab_size..(pos + 1) * self.vocab_size];
-            let max_logit = logits_at_pos.iter().cloned()
+            let max_logit = logits_at_pos
+                .iter()
+                .cloned()
                 .fold(f32::NEG_INFINITY, f32::max);
             let exp_logits: Vec<f32> = logits_at_pos
                 .iter()
@@ -297,9 +307,7 @@ struct SimpleOptimizer {
 
 impl SimpleOptimizer {
     fn new(lr: f32) -> Self {
-        Self {
-            learning_rate: lr,
-        }
+        Self { learning_rate: lr }
     }
 }
 

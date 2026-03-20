@@ -184,7 +184,6 @@ impl KernelCache {
         Ok(&mut self.entries.get_mut(&key).unwrap().executor)
     }
 
-
     /// Compile a multi-weight kernel if not cached, or return cached executor.
     ///
     /// Like `get_or_compile` but uses `compile_multi` for kernels that reference
@@ -198,8 +197,8 @@ impl KernelCache {
         input_sizes: &[usize],
         output_sizes: &[usize],
     ) -> crate::Result<&mut ANEExecutor> {
-        use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         mil_text.hash(&mut hasher);
         for wd in weight_datas {
@@ -228,13 +227,21 @@ impl KernelCache {
             output_sizes,
         )?;
 
-        self.entries.insert(key, CacheEntry { _compiler: compiler, executor, hits: 1 });
+        self.entries.insert(
+            key,
+            CacheEntry {
+                _compiler: compiler,
+                executor,
+                hits: 1,
+            },
+        );
         self.lru.push_back(key);
         Ok(&mut self.entries.get_mut(&key).unwrap().executor)
     }
 
     /// Evict the least-recently-used entry
-    fn evict_lru(&mut self) {        if let Some(old_key) = self.lru.pop_front() {
+    fn evict_lru(&mut self) {
+        if let Some(old_key) = self.lru.pop_front() {
             self.entries.remove(&old_key);
         }
     }

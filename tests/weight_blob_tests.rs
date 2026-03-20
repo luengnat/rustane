@@ -38,7 +38,12 @@ mod tests {
     #[test]
     fn test_weight_blob_from_f16() {
         use half::f16;
-        let weights = vec![f16::from_f32(1.0), f16::from_f32(2.0), f16::from_f32(3.0), f16::from_f32(4.0)];
+        let weights = vec![
+            f16::from_f32(1.0),
+            f16::from_f32(2.0),
+            f16::from_f32(3.0),
+            f16::from_f32(4.0),
+        ];
         let blob = WeightBlob::from_f16(&weights, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
@@ -74,7 +79,7 @@ mod tests {
     fn test_weight_blob_quantize_f32_scales() {
         let weights = vec![
             100.0f32, 200.0, 300.0, // Row 0: max = 300.0
-            10.0f32, 20.0, 30.0,   // Row 1: max = 30.0
+            10.0f32, 20.0, 30.0, // Row 1: max = 30.0
         ];
         let (_, scales) = WeightBlob::quantize_f32(&weights, 2, 3).unwrap();
 

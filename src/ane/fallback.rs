@@ -81,10 +81,7 @@ fn update_stats(ane_success: bool, cpu_fallback: bool, complete_failure: bool) {
 
 /// Get global fallback statistics
 pub fn get_global_stats() -> FallbackStats {
-    GLOBAL_STATS
-        .read()
-        .map(|s| s.clone())
-        .unwrap_or_default()
+    GLOBAL_STATS.read().map(|s| s.clone()).unwrap_or_default()
 }
 
 /// Reset global statistics
@@ -124,7 +121,10 @@ impl FallbackStrategy {
 
     /// Check if this strategy includes CPU fallback
     pub fn has_cpu_fallback(&self) -> bool {
-        matches!(self, Self::ANEWithCPUFallback | Self::ANEThenCPUThenFail | Self::CPUOnly)
+        matches!(
+            self,
+            Self::ANEWithCPUFallback | Self::ANEThenCPUThenFail | Self::CPUOnly
+        )
     }
 }
 
@@ -224,27 +224,25 @@ impl FallbackExecutor {
         self.stats.total_attempts += 1;
 
         match self.strategy {
-            FallbackStrategy::ANENoFallback => {
-                match ane_op() {
-                    Ok(result) => {
-                        self.stats.ane_successes += 1;
-                        update_stats(true, false, false);
-                        FallbackResult::ANESuccess(result)
-                    }
-                    Err(e) => {
-                        self.stats.complete_failures += 1;
-                        update_stats(false, false, true);
-
-                        let diagnostic = ErrorDiagnostic::from_error(e.clone())
-                            .with_operation(operation_name);
-
-                        eprintln!("❌ {} failed (no fallback): {}", operation_name, e);
-                        eprintln!("{}", diagnostic.format_report());
-
-                        FallbackResult::CompleteFailure(e)
-                    }
+            FallbackStrategy::ANENoFallback => match ane_op() {
+                Ok(result) => {
+                    self.stats.ane_successes += 1;
+                    update_stats(true, false, false);
+                    FallbackResult::ANESuccess(result)
                 }
-            }
+                Err(e) => {
+                    self.stats.complete_failures += 1;
+                    update_stats(false, false, true);
+
+                    let diagnostic =
+                        ErrorDiagnostic::from_error(e.clone()).with_operation(operation_name);
+
+                    eprintln!("❌ {} failed (no fallback): {}", operation_name, e);
+                    eprintln!("{}", diagnostic.format_report());
+
+                    FallbackResult::CompleteFailure(e)
+                }
+            },
 
             FallbackStrategy::ANEWithCPUFallback | FallbackStrategy::ANEThenCPUThenFail => {
                 // Try ANE first
@@ -268,7 +266,10 @@ impl FallbackExecutor {
                             return FallbackResult::CompleteFailure(ane_error);
                         }
 
-                        eprintln!("⚠️  {} failed on ANE, trying CPU fallback...", operation_name);
+                        eprintln!(
+                            "⚠️  {} failed on ANE, trying CPU fallback...",
+                            operation_name
+                        );
                         eprintln!("   ANE error: {}", ane_error);
 
                         // Try CPU fallback
@@ -294,24 +295,27 @@ impl FallbackExecutor {
                 }
             }
 
-            FallbackStrategy::CPUOnly => {
-                match cpu_op() {
-                    Ok(result) => {
-                        update_stats(false, true, false);
-                        FallbackResult::CPUFallback(result)
-                    }
-                    Err(e) => {
-                        self.stats.complete_failures += 1;
-                        update_stats(false, false, true);
-                        FallbackResult::CompleteFailure(e)
-                    }
+            FallbackStrategy::CPUOnly => match cpu_op() {
+                Ok(result) => {
+                    update_stats(false, true, false);
+                    FallbackResult::CPUFallback(result)
                 }
-            }
+                Err(e) => {
+                    self.stats.complete_failures += 1;
+                    update_stats(false, false, true);
+                    FallbackResult::CompleteFailure(e)
+                }
+            },
         }
     }
 
     /// Execute and convert to standard Result
-    pub fn execute_to_result<F, G, T>(&mut self, ane_op: F, cpu_op: G, operation_name: &str) -> Result<T>
+    pub fn execute_to_result<F, G, T>(
+        &mut self,
+        ane_op: F,
+        cpu_op: G,
+        operation_name: &str,
+    ) -> Result<T>
     where
         F: FnOnce() -> Result<T>,
         G: FnOnce() -> Result<T>,
@@ -468,11 +472,7 @@ mod tests {
     #[test]
     fn test_fallback_executor_ane_success() {
         let mut executor = FallbackExecutor::new();
-        let result = executor.execute(
-            || Ok(42),
-            || Ok(0),
-            "test_op"
-        );
+        let result = executor.execute(|| Ok(42), || Ok(0), "test_op");
 
         assert!(result.is_from_ane());
         assert_eq!(result.result(), Some(42));
@@ -485,7 +485,7 @@ mod tests {
         let result = executor.execute(
             || Err(ANEError::EvalFailed("test".to_string())),
             || Ok(42),
-            "test_op"
+            "test_op",
         );
 
         assert!(result.is_from_cpu_fallback());

@@ -1,7 +1,7 @@
 //! Sampler trait and implementations
 
-use rand::seq::SliceRandom;
 use rand::rngs::StdRng;
+use rand::seq::SliceRandom;
 use rand::SeedableRng;
 
 /// Trait for sampling indices from a dataset

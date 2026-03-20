@@ -14,11 +14,11 @@ fn main() -> rustane::Result<()> {
 
     // Create a simple dataset
     let samples = vec![
-        vec![1, 1, 1],  // Sample 0
-        vec![2, 2, 2],  // Sample 1
-        vec![3, 3, 3],  // Sample 2
-        vec![4, 4, 4],  // Sample 3
-        vec![5, 5, 5],  // Sample 4
+        vec![1, 1, 1], // Sample 0
+        vec![2, 2, 2], // Sample 1
+        vec![3, 3, 3], // Sample 2
+        vec![4, 4, 4], // Sample 3
+        vec![5, 5, 5], // Sample 4
     ];
     let dataset = SequentialDataset::new(samples.clone());
     println!("Dataset: {} samples", dataset.len());

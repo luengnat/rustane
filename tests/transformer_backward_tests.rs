@@ -7,18 +7,14 @@
 //! - Feed-forward network backward pass
 
 use rustane::layers::{
-    rmsnorm_backward, cross_entropy_backward, attention_backward, ffn_backward,
-    AttentionConfig, FFNConfig,
+    attention_backward, cross_entropy_backward, ffn_backward, rmsnorm_backward, AttentionConfig,
+    FFNConfig,
 };
 
 /// Compute numerical gradient using finite differences
 /// Used to validate backward pass implementations
 #[allow(dead_code)]
-fn numerical_gradient(
-    f: impl Fn(&[f32]) -> f32,
-    x: &[f32],
-    eps: f32,
-) -> Vec<f32> {
+fn numerical_gradient(f: impl Fn(&[f32]) -> f32, x: &[f32], eps: f32) -> Vec<f32> {
     let mut grad = vec![0.0f32; x.len()];
     let mut x_plus = x.to_vec();
     let mut x_minus = x.to_vec();
@@ -46,11 +42,7 @@ fn assert_close(actual: &[f32], expected: &[f32], tolerance: f32, label: &str) {
     for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
         let diff = (a - e).abs();
         let max_abs = a.abs().max(e.abs());
-        let rel_error = if max_abs > 1e-6 {
-            diff / max_abs
-        } else {
-            diff
-        };
+        let rel_error = if max_abs > 1e-6 { diff / max_abs } else { diff };
 
         assert!(
             diff < tolerance || rel_error < 0.1,
@@ -177,9 +169,7 @@ fn test_cross_entropy_backward_softmax_minus_onehot() {
     // Each position should sum to approximately 0
     // (softmax sums to 1, minus 1 for target position = 0)
     for pos in 0..seq_len {
-        let pos_sum: f32 = grads[pos * vocab_size..(pos + 1) * vocab_size]
-            .iter()
-            .sum();
+        let pos_sum: f32 = grads[pos * vocab_size..(pos + 1) * vocab_size].iter().sum();
         assert!(
             pos_sum.abs() < 1e-5,
             "position {} sum should be ~0, got {}",
@@ -202,13 +192,20 @@ fn test_cross_entropy_backward_target_has_negative_gradient() {
 
     // Target position should have (prob - 1) < 0
     let target_grad = grads[2];
-    assert!(target_grad < 0.0, "target position gradient should be negative");
+    assert!(
+        target_grad < 0.0,
+        "target position gradient should be negative"
+    );
 
     // Non-target positions should have (prob - 0) > 0
     for i in 0..vocab_size {
         if i != 2 {
             let grad = grads[i];
-            assert!(grad > 0.0, "non-target position {} gradient should be positive", i);
+            assert!(
+                grad > 0.0,
+                "non-target position {} gradient should be positive",
+                i
+            );
         }
     }
 }
@@ -242,7 +239,10 @@ fn test_cross_entropy_backward_extreme_logits() {
 
     // All gradients should be finite
     for &g in &grads {
-        assert!(g.is_finite(), "gradient should be finite despite extreme logits");
+        assert!(
+            g.is_finite(),
+            "gradient should be finite despite extreme logits"
+        );
     }
 }
 
@@ -396,8 +396,8 @@ fn test_ffn_backward_finite_gradients() {
     let w1_out = vec![1.0f32; seq_len * hidden_dim];
     let w1_gated = vec![1.0f32; seq_len * hidden_dim];
 
-    let (d_x, _dw1, _dw3, _dw2) = ffn_backward(&d_out, &x, &w1_out, &w1_gated, &config)
-        .expect("ffn_backward failed");
+    let (d_x, _dw1, _dw3, _dw2) =
+        ffn_backward(&d_out, &x, &w1_out, &w1_gated, &config).expect("ffn_backward failed");
 
     for &g in &d_x {
         assert!(g.is_finite());
@@ -421,8 +421,8 @@ fn test_ffn_backward_zero_gradient_input() {
     let w1_out = vec![1.0f32; seq_len * hidden_dim];
     let w1_gated = vec![1.0f32; seq_len * hidden_dim];
 
-    let (d_x, _dw1, _dw3, _dw2) = ffn_backward(&d_out, &x, &w1_out, &w1_gated, &config)
-        .expect("ffn_backward failed");
+    let (d_x, _dw1, _dw3, _dw2) =
+        ffn_backward(&d_out, &x, &w1_out, &w1_gated, &config).expect("ffn_backward failed");
 
     // Zero gradient input should propagate through
     for &g in &d_x {
@@ -494,8 +494,9 @@ fn test_backward_pass_integration_all_finite() {
     let w1_out = vec![1.0f32; seq_len * 24];
     let w1_gated = vec![1.0f32; seq_len * 24];
 
-    let (d_x_ffn, _dw1, _dw3, _dw2) = ffn_backward(&d_ffn_out, &x_ffn, &w1_out, &w1_gated, &ffn_config)
-        .expect("ffn_backward failed");
+    let (d_x_ffn, _dw1, _dw3, _dw2) =
+        ffn_backward(&d_ffn_out, &x_ffn, &w1_out, &w1_gated, &ffn_config)
+            .expect("ffn_backward failed");
     for &g in &d_x_ffn {
         assert!(g.is_finite());
     }

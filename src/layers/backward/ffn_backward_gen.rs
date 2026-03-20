@@ -127,10 +127,10 @@ main ffn_backward(d_out: tensor<seq_lenxdimxf32>,
         let hidden_dim = config.hidden_dim * 4;
 
         vec![
-            seq_len * dim * 4,           // d_x
-            dim * hidden_dim * 4,        // d_w1
-            dim * hidden_dim * 4,        // d_w3
-            hidden_dim * dim * 4,        // d_w2
+            seq_len * dim * 4,    // d_x
+            dim * hidden_dim * 4, // d_w1
+            dim * hidden_dim * 4, // d_w3
+            hidden_dim * dim * 4, // d_w2
         ]
     }
 
@@ -171,7 +171,9 @@ main ffn_backward(d_out: tensor<seq_lenxdimxf32>,
         executor
             .write_input(0, &packed_input)
             .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
-        executor.eval().map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+        executor
+            .eval()
+            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
 
         let d_x_len = config.seq_len * config.hidden_dim;
         let d_w1_len = config.hidden_dim * config.hidden_dim * 4;

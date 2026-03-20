@@ -3,10 +3,10 @@
 //! This module provides types and utilities for loading data from multiple
 //! sharded files, enabling distributed training across multiple data sources.
 
-use std::path::PathBuf;
-use glob::glob;
 use super::{DataLoader, Dataset, Sampler};
 use crate::Result;
+use glob::glob;
+use std::path::PathBuf;
 
 /// Configuration for loading data from multiple shards
 ///
@@ -167,7 +167,12 @@ impl<D: Dataset, S: Sampler> ShardBatch<D, S> {
 
     /// Consume self and return all components
     pub fn into_parts(self) -> (usize, PathBuf, DataLoader<D, S>, usize) {
-        (self.shard_idx, self.shard_path, self.loader, self.token_count)
+        (
+            self.shard_idx,
+            self.shard_path,
+            self.loader,
+            self.token_count,
+        )
     }
 }
 
@@ -201,26 +206,24 @@ impl ShardedDataLoader {
                     match entry {
                         Ok(path) => shard_files.push(path),
                         Err(e) => {
-                            return Err(crate::Error::Other(
-                                format!("error reading shard path: {}", e)
-                            ))
+                            return Err(crate::Error::Other(format!(
+                                "error reading shard path: {}",
+                                e
+                            )))
                         }
                     }
                 }
             }
-            Err(e) => {
-                return Err(crate::Error::Other(
-                    format!("invalid glob pattern: {}", e)
-                ))
-            }
+            Err(e) => return Err(crate::Error::Other(format!("invalid glob pattern: {}", e))),
         }
 
         shard_files.sort();
 
         if shard_files.is_empty() {
-            return Err(crate::Error::Other(
-                format!("no shard files found matching pattern: {}", config.shard_pattern())
-            ));
+            return Err(crate::Error::Other(format!(
+                "no shard files found matching pattern: {}",
+                config.shard_pattern()
+            )));
         }
 
         Ok(ShardedDataLoader {
@@ -272,16 +275,13 @@ impl<'a> Iterator for ShardIterator<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{SequentialDataset, SequentialSampler};
+    use super::*;
 
     /// Test basic ShardConfig creation
     #[test]
     fn test_shard_config_creation() {
-        let config = ShardConfig::new(
-            "data/shards/shard_*.jsonl".to_string(),
-            50000,
-        ).unwrap();
+        let config = ShardConfig::new("data/shards/shard_*.jsonl".to_string(), 50000).unwrap();
 
         assert_eq!(config.vocab_size(), 50000);
         assert_eq!(config.shard_pattern(), "data/shards/shard_*.jsonl");
@@ -317,10 +317,7 @@ mod tests {
     /// Test ShardConfig accessors return correct values
     #[test]
     fn test_shard_config_accessors() {
-        let config = ShardConfig::new(
-            "data/shards/shard_*.jsonl".to_string(),
-            25000,
-        ).unwrap();
+        let config = ShardConfig::new("data/shards/shard_*.jsonl".to_string(), 25000).unwrap();
 
         assert_eq!(config.shard_pattern(), "data/shards/shard_*.jsonl");
         assert_eq!(config.vocab_size(), 25000);
@@ -346,11 +343,8 @@ mod tests {
     /// Test ShardMetadata creation
     #[test]
     fn test_shard_metadata_creation() {
-        let metadata = ShardMetadata::new(
-            5,
-            1_000_000,
-            PathBuf::from("data/shards/shard_5.jsonl"),
-        ).unwrap();
+        let metadata =
+            ShardMetadata::new(5, 1_000_000, PathBuf::from("data/shards/shard_5.jsonl")).unwrap();
 
         assert_eq!(metadata.shard_idx(), 5);
         assert_eq!(metadata.token_count(), 1_000_000);
@@ -360,11 +354,7 @@ mod tests {
     /// Test ShardMetadata with zero token_count validation
     #[test]
     fn test_shard_metadata_zero_token_count() {
-        let result = ShardMetadata::new(
-            0,
-            0,
-            PathBuf::from("data/shards/shard_0.jsonl"),
-        );
+        let result = ShardMetadata::new(0, 0, PathBuf::from("data/shards/shard_0.jsonl"));
         assert!(result.is_err());
         match result.unwrap_err() {
             crate::Error::InvalidParameter(msg) => {
@@ -377,34 +367,22 @@ mod tests {
     /// Test ShardMetadata accessors
     #[test]
     fn test_shard_metadata_accessors() {
-        let metadata = ShardMetadata::new(
-            3,
-            500_000,
-            PathBuf::from("data/shards/shard_3.jsonl"),
-        ).unwrap();
+        let metadata =
+            ShardMetadata::new(3, 500_000, PathBuf::from("data/shards/shard_3.jsonl")).unwrap();
 
         assert_eq!(metadata.shard_idx(), 3);
         assert_eq!(metadata.token_count(), 500_000);
-        assert_eq!(
-            metadata.path(),
-            &PathBuf::from("data/shards/shard_3.jsonl")
-        );
+        assert_eq!(metadata.path(), &PathBuf::from("data/shards/shard_3.jsonl"));
     }
 
     /// Test ShardMetadata equality
     #[test]
     fn test_shard_metadata_equality() {
-        let metadata1 = ShardMetadata::new(
-            1,
-            1_000_000,
-            PathBuf::from("data/shards/shard_1.jsonl"),
-        ).unwrap();
+        let metadata1 =
+            ShardMetadata::new(1, 1_000_000, PathBuf::from("data/shards/shard_1.jsonl")).unwrap();
 
-        let metadata2 = ShardMetadata::new(
-            1,
-            1_000_000,
-            PathBuf::from("data/shards/shard_1.jsonl"),
-        ).unwrap();
+        let metadata2 =
+            ShardMetadata::new(1, 1_000_000, PathBuf::from("data/shards/shard_1.jsonl")).unwrap();
 
         assert_eq!(metadata1, metadata2);
     }
@@ -412,15 +390,9 @@ mod tests {
     /// Test ShardConfig equality
     #[test]
     fn test_shard_config_equality() {
-        let config1 = ShardConfig::new(
-            "data/shards/shard_*.jsonl".to_string(),
-            50000,
-        ).unwrap();
+        let config1 = ShardConfig::new("data/shards/shard_*.jsonl".to_string(), 50000).unwrap();
 
-        let config2 = ShardConfig::new(
-            "data/shards/shard_*.jsonl".to_string(),
-            50000,
-        ).unwrap();
+        let config2 = ShardConfig::new("data/shards/shard_*.jsonl".to_string(), 50000).unwrap();
 
         assert_eq!(config1, config2);
     }
@@ -511,11 +483,8 @@ mod tests {
     fn test_sharded_loader_iter_shards() {
         // This test verifies the iterator interface exists and basic structure works
         // We'll use synthetic data with glob pattern matching this file itself
-        let config = ShardConfig::new(
-            "src/data/sharded_loader.rs".to_string(),
-            50257,
-        ).unwrap();
-        
+        let config = ShardConfig::new("src/data/sharded_loader.rs".to_string(), 50257).unwrap();
+
         let loader = ShardedDataLoader::new(&config).unwrap();
         assert_eq!(loader.shard_count(), 1);
 

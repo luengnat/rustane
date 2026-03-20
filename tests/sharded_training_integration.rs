@@ -9,13 +9,10 @@
 
 use rustane::{
     data::{
-        Batch, DataLoader, Dataset, SequentialDataset, SequentialSampler,
-        ShardConfig, ShardedDataLoader,
+        Batch, DataLoader, Dataset, SequentialDataset, SequentialSampler, ShardConfig,
+        ShardedDataLoader,
     },
-    training::{
-        ConstantScheduler, CrossEntropyLoss, Optimizer, StepMetrics,
-        TrainerBuilder,
-    },
+    training::{ConstantScheduler, CrossEntropyLoss, Optimizer, StepMetrics, TrainerBuilder},
     Result,
 };
 
@@ -23,12 +20,14 @@ use rustane::training::Model;
 use rustane::wrapper::ANETensor;
 
 // Helper: Create synthetic dataset for testing
-fn create_synthetic_dataset(num_samples: usize, seq_len: usize, _vocab_size: u32) -> SequentialDataset {
+fn create_synthetic_dataset(
+    num_samples: usize,
+    seq_len: usize,
+    _vocab_size: u32,
+) -> SequentialDataset {
     let mut samples = Vec::new();
     for i in 0..num_samples {
-        let sample: Vec<u32> = (0..seq_len as u32)
-            .map(|j| i as u32 + j % 1000)
-            .collect();
+        let sample: Vec<u32> = (0..seq_len as u32).map(|j| i as u32 + j % 1000).collect();
         samples.push(sample);
     }
     SequentialDataset::new(samples)
@@ -88,10 +87,7 @@ impl Model for SimpleMockModel {
 // Test 1: ShardedDataLoader creation from glob pattern
 #[test]
 fn test_sharded_loader_creation() -> Result<()> {
-    let config = ShardConfig::new(
-        "tests/sharded_training_integration.rs".to_string(),
-        50000,
-    )?;
+    let config = ShardConfig::new("tests/sharded_training_integration.rs".to_string(), 50000)?;
 
     let loader = ShardedDataLoader::new(&config)?;
     assert_eq!(loader.shard_count(), 1);
@@ -102,10 +98,7 @@ fn test_sharded_loader_creation() -> Result<()> {
 // Test 2: ShardedDataLoader iteration
 #[test]
 fn test_sharded_loader_iteration() -> Result<()> {
-    let config = ShardConfig::new(
-        "tests/sharded_training_integration.rs".to_string(),
-        50000,
-    )?;
+    let config = ShardConfig::new("tests/sharded_training_integration.rs".to_string(), 50000)?;
 
     let loader = ShardedDataLoader::new(&config)?;
     assert_eq!(loader.shard_count(), 1);
@@ -218,10 +211,7 @@ fn test_trainer_with_accumulated_steps() -> Result<()> {
 // Test 7: Full sharded training pipeline
 #[test]
 fn test_full_sharded_training_pipeline() -> Result<()> {
-    let config = ShardConfig::new(
-        "tests/sharded_training_integration.rs".to_string(),
-        50000,
-    )?;
+    let config = ShardConfig::new("tests/sharded_training_integration.rs".to_string(), 50000)?;
 
     let loader = ShardedDataLoader::new(&config)?;
     assert!(loader.shard_count() > 0);
@@ -297,7 +287,8 @@ fn test_sharded_training_with_multiple_steps() -> Result<()> {
         let chunk_count = chunks.len();
         let chunk_results: Vec<Result<Batch>> = chunks.into_iter().map(Ok).collect();
 
-        let metrics = trainer.train_accumulated_steps(chunk_results.into_iter(), chunk_count as usize)?;
+        let metrics =
+            trainer.train_accumulated_steps(chunk_results.into_iter(), chunk_count as usize)?;
         metrics_history.push(metrics);
     }
 

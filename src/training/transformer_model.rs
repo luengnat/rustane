@@ -85,7 +85,10 @@ impl BackwardTimingStats {
             eprintln!("Layer {} (reverse order):", i);
             eprintln!("  FFN backward:       {:.2} ms", layer.ffn_backward_ms);
             eprintln!("  RMSNorm (FFN):      {:.2} ms", layer.rmsnorm_ffn_ms);
-            eprintln!("  Attention backward: {:.2} ms", layer.attention_backward_ms);
+            eprintln!(
+                "  Attention backward: {:.2} ms",
+                layer.attention_backward_ms
+            );
             eprintln!("  RMSNorm (Attn):     {:.2} ms", layer.rmsnorm_attn_ms);
             eprintln!("  Layer total:        {:.2} ms", layer.total_ms);
         }
@@ -1411,7 +1414,11 @@ impl Model for TransformerANE {
 #[cfg(target_vendor = "apple")]
 impl TransformerANE {
     /// Full layer-by-layer ANE backward pass with timing
-    fn backward_on_ane_impl(&mut self, batch: &Batch, loss: f32) -> Result<(Vec<f32>, BackwardTimingStats)> {
+    fn backward_on_ane_impl(
+        &mut self,
+        batch: &Batch,
+        loss: f32,
+    ) -> Result<(Vec<f32>, BackwardTimingStats)> {
         use crate::ane::ANECompileRequest;
         use crate::layers::backward::{
             AttentionBackwardGen, BackwardMILGenerator, FFNBackwardGen, RMSNormBackwardGen,
@@ -1473,7 +1480,10 @@ impl TransformerANE {
         for layer_idx in (0..config.n_layers).rev() {
             let layer_start = Instant::now();
             let layer_layout = &layout.layers[layer_idx];
-            let mut layer_timing = LayerTimingStats { layer_idx, ..Default::default() };
+            let mut layer_timing = LayerTimingStats {
+                layer_idx,
+                ..Default::default()
+            };
 
             // Get layer weights before borrowing layer_cache
             let rms_att_w: Vec<f32> = self.trainable_params[layer_layout.rms_att.clone()].to_vec();

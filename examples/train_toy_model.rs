@@ -6,11 +6,11 @@
 //! - Running a training loop
 //! - Monitoring loss progression
 
+use rustane::data::Batch;
 use rustane::data::{Dataset, RandomSampler, Sampler};
 use rustane::error::Result;
 use rustane::training::{CrossEntropyLoss, Model, Optimizer, TrainerBuilder};
 use rustane::wrapper::ANETensor;
-use rustane::data::Batch;
 use rustane::ConstantScheduler;
 
 fn main() -> Result<()> {
@@ -27,7 +27,10 @@ fn main() -> Result<()> {
 
     // 3. Create model
     let mut model = ToyModel::new(512);
-    println!("Created toy model with {} parameters\n", model.param_count());
+    println!(
+        "Created toy model with {} parameters\n",
+        model.param_count()
+    );
 
     // 4. Build trainer
     let mut trainer = TrainerBuilder::new(&mut model)
@@ -46,20 +49,20 @@ fn main() -> Result<()> {
     // Create dataloader and iterate
     let mut sampler = RandomSampler::new(dataset.len(), 42);
     let indices = sampler.sample();
-    
+
     for step in 0..10 {
         // Get batch (batch_size=2, seq_len=32)
         let batch_size = 2;
         let seq_len = 32;
         let mut batch_tokens = Vec::new();
-        
+
         // Collect tokens for this batch
         for i in 0..batch_size {
             if let Ok(sample) = dataset.get(indices[step * batch_size + i]) {
                 batch_tokens.extend_from_slice(&sample);
             }
         }
-        
+
         let batch = Batch::new(batch_tokens, batch_size, seq_len)?;
 
         // Single training step
@@ -132,9 +135,10 @@ impl Dataset for ToyDataset {
 
     fn get(&self, idx: usize) -> Result<Vec<u32>> {
         if idx >= self.samples.len() {
-            return Err(rustane::Error::InvalidParameter(
-                format!("Index {} out of bounds", idx),
-            ));
+            return Err(rustane::Error::InvalidParameter(format!(
+                "Index {} out of bounds",
+                idx
+            )));
         }
         Ok(self.samples[idx].clone())
     }

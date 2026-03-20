@@ -85,12 +85,8 @@ fn main() -> rustane::Result<()> {
     // Example 3: Using collators with DataLoader for batching
     println!("Example 3: Collators with DataLoader");
     println!("-----------------------------------");
-    let dataset = SequentialDataset::new(vec![
-        vec![1, 2],
-        vec![3, 4, 5, 6],
-        vec![7],
-        vec![8, 9, 10],
-    ]);
+    let dataset =
+        SequentialDataset::new(vec![vec![1, 2], vec![3, 4, 5, 6], vec![7], vec![8, 9, 10]]);
     let sampler = SequentialSampler::new(4);
     let collator = PadCollator::new(4, 0);
 

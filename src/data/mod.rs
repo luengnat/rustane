@@ -69,18 +69,18 @@ fn compute_chunk_sizes(total_tokens: usize, seq_len: usize, max_chunk_tokens: us
     chunks
 }
 
-pub use self::dataset::{Dataset, SequentialDataset};
-pub use self::sampler::{RandomSampler, Sampler, SequentialSampler};
 pub use self::collate::{Collator, PadCollator, TruncateCollator};
+pub use self::dataset::{Dataset, SequentialDataset};
 pub use self::filesystem::{JsonlDataset, TextDataset};
-pub use self::sharded_loader::{ShardConfig, ShardMetadata, ShardBatch, ShardedDataLoader};
+pub use self::sampler::{RandomSampler, Sampler, SequentialSampler};
+pub use self::sharded_loader::{ShardBatch, ShardConfig, ShardMetadata, ShardedDataLoader};
 
 // Batch and ChunkIterator are defined in this module
 
-mod dataset;
-mod sampler;
 mod collate;
+mod dataset;
 mod filesystem;
+mod sampler;
 mod sharded_loader;
 
 /// A batch of tokenized samples, potentially padded or packed
@@ -109,13 +109,11 @@ impl Batch {
     /// Returns an error if tokens.len() != batch_size * seq_len
     pub fn new(tokens: Vec<u32>, batch_size: usize, seq_len: usize) -> Result<Self> {
         if tokens.len() != batch_size * seq_len {
-            return Err(crate::Error::InvalidParameter(
-                format!(
-                    "tokens length {} doesn't match batch_size*seq_len {}",
-                    tokens.len(),
-                    batch_size * seq_len
-                ),
-            ));
+            return Err(crate::Error::InvalidParameter(format!(
+                "tokens length {} doesn't match batch_size*seq_len {}",
+                tokens.len(),
+                batch_size * seq_len
+            )));
         }
         Ok(Batch {
             tokens,
@@ -467,12 +465,7 @@ mod tests {
 
     #[test]
     fn test_dataloader_simple_batch() {
-        let samples = vec![
-            vec![0, 1],
-            vec![2, 3],
-            vec![4, 5],
-            vec![6, 7],
-        ];
+        let samples = vec![vec![0, 1], vec![2, 3], vec![4, 5], vec![6, 7]];
         let dataset = SequentialDataset::new(samples);
         let sampler = SequentialSampler::new(4);
         let dataloader = DataLoader::new(dataset, sampler, 2).unwrap();
@@ -491,11 +484,7 @@ mod tests {
 
     #[test]
     fn test_dataloader_partial_batch() {
-        let samples = vec![
-            vec![0, 1],
-            vec![2, 3],
-            vec![4, 5],
-        ];
+        let samples = vec![vec![0, 1], vec![2, 3], vec![4, 5]];
         let dataset = SequentialDataset::new(samples);
         let sampler = SequentialSampler::new(3);
         let dataloader = DataLoader::new(dataset, sampler, 2).unwrap();
@@ -570,7 +559,7 @@ mod tests {
         let batch = Batch::new(vec![1u32; 100], 4, 25).unwrap();
         let chunk_iter = batch.chunks(25).unwrap();
         let chunks: Vec<_> = chunk_iter.collect::<Result<Vec<_>>>().unwrap();
-        
+
         // Each chunk should have batch_size = tokens / seq_len = 25 / 25 = 1
         for chunk in &chunks {
             assert_eq!(chunk.batch_size(), 1);
@@ -599,7 +588,7 @@ mod tests {
     fn test_into_chunks_batch_size_calculation() {
         let batch = Batch::new(vec![1u32; 100], 4, 25).unwrap();
         let chunks = batch.into_chunks(25).unwrap();
-        
+
         // Each chunk should have batch_size = tokens / seq_len = 25 / 25 = 1
         for chunk in &chunks {
             assert_eq!(chunk.batch_size(), 1);
@@ -613,11 +602,14 @@ mod tests {
         let batch = Batch {
             tokens: vec![1, 2, 3],
             batch_size: 1,
-            seq_len: 0,  // Invalid, should trigger guard
+            seq_len: 0, // Invalid, should trigger guard
         };
         let result = batch.chunks(10);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("seq_len must be > 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("seq_len must be > 0"));
     }
 
     #[test]
@@ -626,22 +618,25 @@ mod tests {
         let batch = Batch {
             tokens: vec![1, 2, 3],
             batch_size: 1,
-            seq_len: 0,  // Invalid, should trigger guard
+            seq_len: 0, // Invalid, should trigger guard
         };
         let result = batch.into_chunks(10);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("seq_len must be > 0"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("seq_len must be > 0"));
     }
 
     #[test]
     fn test_chunks_borrows_self() {
         // HIGH: chunks() should borrow &self, not consume self
         let batch = Batch::new(vec![1u32; 100], 4, 25).unwrap();
-        
+
         // Should be able to call chunks() multiple times on the same batch
         let _chunks1 = batch.chunks(25).unwrap();
-        let _chunks2 = batch.chunks(50).unwrap();  // Would fail if chunks() took self
-        
+        let _chunks2 = batch.chunks(50).unwrap(); // Would fail if chunks() took self
+
         // Batch is still available after both calls
         assert_eq!(batch.batch_size(), 4);
         assert_eq!(batch.seq_len(), 25);

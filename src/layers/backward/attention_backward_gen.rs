@@ -168,8 +168,7 @@ main attention_backward(d_out: tensor<seq_lenxdimxf32>,
             packed_input.extend_from_slice(&v.to_le_bytes());
         }
 
-        let request =
-            ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
+        let request = ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
         let mut executor = request
             .compile()
             .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
@@ -177,7 +176,9 @@ main attention_backward(d_out: tensor<seq_lenxdimxf32>,
         executor
             .write_input(0, &packed_input)
             .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
-        executor.eval().map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+        executor
+            .eval()
+            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
 
         let d_x_len = config.seq_len * config.hidden_dim;
         let grad_len = config.hidden_dim * config.hidden_dim;

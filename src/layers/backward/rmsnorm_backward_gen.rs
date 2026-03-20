@@ -29,43 +29,47 @@ impl RMSNormBackwardGen {
         mil.push_str(&format!(
             "    func main<ios18>(tensor<fp32, [1, {dim}, 1, seq_len]> d_out, tensor<fp32, [1, {dim}, 1, seq_len]> x, tensor<fp32, [1, {dim}, 1, 1]> w) {{\n"
         ));
-        
+
         // 1. Compute inv_rms for each position
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> x_sq = mul(x=x, y=x)[name = string(\"x_sq\")];\n");
         mil.push_str("        tensor<int32, [1]> rax1 = const()[name = string(\"rax1\"), val=tensor<int32, [1]>([1])];\n");
         mil.push_str("        bool kd = const()[name = string(\"kd\"), val=bool(true)];\n");
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> mean_sq_unscaled = reduce_sum(x=x_sq, axes=rax1, keep_dims=kd)[name = string(\"ms_un\")];\n");
-        mil.push_str(&format!("        fp32 inv_dim = const()[name = string(\"inv_dim\"), val=fp32({inv_dim:.8})];\n"));
+        mil.push_str(&format!(
+            "        fp32 inv_dim = const()[name = string(\"inv_dim\"), val=fp32({inv_dim:.8})];\n"
+        ));
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> mean_sq = mul(x=mean_sq_unscaled, y=inv_dim)[name = string(\"ms\")];\n");
-        mil.push_str(&format!("        fp32 eps = const()[name = string(\"eps\"), val=fp32({eps:.8})];\n"));
+        mil.push_str(&format!(
+            "        fp32 eps = const()[name = string(\"eps\"), val=fp32({eps:.8})];\n"
+        ));
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> mean_sq_eps = add(x=mean_sq, y=eps)[name = string(\"ms_eps\")];\n");
         mil.push_str("        fp32 nhalf = const()[name = string(\"nhalf\"), val=fp32(-0.5)];\n");
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> inv_rms = pow(x=mean_sq_eps, y=nhalf)[name = string(\"inv_rms\")];\n");
-        
+
         // 2. Compute norm_x
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> norm_x = mul(x=x, y=inv_rms)[name = string(\"norm_x\")];\n");
-        
+
         // 3. Compute weight gradient (dw)
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> dw_prod = mul(x=d_out, y=norm_x)[name = string(\"dw_prod\")];\n");
         mil.push_str("        tensor<int32, [1]> rax3 = const()[name = string(\"rax3\"), val=tensor<int32, [1]>([3])];\n");
         mil.push_str("        tensor<fp32, [1, {dim}, 1, 1]> dw = reduce_sum(x=dw_prod, axes=rax3, keep_dims=kd)[name = string(\"dw\")];\n");
-        
+
         // 4. Compute input gradient (d_x)
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> d_out_w = mul(x=d_out, y=w)[name = string(\"d_out_w\")];\n");
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> term1 = mul(x=d_out_w, y=inv_rms)[name = string(\"term1\")];\n");
-        
+
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> d_out_w_x = mul(x=d_out_w, y=x)[name = string(\"d_out_w_x\")];\n");
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> dot_prod = reduce_sum(x=d_out_w_x, axes=rax1, keep_dims=kd)[name = string(\"dot\")];\n");
-        
+
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> inv_rms_sq = mul(x=inv_rms, y=inv_rms)[name = string(\"inv_rms_sq\")];\n");
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> inv_rms_cube = mul(x=inv_rms_sq, y=inv_rms)[name = string(\"inv_rms_cube\")];\n");
-        
+
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> scalar_term = mul(x=dot_prod, y=inv_rms_cube)[name = string(\"s_term\")];\n");
         mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> scalar_term_scaled = mul(x=scalar_term, y=inv_dim)[name = string(\"s_term_s\")];\n");
-        
+
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> term2 = mul(x=scalar_term_scaled, y=x)[name = string(\"term2\")];\n");
         mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> d_x = sub(x=term1, y=term2)[name = string(\"d_x\")];\n");
-        
+
         mil.push_str("    } -> (d_x, dw);\n");
         mil.push_str("}\n");
 
@@ -126,7 +130,9 @@ impl RMSNormBackwardGen {
         executor
             .write_input(0, &packed_input)
             .map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
-        executor.eval().map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
+        executor
+            .eval()
+            .map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
 
         let d_x_len = config.seq_len * config.hidden_dim;
         let dw_len = config.hidden_dim;

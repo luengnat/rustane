@@ -31,12 +31,15 @@ fn main() -> Result<()> {
     let max_steps = if let Some(pos) = args.iter().position(|arg| arg == "--steps") {
         args.remove(pos);
         if let Some(count_str) = args.get(pos) {
-            let count = count_str.parse::<usize>()
-                .map_err(|_| rustane::Error::Other("--steps requires a number argument".to_string()))?;
+            let count = count_str.parse::<usize>().map_err(|_| {
+                rustane::Error::Other("--steps requires a number argument".to_string())
+            })?;
             args.remove(pos);
             count
         } else {
-            return Err(rustane::Error::Other("--steps requires a number argument".to_string()));
+            return Err(rustane::Error::Other(
+                "--steps requires a number argument".to_string(),
+            ));
         }
     } else {
         std::env::var("TRAIN_STEPS")
@@ -75,20 +78,25 @@ fn main() -> Result<()> {
             let batch = load_fineweb_batch(file, 65536, 512)?;
 
             // Process in large chunks for gradient accumulation
-            let chunk_size = 8192;  // tokens per chunk
+            let chunk_size = 8192; // tokens per chunk
             let chunks = batch.into_chunks(chunk_size)?;
 
             // Train with gradient accumulation across chunks
             let metrics = trainer.train_accumulated_steps(
                 chunks.into_iter().map(Ok),
-                8,  // accumulate over 8 chunks at a time
+                8, // accumulate over 8 chunks at a time
             )?;
 
             let elapsed = step_start.elapsed().as_millis();
 
             println!(
                 "{:4} | {:5} | {:.5} | {:.5}    | {:.6} | {:>8}",
-                step_count, step_idx, metrics.loss, metrics.grad_norm, metrics.learning_rate, elapsed
+                step_count,
+                step_idx,
+                metrics.loss,
+                metrics.grad_norm,
+                metrics.learning_rate,
+                elapsed
             );
             step_count += 1;
         }
@@ -450,7 +458,10 @@ fn resolve_fineweb_bin_files(source_paths: &[PathBuf]) -> Result<Option<Vec<Path
         return Ok(Some(files));
     }
 
-    if source_paths.iter().all(|path| path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("bin")) {
+    if source_paths
+        .iter()
+        .all(|path| path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("bin"))
+    {
         let mut files = source_paths.to_vec();
         files.sort();
         files.dedup();
@@ -601,7 +612,13 @@ impl TinyAttentionLanguageModel {
         out
     }
 
-    fn add_outer(grad: &mut [f32], input: &[f32], output_grad: &[f32], in_dim: usize, out_dim: usize) {
+    fn add_outer(
+        grad: &mut [f32],
+        input: &[f32],
+        output_grad: &[f32],
+        in_dim: usize,
+        out_dim: usize,
+    ) {
         for i in 0..in_dim {
             for o in 0..out_dim {
                 grad[i * out_dim + o] += input[i] * output_grad[o];
@@ -609,7 +626,12 @@ impl TinyAttentionLanguageModel {
         }
     }
 
-    fn matmul_row_t(output_grad: &[f32], weights: &[f32], in_dim: usize, out_dim: usize) -> Vec<f32> {
+    fn matmul_row_t(
+        output_grad: &[f32],
+        weights: &[f32],
+        in_dim: usize,
+        out_dim: usize,
+    ) -> Vec<f32> {
         let mut out = vec![0.0f32; in_dim];
         for i in 0..in_dim {
             let mut sum = 0.0f32;
@@ -628,7 +650,9 @@ impl Model for TinyAttentionLanguageModel {
         let batch_size = batch.batch_size();
         let seq_len = batch.seq_len();
         if seq_len < 2 {
-            return Err(rustane::Error::Other("seq_len must be at least 2".to_string()));
+            return Err(rustane::Error::Other(
+                "seq_len must be at least 2".to_string(),
+            ));
         }
         if seq_len > self.max_seq_len {
             return Err(rustane::Error::Other(format!(
@@ -637,7 +661,9 @@ impl Model for TinyAttentionLanguageModel {
             )));
         }
         if tokens.len() != batch_size * seq_len {
-            return Err(rustane::Error::Other("batch token shape mismatch".to_string()));
+            return Err(rustane::Error::Other(
+                "batch token shape mismatch".to_string(),
+            ));
         }
 
         let d = self.d_model;
