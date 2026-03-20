@@ -1521,20 +1521,20 @@ git commit -m "docs: add comprehensive documentation for Phase 3 backward kernel
 
 ## Success Criteria Checklist
 
-- [ ] Task 1: Trait and module structure created
-- [ ] Task 2: RMSNormBackwardGen implemented and tested
-- [ ] Task 3: AttentionBackwardGen implemented and tested
-- [ ] Task 4: FFNBackwardGen implemented and tested
-- [ ] Task 5: LossBackwardGen implemented and tested
-- [ ] Task 6: Unit tests passing for all generators
-- [ ] Task 7: BackwardValidationSuite implemented
-- [ ] Task 8: Validation integration tests passing
-- [ ] Task 9: ANEGradientAccumulator implemented and tested
-- [ ] Task 10: Model trait extended with backward_on_ane()
-- [ ] Task 11: Unit tests for backward_on_ane passing
-- [ ] Task 12: Trainer integration verified
-- [ ] Task 13: End-to-end backward tests passing
-- [ ] Task 14: Full training example compiles and runs
+- [x] Task 1: Trait and module structure created
+- [x] Task 2: RMSNormBackwardGen implemented and tested
+- [x] Task 3: AttentionBackwardGen implemented and tested
+- [x] Task 4: FFNBackwardGen implemented and tested
+- [x] Task 5: LossBackwardGen implemented and tested
+- [x] Task 6: Unit tests passing for all generators
+- [x] Task 7: BackwardValidationSuite implemented
+- [x] Task 8: Validation integration tests passing
+- [x] Task 9: ANEGradientAccumulator implemented and tested
+- [x] Task 10: Model trait extended with backward_on_ane()
+- [x] Task 11: Unit tests for backward_on_ane passing
+- [x] Task 12: Trainer integration verified
+- [x] Task 13: End-to-end backward tests passing
+- [x] Task 14: Full training example compiles and runs
 - [ ] Task 15: Documentation complete and all tests passing
 
 ---

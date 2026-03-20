@@ -338,8 +338,8 @@ fn test_forward_backward_step_end_to_end() {
     let batch = test_batch(2, 32);
     let output = model.forward(&batch).unwrap();
 
-    // Output covers all positions
-    assert_eq!(output.num_elements(), 2 * 32 * config.vocab_size);
+    // Output covers seq_len - 1 positions (next-token prediction)
+    assert_eq!(output.num_elements(), 2 * (32 - 1) * config.vocab_size);
 
     // Backward pass should produce one gradient per parameter
     let grads = model.backward_with_batch(&batch, 1.0f32).unwrap();

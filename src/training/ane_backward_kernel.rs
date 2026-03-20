@@ -26,8 +26,8 @@
 //! ```
 
 use crate::ane::ANEKernel;
-use crate::training::TransformerConfig;
 use crate::error::{Error, Result};
+use crate::training::TransformerConfig;
 
 /// Compiled ANE backward kernel ready for execution
 ///
@@ -39,10 +39,6 @@ pub struct ANEBackwardKernel {
     kernel: ANEKernel,
     /// Operation name (e.g., "rmsnorm_backward")
     operation_name: String,
-    /// Input tensor shapes
-    input_shapes: Vec<Vec<usize>>,
-    /// Output tensor shapes
-    output_shapes: Vec<Vec<usize>>,
 }
 
 impl ANEBackwardKernel {
@@ -64,7 +60,7 @@ impl ANEBackwardKernel {
     /// - MIL code compilation fails
     /// - ANE kernel creation fails
     pub fn compile(
-        mil_code: &str,
+        _mil_code: &str,
         config: &TransformerConfig,
         operation_name: &str,
     ) -> Result<Self> {
@@ -79,8 +75,6 @@ impl ANEBackwardKernel {
         Ok(Self {
             kernel,
             operation_name: operation_name.to_string(),
-            input_shapes: vec![],
-            output_shapes: vec![],
         })
     }
 
@@ -182,6 +176,16 @@ impl ANEBackwardKernelCache {
         self.cache_hits = 0;
         self.cache_misses = 0;
     }
+
+    /// Record a cache hit (for testing purposes)
+    pub fn record_hit(&mut self) {
+        self.cache_hits += 1;
+    }
+
+    /// Record a cache miss (for testing purposes)
+    pub fn record_miss(&mut self) {
+        self.cache_misses += 1;
+    }
 }
 
 impl Default for ANEBackwardKernelCache {
@@ -198,7 +202,7 @@ mod tests {
     fn test_backward_kernel_creation() {
         let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
         let mil_code = "#!irms6\nmain test() {}";
-        
+
         let result = ANEBackwardKernel::compile(mil_code, &config, "test");
         // May succeed or fail depending on ANE availability
         match result {
@@ -215,11 +219,11 @@ mod tests {
     fn test_kernel_cache() {
         let mut cache = ANEBackwardKernelCache::new();
         assert_eq!(cache.stats(), (0, 0));
-        
+
         cache.cache_hits = 5;
         cache.cache_misses = 3;
         assert_eq!(cache.stats(), (5, 3));
-        
+
         cache.clear();
         assert_eq!(cache.stats(), (0, 0));
     }

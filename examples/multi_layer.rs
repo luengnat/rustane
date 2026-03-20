@@ -152,7 +152,7 @@ fn create_linear_layer(
     let mil = MILBuilder::new()
         .add_linear(name, input_name, "weight", output_size)
         .add_relu(&format!("{}_relu", name), name)
-        .add_output(&format!("{}_relu", name))
+        .add_output(&format!("{}_relu", name), "fp32", &[1, output_size])
         .build();
 
     // Create identity-like weights

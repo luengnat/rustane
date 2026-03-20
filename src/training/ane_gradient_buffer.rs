@@ -43,7 +43,9 @@ impl ANEGradientBuffer {
         }
 
         // Create IOSurface with size for num_params f32 values
-        let size_bytes = num_params * 4;
+        let size_bytes = num_params.checked_mul(4).ok_or_else(|| {
+            Error::InvalidParameter("num_params too large: would overflow buffer size".to_string())
+        })?;
         let surface = IOSurface::new(size_bytes)
             .map_err(|e| Error::Other(format!("Failed to create IOSurface: {:?}", e)))?;
 
@@ -92,6 +94,15 @@ impl ANEGradientBuffer {
     /// This is more efficient than CPU accumulation as both buffers
     /// are in device-accessible memory.
     pub fn accumulate_surface(&mut self, other: &IOSurface) -> Result<()> {
+        // Validate size compatibility
+        let other_floats = other.capacity() / 4;
+        if other_floats != self.num_params {
+            return Err(Error::InvalidParameter(format!(
+                "surface size mismatch: expected {} params, got {}",
+                self.num_params, other_floats
+            )));
+        }
+
         // Read both surfaces
         let mut current = vec![0f32; self.num_params];
         let mut other_data = vec![0f32; self.num_params];

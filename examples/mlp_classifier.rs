@@ -306,7 +306,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mil1 = MILBuilder::new()
         .add_linear("fc1", "input", "w1", hidden1_size)
         .add_relu("relu1", "fc1")
-        .add_output("relu1")
+        .add_output("relu1", "fp32", &[1, hidden1_size])
         .build();
 
     let blob1 = WeightBlob::from_fp32(&loaded_weights[0], input_size as i32, hidden1_size as i32)?;

@@ -187,7 +187,7 @@ fn main() -> Result<()> {
     println!("  Head LR:         {}", head_lr);
     println!("  Matrix LR:       {}", matrix_lr);
     println!("  Matrix opt:      {}", matrix_opt);
-    println!("  ANE head:        {}", ane_forward_head);
+    println!("  ANE forward:     {}", ane_forward_head);
     println!("  Muon momentum:   {}", muon_momentum);
     println!("  Muon steps:      {}", muon_backend_steps);
     println!("  Muon nesterov:   {}", muon_nesterov);

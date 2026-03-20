@@ -16,19 +16,24 @@
 use std::ops::Range;
 #[cfg(target_vendor = "apple")]
 use std::panic::AssertUnwindSafe;
+use std::collections::HashSet;
 use std::sync::OnceLock;
+#[cfg(target_vendor = "apple")]
+use std::sync::Mutex;
 
 use rand::random;
 
 use crate::data::Batch;
 #[cfg(target_vendor = "apple")]
-use crate::mil::linear_matmul_compile_request;
+use crate::mil::{linear_matmul_compile_request, rmsnorm_compile_request};
 use crate::error::Result;
 use crate::layers::transformer_backward::rmsnorm_backward;
 use crate::training::{Model, TransformerConfig};
 use crate::wrapper::ANETensor;
 
 const EPS: f32 = 1e-6;
+#[cfg(target_vendor = "apple")]
+static ANE_FORWARD_BLOCKS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct LayerLayout {
@@ -373,57 +378,262 @@ impl TransformerANE {
             let x_attn_in = x.clone();
             let x_attn_norm = rmsnorm_forward(&x_attn_in, &self.trainable_params[layer.rms_att.clone()], dim);
 
-            let q = linear_forward(
-                &x_attn_norm,
-                dim,
-                &self.trainable_params[layer.wq.clone()],
-                dim,
-            );
-            let k = linear_forward(
-                &x_attn_norm,
-                dim,
-                &self.trainable_params[layer.wk.clone()],
-                dim,
-            );
-            let v = linear_forward(
-                &x_attn_norm,
-                dim,
-                &self.trainable_params[layer.wv.clone()],
-                dim,
-            );
+            let (q, k, v) = if self.use_ane_head {
+                #[cfg(target_vendor = "apple")]
+                {
+                    let previous_hook = std::panic::take_hook();
+                    std::panic::set_hook(Box::new(|_| {}));
+                    let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        self.forward_qkv_with_ane(
+                            &x_attn_norm,
+                            x_attn_norm.len() / dim,
+                            &self.trainable_params[layer.wq.clone()],
+                            &self.trainable_params[layer.wk.clone()],
+                            &self.trainable_params[layer.wv.clone()],
+                        )
+                    }));
+                    std::panic::set_hook(previous_hook);
+                    match ane_result {
+                        Ok(Ok(qkv)) => {
+                            log_ane_forward_block("qkv", "ANE");
+                            qkv
+                        }
+                        _ => {
+                            log_ane_forward_block("qkv", "CPU fallback");
+                            (
+                                linear_forward(
+                                    &x_attn_norm,
+                                    dim,
+                                    &self.trainable_params[layer.wq.clone()],
+                                    dim,
+                                ),
+                                linear_forward(
+                                    &x_attn_norm,
+                                    dim,
+                                    &self.trainable_params[layer.wk.clone()],
+                                    dim,
+                                ),
+                                linear_forward(
+                                    &x_attn_norm,
+                                    dim,
+                                    &self.trainable_params[layer.wv.clone()],
+                                    dim,
+                                ),
+                            )
+                        }
+                    }
+                }
+                #[cfg(not(target_vendor = "apple"))]
+                {
+                    (
+                        linear_forward(
+                            &x_attn_norm,
+                            dim,
+                            &self.trainable_params[layer.wq.clone()],
+                            dim,
+                        ),
+                        linear_forward(
+                            &x_attn_norm,
+                            dim,
+                            &self.trainable_params[layer.wk.clone()],
+                            dim,
+                        ),
+                        linear_forward(
+                            &x_attn_norm,
+                            dim,
+                            &self.trainable_params[layer.wv.clone()],
+                            dim,
+                        ),
+                    )
+                }
+            } else {
+                (
+                    linear_forward(
+                        &x_attn_norm,
+                        dim,
+                        &self.trainable_params[layer.wq.clone()],
+                        dim,
+                    ),
+                    linear_forward(
+                        &x_attn_norm,
+                        dim,
+                        &self.trainable_params[layer.wk.clone()],
+                        dim,
+                    ),
+                    linear_forward(
+                        &x_attn_norm,
+                        dim,
+                        &self.trainable_params[layer.wv.clone()],
+                        dim,
+                    ),
+                )
+            };
 
             let (attn_out, attn_probs) =
                 causal_attention_forward(&q, &k, &v, seq_len, dim, n_heads, head_dim);
 
-            let attn_proj_out = linear_forward(
-                &attn_out,
-                dim,
-                &self.trainable_params[layer.wo.clone()],
-                dim,
-            );
+            let attn_proj_out = if self.use_ane_head {
+                #[cfg(target_vendor = "apple")]
+                {
+                    let previous_hook = std::panic::take_hook();
+                    std::panic::set_hook(Box::new(|_| {}));
+                    let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        self.forward_linear_with_ane(
+                            &attn_out,
+                            seq_len,
+                            &self.trainable_params[layer.wo.clone()],
+                            dim,
+                            dim,
+                        )
+                    }));
+                    std::panic::set_hook(previous_hook);
+                    match ane_result {
+                        Ok(Ok(proj)) => {
+                            log_ane_forward_block("attn_out", "ANE");
+                            proj
+                        }
+                        _ => {
+                            log_ane_forward_block("attn_out", "CPU fallback");
+                            linear_forward(
+                                &attn_out,
+                                dim,
+                                &self.trainable_params[layer.wo.clone()],
+                                dim,
+                            )
+                        }
+                    }
+                }
+                #[cfg(not(target_vendor = "apple"))]
+                {
+                    linear_forward(
+                        &attn_out,
+                        dim,
+                        &self.trainable_params[layer.wo.clone()],
+                        dim,
+                    )
+                }
+            } else {
+                linear_forward(
+                    &attn_out,
+                    dim,
+                    &self.trainable_params[layer.wo.clone()],
+                    dim,
+                )
+            };
             let x_ffn_in = add_residual(&x_attn_in, &attn_proj_out);
             let x_ffn_norm = rmsnorm_forward(&x_ffn_in, &self.trainable_params[layer.rms_ffn.clone()], dim);
 
-            let h1 = linear_forward(
-                &x_ffn_norm,
-                dim,
-                &self.trainable_params[layer.w1.clone()],
-                self.config.hidden_dim,
-            );
-            let h3 = linear_forward(
-                &x_ffn_norm,
-                dim,
-                &self.trainable_params[layer.w3.clone()],
-                self.config.hidden_dim,
-            );
+            let (h1, h3) = if self.use_ane_head {
+                #[cfg(target_vendor = "apple")]
+                {
+                    let previous_hook = std::panic::take_hook();
+                    std::panic::set_hook(Box::new(|_| {}));
+                    let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        self.forward_dual_linear_with_ane(
+                            &x_ffn_norm,
+                            seq_len,
+                            &self.trainable_params[layer.w1.clone()],
+                            &self.trainable_params[layer.w3.clone()],
+                            dim,
+                            self.config.hidden_dim,
+                        )
+                    }));
+                    std::panic::set_hook(previous_hook);
+                    match ane_result {
+                        Ok(Ok(pair)) => pair,
+                        _ => (
+                            linear_forward(
+                                &x_ffn_norm,
+                                dim,
+                                &self.trainable_params[layer.w1.clone()],
+                                self.config.hidden_dim,
+                            ),
+                            linear_forward(
+                                &x_ffn_norm,
+                                dim,
+                                &self.trainable_params[layer.w3.clone()],
+                                self.config.hidden_dim,
+                            ),
+                        ),
+                    }
+                }
+                #[cfg(not(target_vendor = "apple"))]
+                {
+                    (
+                        linear_forward(
+                            &x_ffn_norm,
+                            dim,
+                            &self.trainable_params[layer.w1.clone()],
+                            self.config.hidden_dim,
+                        ),
+                        linear_forward(
+                            &x_ffn_norm,
+                            dim,
+                            &self.trainable_params[layer.w3.clone()],
+                            self.config.hidden_dim,
+                        ),
+                    )
+                }
+            } else {
+                (
+                    linear_forward(
+                        &x_ffn_norm,
+                        dim,
+                        &self.trainable_params[layer.w1.clone()],
+                        self.config.hidden_dim,
+                    ),
+                    linear_forward(
+                        &x_ffn_norm,
+                        dim,
+                        &self.trainable_params[layer.w3.clone()],
+                        self.config.hidden_dim,
+                    ),
+                )
+            };
             let silu = h1.iter().map(|&x| silu(x)).collect::<Vec<_>>();
             let ffn_hidden = elementwise_mul(&silu, &h3);
-            let ffn_out = linear_forward(
-                &ffn_hidden,
-                self.config.hidden_dim,
-                &self.trainable_params[layer.w2.clone()],
-                dim,
-            );
+            let ffn_out = if self.use_ane_head {
+                #[cfg(target_vendor = "apple")]
+                {
+                    let previous_hook = std::panic::take_hook();
+                    std::panic::set_hook(Box::new(|_| {}));
+                    let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        self.forward_linear_with_ane(
+                            &ffn_hidden,
+                            seq_len,
+                            &self.trainable_params[layer.w2.clone()],
+                            self.config.hidden_dim,
+                            dim,
+                        )
+                    }));
+                    std::panic::set_hook(previous_hook);
+                    match ane_result {
+                        Ok(Ok(out)) => out,
+                        _ => linear_forward(
+                            &ffn_hidden,
+                            self.config.hidden_dim,
+                            &self.trainable_params[layer.w2.clone()],
+                            dim,
+                        ),
+                    }
+                }
+                #[cfg(not(target_vendor = "apple"))]
+                {
+                    linear_forward(
+                        &ffn_hidden,
+                        self.config.hidden_dim,
+                        &self.trainable_params[layer.w2.clone()],
+                        dim,
+                    )
+                }
+            } else {
+                linear_forward(
+                    &ffn_hidden,
+                    self.config.hidden_dim,
+                    &self.trainable_params[layer.w2.clone()],
+                    dim,
+                )
+            };
 
             x = add_residual(&x_ffn_in, &ffn_out);
 
@@ -445,7 +655,30 @@ impl TransformerANE {
         }
 
         let final_in = x;
-        let final_norm = rmsnorm_forward(&final_in, self.final_norm(), dim);
+        let final_norm = if self.use_ane_head {
+            #[cfg(target_vendor = "apple")]
+            {
+                let previous_hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(|_| {}));
+                let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    self.forward_final_norm_with_ane(&final_in, seq_len - 1)
+                }));
+                std::panic::set_hook(previous_hook);
+                match ane_result {
+                    Ok(Ok(norm)) => norm,
+                    _ => {
+                        log_ane_forward_block("final_norm", "CPU fallback");
+                        rmsnorm_forward(&final_in, self.final_norm(), dim)
+                    },
+                }
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                rmsnorm_forward(&final_in, self.final_norm(), dim)
+            }
+        } else {
+            rmsnorm_forward(&final_in, self.final_norm(), dim)
+        };
         let logits_proj = if self.use_ane_head {
             #[cfg(target_vendor = "apple")]
             {
@@ -456,7 +689,13 @@ impl TransformerANE {
                 }));
                 std::panic::set_hook(previous_hook);
                 match ane_result {
-                    Ok(Ok(logits)) => logits,
+                    Ok(Ok(logits)) => {
+                        static ANE_FORWARD_LOGGED: OnceLock<()> = OnceLock::new();
+                        ANE_FORWARD_LOGGED.get_or_init(|| {
+                            eprintln!("ANE forward slice executed via private runtime");
+                        });
+                        logits
+                    }
                     _ => linear_forward(
                         &final_norm[..(seq_len - 1) * dim],
                         dim,
@@ -601,9 +840,28 @@ impl TransformerANE {
 
 impl TransformerANE {
     #[cfg(target_vendor = "apple")]
+    fn forward_final_norm_with_ane(&self, final_in: &[f32], positions: usize) -> Result<Vec<f32>> {
+        use crate::ane::WeightBlob;
+
+        let dim = self.config.dim;
+        let weight_blob = WeightBlob::from_f32(self.final_norm(), 1, dim)?;
+        let request = rmsnorm_compile_request(positions, dim, &weight_blob);
+        let mut executor = request.compile()?;
+
+        let input = transpose_row_major(final_in, positions, dim);
+        let input_tensor = ANETensor::from_fp32(input, vec![1, dim, positions])?;
+        executor.write_input(0, input_tensor.as_bytes())?;
+        executor.eval()?;
+
+        let mut output_bytes = vec![0u8; positions * dim * 4];
+        executor.read_output(0, &mut output_bytes)?;
+        let output = bytes_to_f32_vec(&output_bytes);
+        Ok(transpose_row_major(&output, positions, dim))
+    }
+
+    #[cfg(target_vendor = "apple")]
     fn forward_logits_with_ane(&self, final_norm: &[f32], positions: usize) -> Result<Vec<f32>> {
         use crate::ane::WeightBlob;
-        static ANE_HEAD_LOGGED: OnceLock<()> = OnceLock::new();
 
         let dim = self.config.dim;
         let vocab_size = self.config.vocab_size;
@@ -614,9 +872,6 @@ impl TransformerANE {
 
         let input = transpose_row_major(final_norm, positions, dim);
         let input_tensor = ANETensor::from_fp32(input, vec![1, dim, positions])?;
-        ANE_HEAD_LOGGED.get_or_init(|| {
-            eprintln!("ANE head projection enabled for transformer logits");
-        });
         executor.write_input(0, input_tensor.as_bytes())?;
         executor.eval()?;
 
@@ -626,11 +881,119 @@ impl TransformerANE {
         Ok(transpose_row_major(&output, vocab_size, positions))
     }
 
+    #[cfg(target_vendor = "apple")]
+    fn forward_qkv_with_ane(
+        &self,
+        x_attn_norm: &[f32],
+        positions: usize,
+        wq: &[f32],
+        wk: &[f32],
+        wv: &[f32],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>)> {
+        use crate::ane::WeightBlob;
+
+        let dim = self.config.dim;
+        let mut qkv_weights = Vec::with_capacity(3 * dim * dim);
+        qkv_weights.extend_from_slice(wq);
+        qkv_weights.extend_from_slice(wk);
+        qkv_weights.extend_from_slice(wv);
+        let weight_blob = WeightBlob::from_f32(&qkv_weights, 3 * dim, dim)?;
+        let request = linear_matmul_compile_request(positions, dim, 3 * dim, &weight_blob);
+        let mut executor = request.compile()?;
+
+        let input = transpose_row_major(x_attn_norm, positions, dim);
+        let input_tensor = ANETensor::from_fp32(input, vec![1, dim, positions])?;
+        executor.write_input(0, input_tensor.as_bytes())?;
+        executor.eval()?;
+
+        let mut output_bytes = vec![0u8; 3 * dim * positions * 4];
+        executor.read_output(0, &mut output_bytes)?;
+        let output = transpose_row_major(&bytes_to_f32_vec(&output_bytes), 3 * dim, positions);
+        let q_len = positions * dim;
+        let k_end = q_len * 2;
+        Ok((
+            output[0..q_len].to_vec(),
+            output[q_len..k_end].to_vec(),
+            output[k_end..].to_vec(),
+        ))
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn forward_linear_with_ane(
+        &self,
+        input: &[f32],
+        positions: usize,
+        weights: &[f32],
+        in_dim: usize,
+        out_dim: usize,
+    ) -> Result<Vec<f32>> {
+        use crate::ane::WeightBlob;
+
+        let weight_blob = WeightBlob::from_f32(weights, out_dim, in_dim)?;
+        let request = linear_matmul_compile_request(positions, in_dim, out_dim, &weight_blob);
+        let mut executor = request.compile()?;
+
+        let input_tensor = ANETensor::from_fp32(
+            transpose_row_major(input, positions, in_dim),
+            vec![1, in_dim, positions],
+        )?;
+        executor.write_input(0, input_tensor.as_bytes())?;
+        executor.eval()?;
+
+        let mut output_bytes = vec![0u8; out_dim * positions * 4];
+        executor.read_output(0, &mut output_bytes)?;
+        let output = bytes_to_f32_vec(&output_bytes);
+        Ok(transpose_row_major(&output, out_dim, positions))
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn forward_dual_linear_with_ane(
+        &self,
+        input: &[f32],
+        positions: usize,
+        w1: &[f32],
+        w3: &[f32],
+        in_dim: usize,
+        hidden_dim: usize,
+    ) -> Result<(Vec<f32>, Vec<f32>)> {
+        use crate::ane::WeightBlob;
+
+        let mut weights = Vec::with_capacity(2 * hidden_dim * in_dim);
+        weights.extend_from_slice(w1);
+        weights.extend_from_slice(w3);
+        let weight_blob = WeightBlob::from_f32(&weights, 2 * hidden_dim, in_dim)?;
+        let request = linear_matmul_compile_request(positions, in_dim, 2 * hidden_dim, &weight_blob);
+        let mut executor = request.compile()?;
+
+        let input_tensor = ANETensor::from_fp32(
+            transpose_row_major(input, positions, in_dim),
+            vec![1, in_dim, positions],
+        )?;
+        executor.write_input(0, input_tensor.as_bytes())?;
+        executor.eval()?;
+
+        let mut output_bytes = vec![0u8; 2 * hidden_dim * positions * 4];
+        executor.read_output(0, &mut output_bytes)?;
+        let output = transpose_row_major(&bytes_to_f32_vec(&output_bytes), 2 * hidden_dim, positions);
+        let split = hidden_dim * positions;
+        Ok((output[0..split].to_vec(), output[split..].to_vec()))
+    }
+
     #[cfg(not(target_vendor = "apple"))]
     fn forward_logits_with_ane(&self, _final_norm: &[f32], _positions: usize) -> Result<Vec<f32>> {
         Err(crate::Error::Other(
             "ANE head projection is only available on Apple platforms".to_string(),
         ))
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+fn log_ane_forward_block(block: &'static str, outcome: &'static str) {
+    let seen = ANE_FORWARD_BLOCKS.get_or_init(|| Mutex::new(HashSet::new()));
+    if let Ok(mut guard) = seen.lock() {
+        if guard.insert(block) {
+            eprintln!("ANE block {block}: {outcome}");
+        }
     }
 }
 
