@@ -3,18 +3,19 @@
 //! Accumulates gradients over multiple steps for larger effective batch sizes
 //! without allocating huge batches. Supports both FP16 and FP32 gradients.
 
-/// Gradient accumulator
+/// Gradient accumulator for multi-step accumulation
 ///
 /// Accumulates gradients over multiple training steps before updating weights.
 /// Enables training with larger effective batch sizes without huge memory usage.
+/// Also tracks loss values for monitoring training progress.
 ///
 /// # Strategy
 ///
 /// 1. Initialize accumulator with parameter count and total steps
 /// 2. Compute gradients in mini-batches
-/// 3. Call accumulate_fp32/fp16 for each mini-batch
-/// 4. After accumulating all steps, call finalize()
-/// 5. Use accumulated gradients in optimizer
+/// 3. Call accumulate() for each mini-batch with gradients, loss, and scale
+/// 4. Check is_ready() to determine when optimizer should step
+/// 5. Use accumulated gradients from gradients() in optimizer
 /// 6. Call reset() for next accumulation phase
 ///
 /// # Example
@@ -25,161 +26,125 @@
 ///
 /// // Mini-batch 1
 /// let grads1 = vec![1.0f32; 1000];
-/// accum.accumulate_fp32(&grads1, 1.0);
+/// accum.accumulate(&grads1, 2.0, 0.25).unwrap();
 ///
 /// // Mini-batch 2
 /// let grads2 = vec![0.5f32; 1000];
-/// accum.accumulate_fp32(&grads2, 1.0);
+/// accum.accumulate(&grads2, 3.0, 0.25).unwrap();
 ///
-/// assert!(!accum.is_complete());
+/// assert!(!accum.is_ready());
 ///
 /// // After all steps...
-/// accum.accumulate_fp32(&grads1, 1.0);
-/// accum.accumulate_fp32(&grads2, 1.0);
-/// assert!(accum.is_complete());
+/// accum.accumulate(&grads1, 2.5, 0.25).unwrap();
+/// accum.accumulate(&grads2, 3.5, 0.25).unwrap();
+/// assert!(accum.is_ready());
 ///
-/// let final_grads = accum.finalize();
+/// let final_grads = accum.gradients();
+/// let avg_loss = accum.average_loss();
 /// ```
 pub struct GradAccumulator {
-    accum: Vec<f32>,
-    count: usize,
-    total_steps: usize,
+    /// Accumulated gradients (flattened)
+    accumulated_grads: Vec<f32>,
+
+    /// Number of accumulation steps completed
+    steps_completed: u32,
+
+    /// Total steps before optimizer should step
+    total_steps: u32,
+
+    /// Running sum of losses (for averaging)
+    accumulated_loss: f32,
 }
 
 impl GradAccumulator {
-    /// Create a new gradient accumulator
+    /// Create a new gradient accumulator for multi-step accumulation
     ///
     /// # Arguments
     ///
-    /// * `num_params` - Total number of parameters
-    /// * `total_steps` - Number of mini-batch steps to accumulate
+    /// * `param_count` - Number of parameters (gradient vector size)
+    /// * `accumulation_steps` - How many backward passes before optimizer step
     ///
     /// # Example
     ///
     /// ```
     /// # use rustane::training::GradAccumulator;
     /// let accum = GradAccumulator::new(5000, 8);
-    /// assert_eq!(accum.total_steps(), 8);
-    /// assert_eq!(accum.current_step(), 0);
+    /// assert_eq!(accum.progress(), (0, 8));
+    /// assert!(!accum.is_ready());
     /// ```
-    pub fn new(num_params: usize, total_steps: usize) -> Self {
+    pub fn new(param_count: usize, accumulation_steps: u32) -> Self {
         GradAccumulator {
-            accum: vec![0.0f32; num_params],
-            count: 0,
-            total_steps,
+            accumulated_grads: vec![0.0f32; param_count],
+            steps_completed: 0,
+            total_steps: accumulation_steps,
+            accumulated_loss: 0.0,
         }
     }
 
-    /// Accumulate FP16 gradients
-    ///
-    /// Converts FP16 gradients to FP32 and adds to accumulator.
-    /// FP16 is interpreted as bfloat16-like half-precision floats.
+    /// Accumulate gradients from one backward pass
     ///
     /// # Arguments
     ///
-    /// * `grads` - Gradient array in FP16 (as u16 bit patterns)
-    /// * `scale` - Scale factor for this mini-batch
+    /// * `grads` - Gradient vector from model.backward()
+    /// * `loss` - Loss value from this step
+    /// * `scale` - Scaling factor (usually 1.0 / accumulation_steps)
     ///
     /// # Example
     ///
     /// ```
     /// # use rustane::training::GradAccumulator;
+    /// # use rustane::Result;
     /// let mut accum = GradAccumulator::new(100, 2);
-    /// let grads_fp16 = vec![0x3c00u16; 100]; // ~1.0 in FP16
-    /// accum.accumulate_fp16(&grads_fp16, 1.0);
+    /// let grads = vec![0.1f32; 100];
+    /// accum.accumulate(&grads, 2.0, 0.5).unwrap();
     /// ```
-    pub fn accumulate_fp16(&mut self, grads: &[u16], scale: f32) {
-        if grads.len() != self.accum.len() {
-            return; // Silently ignore size mismatch
+    pub fn accumulate(&mut self, grads: &[f32], loss: f32, scale: f32) -> crate::Result<()> {
+        use crate::Error;
+        
+        if grads.len() != self.accumulated_grads.len() {
+            return Err(Error::Other(
+                format!("gradient count mismatch: got {}, expected {}",
+                    grads.len(), self.accumulated_grads.len())
+            ));
         }
 
-        self.count += 1;
-
-        for (i, &grad_fp16) in grads.iter().enumerate() {
-            // Convert FP16 (u16 bits) to FP32
-            let grad_fp32 = half::f16::from_bits(grad_fp16).to_f32();
-            self.accum[i] += grad_fp32 * scale;
-        }
-    }
-
-    /// Accumulate FP32 gradients
-    ///
-    /// Directly adds FP32 gradients to accumulator.
-    ///
-    /// # Arguments
-    ///
-    /// * `grads` - Gradient array in FP32
-    /// * `scale` - Scale factor for this mini-batch
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rustane::training::GradAccumulator;
-    /// let mut accum = GradAccumulator::new(100, 2);
-    /// let grads_fp32 = vec![0.1f32; 100];
-    /// accum.accumulate_fp32(&grads_fp32, 1.0);
-    /// assert_eq!(accum.current_step(), 1);
-    /// ```
-    pub fn accumulate_fp32(&mut self, grads: &[f32], scale: f32) {
-        if grads.len() != self.accum.len() {
-            return; // Silently ignore size mismatch
+        // Accumulate scaled gradients
+        for (accum, grad) in self.accumulated_grads.iter_mut().zip(grads.iter()) {
+            *accum += grad * scale;
         }
 
-        self.count += 1;
+        // Accumulate scaled loss
+        self.accumulated_loss += loss * scale;
+        self.steps_completed += 1;
 
-        for (i, &grad) in grads.iter().enumerate() {
-            self.accum[i] += grad * scale;
-        }
-    }
-
-    /// Get the accumulated gradients
-    ///
-    /// Should be called after accumulating all mini-batches
-    /// (i.e., when is_complete() returns true).
-    ///
-    /// Optionally applies averaging: accumulated / num_steps.
-    ///
-    /// # Returns
-    ///
-    /// Reference to accumulated gradient array
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rustane::training::GradAccumulator;
-    /// let mut accum = GradAccumulator::new(100, 2);
-    /// let grads = vec![0.5f32; 100];
-    /// accum.accumulate_fp32(&grads, 1.0);
-    /// accum.accumulate_fp32(&grads, 1.0);
-    /// let result = accum.finalize();
-    /// ```
-    pub fn finalize(&self) -> &[f32] {
-        &self.accum
-    }
-
-    /// Reset accumulator for next phase
-    ///
-    /// Clears accumulated gradients and resets step counter.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rustane::training::GradAccumulator;
-    /// let mut accum = GradAccumulator::new(100, 2);
-    /// let grads = vec![0.5f32; 100];
-    /// accum.accumulate_fp32(&grads, 1.0);
-    /// assert_eq!(accum.current_step(), 1);
-    /// accum.reset();
-    /// assert_eq!(accum.current_step(), 0);
-    /// ```
-    pub fn reset(&mut self) {
-        self.accum.iter_mut().for_each(|g| *g = 0.0);
-        self.count = 0;
+        Ok(())
     }
 
     /// Check if accumulation is complete
     ///
-    /// Returns true when current_step() == total_steps()
+    /// Returns true when steps_completed >= total_steps
+    pub fn is_ready(&self) -> bool {
+        self.steps_completed >= self.total_steps
+    }
+
+    /// Get accumulated gradients (for optimizer)
+    ///
+    /// Returns a reference to the accumulated gradient array.
+    /// Should be called after is_ready() returns true.
+    pub fn gradients(&self) -> &[f32] {
+        &self.accumulated_grads
+    }
+
+    /// Get average loss across accumulated steps
+    ///
+    /// Returns the accumulated loss value.
+    pub fn average_loss(&self) -> f32 {
+        self.accumulated_loss
+    }
+
+    /// Reset for next accumulation cycle
+    ///
+    /// Clears all accumulated gradients and loss, resets step counter.
     ///
     /// # Example
     ///
@@ -187,50 +152,129 @@ impl GradAccumulator {
     /// # use rustane::training::GradAccumulator;
     /// let mut accum = GradAccumulator::new(100, 2);
     /// let grads = vec![0.5f32; 100];
-    /// assert!(!accum.is_complete());
-    /// accum.accumulate_fp32(&grads, 1.0);
-    /// assert!(!accum.is_complete());
-    /// accum.accumulate_fp32(&grads, 1.0);
-    /// assert!(accum.is_complete());
+    /// accum.accumulate(&grads, 1.0, 0.5).unwrap();
+    /// accum.reset();
+    /// assert_eq!(accum.progress(), (0, 2));
+    /// assert!(!accum.is_ready());
     /// ```
-    pub fn is_complete(&self) -> bool {
-        self.count >= self.total_steps
+    pub fn reset(&mut self) {
+        self.accumulated_grads.fill(0.0);
+        self.accumulated_loss = 0.0;
+        self.steps_completed = 0;
+    }
+
+    /// Get progress (completed, total)
+    ///
+    /// Returns a tuple of (steps_completed, total_steps).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rustane::training::GradAccumulator;
+    /// let accum = GradAccumulator::new(100, 4);
+    /// assert_eq!(accum.progress(), (0, 4));
+    /// ```
+    pub fn progress(&self) -> (u32, u32) {
+        (self.steps_completed, self.total_steps)
     }
 
     /// Get current step (0-indexed)
     ///
-    /// Incremented by each accumulate_* call.
+    /// Incremented by each accumulate() call.
+    /// Kept for backward compatibility with existing code.
     pub fn current_step(&self) -> usize {
-        self.count
+        self.steps_completed as usize
     }
 
     /// Get total number of steps to accumulate
+    /// Kept for backward compatibility with existing code.
     pub fn total_steps(&self) -> usize {
-        self.total_steps
+        self.total_steps as usize
     }
 
     /// Get remaining steps until completion
+    /// Kept for backward compatibility with existing code.
     pub fn remaining_steps(&self) -> usize {
-        self.total_steps.saturating_sub(self.count)
+        (self.total_steps as usize).saturating_sub(self.steps_completed as usize)
     }
 
     /// Get the number of parameters
+    /// Kept for backward compatibility with existing code.
     pub fn num_params(&self) -> usize {
-        self.accum.len()
+        self.accumulated_grads.len()
     }
 
     /// Get accumulated gradient at index
+    /// Kept for backward compatibility with existing code.
     pub fn get(&self, idx: usize) -> Option<f32> {
-        self.accum.get(idx).copied()
+        self.accumulated_grads.get(idx).copied()
     }
 
     /// Get accumulated gradients with averaging
     ///
     /// Returns a copy of accumulated gradients divided by current step count.
     /// Useful for getting the average gradient so far.
+    /// Kept for backward compatibility with existing code.
     pub fn finalize_averaged(&self) -> Vec<f32> {
-        let denom = self.count.max(1) as f32;
-        self.accum.iter().map(|g| g / denom).collect()
+        let denom = self.steps_completed.max(1) as f32;
+        self.accumulated_grads.iter().map(|g| g / denom).collect()
+    }
+
+    /// Check if accumulation is complete (backward compatible name)
+    /// Kept for backward compatibility with existing code.
+    pub fn is_complete(&self) -> bool {
+        self.steps_completed >= self.total_steps
+    }
+
+    /// Get the accumulated gradients (backward compatible name)
+    /// Kept for backward compatibility with existing code.
+    pub fn finalize(&self) -> &[f32] {
+        &self.accumulated_grads
+    }
+
+    /// Accumulate FP16 gradients
+    ///
+    /// Converts FP16 gradients to FP32 and adds to accumulator.
+    /// FP16 is interpreted as bfloat16-like half-precision floats.
+    /// Kept for backward compatibility with existing code.
+    ///
+    /// # Arguments
+    ///
+    /// * `grads` - Gradient array in FP16 (as u16 bit patterns)
+    /// * `scale` - Scale factor for this mini-batch
+    pub fn accumulate_fp16(&mut self, grads: &[u16], scale: f32) {
+        if grads.len() != self.accumulated_grads.len() {
+            return; // Silently ignore size mismatch
+        }
+
+        self.steps_completed += 1;
+
+        for (i, &grad_fp16) in grads.iter().enumerate() {
+            // Convert FP16 (u16 bits) to FP32
+            let grad_fp32 = half::f16::from_bits(grad_fp16).to_f32();
+            self.accumulated_grads[i] += grad_fp32 * scale;
+        }
+    }
+
+    /// Accumulate FP32 gradients
+    ///
+    /// Directly adds FP32 gradients to accumulator.
+    /// Kept for backward compatibility with existing code.
+    ///
+    /// # Arguments
+    ///
+    /// * `grads` - Gradient array in FP32
+    /// * `scale` - Scale factor for this mini-batch
+    pub fn accumulate_fp32(&mut self, grads: &[f32], scale: f32) {
+        if grads.len() != self.accumulated_grads.len() {
+            return; // Silently ignore size mismatch
+        }
+
+        self.steps_completed += 1;
+
+        for (i, &grad) in grads.iter().enumerate() {
+            self.accumulated_grads[i] += grad * scale;
+        }
     }
 }
 
@@ -238,8 +282,63 @@ impl GradAccumulator {
 mod tests {
     use super::*;
 
+    // ===== NEW TESTS FOR MULTI-STEP ACCUMULATION =====
+
     #[test]
-    fn test_grad_accum_creation() {
+    fn test_grad_accumulator_creation() {
+        let accum = GradAccumulator::new(100, 4);
+        assert_eq!(accum.progress(), (0, 4));
+        assert!(!accum.is_ready());
+    }
+
+    #[test]
+    fn test_accumulation_scaling() {
+        let mut accum = GradAccumulator::new(3, 2);
+        let grads = vec![2.0, 4.0, 6.0];
+        let scale = 0.5;
+
+        accum.accumulate(&grads, 1.0, scale).unwrap();
+        let accumulated = accum.gradients();
+        assert!((accumulated[0] - 1.0).abs() < 1e-6);  // 2.0 * 0.5
+        assert!((accumulated[1] - 2.0).abs() < 1e-6);  // 4.0 * 0.5
+        assert!((accumulated[2] - 3.0).abs() < 1e-6);  // 6.0 * 0.5
+    }
+
+    #[test]
+    fn test_is_ready_signal() {
+        let mut accum = GradAccumulator::new(2, 2);
+        assert!(!accum.is_ready());
+
+        accum.accumulate(&vec![1.0, 2.0], 0.5, 0.5).unwrap();
+        assert!(!accum.is_ready());
+
+        accum.accumulate(&vec![1.0, 2.0], 0.5, 0.5).unwrap();
+        assert!(accum.is_ready());
+    }
+
+    #[test]
+    fn test_loss_averaging() {
+        let mut accum = GradAccumulator::new(2, 2);
+        accum.accumulate(&vec![1.0, 2.0], 2.0, 0.5).unwrap();
+        accum.accumulate(&vec![1.0, 2.0], 4.0, 0.5).unwrap();
+        assert!((accum.average_loss() - 3.0).abs() < 1e-6);  // (2.0 * 0.5) + (4.0 * 0.5)
+    }
+
+    #[test]
+    fn test_reset() {
+        let mut accum = GradAccumulator::new(2, 2);
+        accum.accumulate(&vec![1.0, 2.0], 1.0, 0.5).unwrap();
+        accum.accumulate(&vec![1.0, 2.0], 1.0, 0.5).unwrap();
+
+        accum.reset();
+        assert_eq!(accum.progress(), (0, 2));
+        assert!(!accum.is_ready());
+    }
+
+    // ===== BACKWARD COMPATIBILITY TESTS =====
+
+    #[test]
+    fn test_grad_accum_creation_compat() {
         let accum = GradAccumulator::new(1000, 4);
         assert_eq!(accum.num_params(), 1000);
         assert_eq!(accum.total_steps(), 4);
@@ -293,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reset() {
+    fn test_reset_compat() {
         let mut accum = GradAccumulator::new(10, 2);
         let grads = vec![1.0f32; 10];
 
