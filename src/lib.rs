@@ -30,6 +30,7 @@
 #![warn(missing_docs)]
 #![warn(unused_extern_crates)]
 
+pub mod ane;
 mod sys;
 
 pub mod data;
