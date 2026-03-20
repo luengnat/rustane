@@ -151,11 +151,14 @@ TOTAL: XX.XX ms
 - [ ] Gradient synchronization
 - [ ] Distributed optimizer state
 
-### 📋 Task 4: Model Export/Import (Checkpointing)
-- [ ] Model state serialization
-- [ ] Optimizer state checkpointing
-- [ ] Checkpoint save/load API
-- [ ] Training resumption from checkpoint
+### ✅ Task 4: Model Export/Import (Checkpointing)
+- [x] Model state serialization (Checkpoint struct)
+- [x] Optimizer state checkpointing (OptimizerState with m, v moments)
+- [x] Checkpoint save/load API (save(), load(), validate())
+- [x] Training resumption from checkpoint
+- [x] Checkpoint example (checkpoint_training.rs)
+- [x] JSON-based checkpoint format
+- [x] ModelConfig for validation
 
 ---
 
