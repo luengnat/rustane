@@ -20,7 +20,9 @@ fn test_config() -> TransformerConfig {
 
 /// Helper to create a test batch
 fn test_batch(batch_size: usize, seq_len: usize) -> Batch {
-    let tokens: Vec<u32> = (0..(batch_size * seq_len) as u32).map(|i| i % 256).collect();
+    let tokens: Vec<u32> = (0..(batch_size * seq_len) as u32)
+        .map(|i| i % 256)
+        .collect();
     Batch::new(tokens, batch_size, seq_len).unwrap()
 }
 
@@ -30,8 +32,14 @@ fn test_backward_validation_suite_quick() {
     let report = quick_validate().unwrap();
 
     // All validations should pass (placeholder implementation)
-    assert!(report.rmsnorm_passed, "RMSNorm backward should pass validation");
-    assert!(report.attention_passed, "Attention backward should pass validation");
+    assert!(
+        report.rmsnorm_passed,
+        "RMSNorm backward should pass validation"
+    );
+    assert!(
+        report.attention_passed,
+        "Attention backward should pass validation"
+    );
     assert!(report.ffn_passed, "FFN backward should pass validation");
     assert!(report.loss_passed, "Loss backward should pass validation");
     assert!(report.all_passed(), "All backward validations should pass");
@@ -45,7 +53,7 @@ fn test_backward_validation_suite_with_config() {
     // The validation may succeed or fail depending on implementation status
     // For now, we just verify it runs without panicking
     let result = suite.validate_all(&config);
-    
+
     // If validation succeeds, verify report structure
     if let Ok(report) = result {
         assert!(report.max_relative_error >= 0.0);
@@ -320,4 +328,40 @@ fn test_large_batch_backward() {
 
     let grads = model.backward_with_batch(&batch, 1.0f32).unwrap();
     assert_eq!(grads.len(), config.param_count());
+}
+
+#[test]
+fn test_forward_backward_step_end_to_end() {
+    let config = test_config();
+    let mut model = TransformerANE::new(&config).unwrap();
+
+    let batch = test_batch(2, 32);
+    let output = model.forward(&batch).unwrap();
+
+    // Output covers all positions
+    assert_eq!(output.num_elements(), 2 * 32 * config.vocab_size);
+
+    // Backward pass should produce one gradient per parameter
+    let grads = model.backward_with_batch(&batch, 1.0f32).unwrap();
+    assert_eq!(grads.len(), config.param_count());
+}
+
+#[test]
+fn test_gradient_accumulation_across_chunks() {
+    let num_params = 50;
+    let mut acc = ANEGradientAccumulator::new(num_params).unwrap();
+
+    let chunk1 = vec![0.1f32; num_params];
+    let chunk2 = vec![0.2f32; num_params];
+    let chunk3 = vec![0.3f32; num_params];
+
+    acc.accumulate(&chunk1).unwrap();
+    acc.accumulate(&chunk2).unwrap();
+    acc.accumulate(&chunk3).unwrap();
+
+    let result = acc.get_accumulated().unwrap();
+    assert_eq!(result.len(), num_params);
+    for &v in &result {
+        assert!((v - 0.6f32).abs() < 1e-5, "Expected 0.6, got {}", v);
+    }
 }
