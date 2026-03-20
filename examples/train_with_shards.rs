@@ -22,11 +22,31 @@ fn main() -> Result<()> {
     println!("Rustane Sharded Training Example");
     println!("================================\n");
 
-    let source_args: Vec<String> = env::args().skip(1).collect();
-    let source_paths = resolve_source_paths(&source_args)?;
+    let mut args: Vec<String> = env::args().skip(1).collect();
+
+    // Extract --steps argument if present
+    let max_steps = if let Some(pos) = args.iter().position(|arg| arg == "--steps") {
+        args.remove(pos);
+        if let Some(count_str) = args.get(pos) {
+            let count = count_str.parse::<usize>()
+                .map_err(|_| rustane::Error::Other("--steps requires a number argument".to_string()))?;
+            args.remove(pos);
+            count
+        } else {
+            return Err(rustane::Error::Other("--steps requires a number argument".to_string()));
+        }
+    } else {
+        std::env::var("TRAIN_STEPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3)
+    };
+
+    let source_paths = resolve_source_paths(&args)?;
     if let Some(bin_files) = resolve_fineweb_bin_files(&source_paths)? {
         println!("Mode: FineWeb binary shards streamed directly");
-        println!("Source count: {}\n", bin_files.len());
+        println!("Source count: {}", bin_files.len());
+        println!("Max steps: {}\n", max_steps);
 
         let mut model = SimpleModel::new(32);
         let mut trainer = TrainerBuilder::new(&mut model)
@@ -38,16 +58,22 @@ fn main() -> Result<()> {
         println!("Step | Shard | Loss    | Grad Norm | LR");
         println!("-----|-------|---------|-----------|--------");
 
-        for (step, file) in bin_files.iter().take(3).enumerate() {
+        let mut step_count = 0usize;
+        for (step_idx, file) in bin_files.iter().enumerate() {
+            if step_count >= max_steps {
+                break;
+            }
+
             let batch = load_fineweb_batch(file, 256, 16)?;
             let chunks = batch.into_chunks(128)?;
             let metrics = trainer.train_accumulated_steps(chunks.into_iter().map(Ok), 2)?;
 
             println!(
                 "{:4} | {:5} | {:.5} | {:.5}    | {:.6}",
-                step, step, metrics.loss, metrics.grad_norm, metrics.learning_rate
+                step_count, step_idx, metrics.loss, metrics.grad_norm, metrics.learning_rate
             );
             println!("Processed shard: {}", file.display());
+            step_count += 1;
         }
 
         println!("\n✓ Training completed!");
@@ -99,7 +125,11 @@ fn main() -> Result<()> {
     let batch_size = 2;
     let chunk_tokens = if using_real_data { 16 } else { 8 };
     let mut step = 0usize;
-    for (shard_idx, shard_path) in loader.iter_shards().take(3) {
+    for (shard_idx, shard_path) in loader.iter_shards() {
+        if step >= max_steps {
+            break;
+        }
+
         let dataset = JsonlDataset::load(&shard_path)?;
         let sampler = RandomSampler::new(dataset.len(), 42);
         let dataloader = DataLoader::new(dataset, sampler, batch_size)?;
