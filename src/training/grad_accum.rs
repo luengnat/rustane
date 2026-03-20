@@ -178,10 +178,29 @@ impl GradAccumulator {
         (self.steps_completed, self.total_steps)
     }
 
+    /// Get number of steps accumulated so far
+    ///
+    /// Returns how many accumulation steps have been completed.
+    /// This is the primary method to track accumulation progress.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rustane::training::GradAccumulator;
+    /// let mut accum = GradAccumulator::new(100, 4);
+    /// assert_eq!(accum.accumulated_steps(), 0);
+    /// accum.accumulate(&vec![1.0; 100], 1.0, 0.25).unwrap();
+    /// assert_eq!(accum.accumulated_steps(), 1);
+    /// ```
+    pub fn accumulated_steps(&self) -> usize {
+        self.steps_completed as usize
+    }
+
     /// Get current step (0-indexed)
     ///
     /// Incremented by each accumulate() call.
     /// Kept for backward compatibility with existing code.
+    /// Alias for accumulated_steps().
     pub fn current_step(&self) -> usize {
         self.steps_completed as usize
     }
@@ -283,6 +302,44 @@ mod tests {
     use super::*;
 
     // ===== NEW TESTS FOR MULTI-STEP ACCUMULATION =====
+
+    #[test]
+    fn test_grad_accum_step_tracking() {
+        let mut accum = GradAccumulator::new(256, 4);
+        assert_eq!(accum.accumulated_steps(), 0);
+
+        // Add some gradients
+        accum.accumulate(&vec![0.1; 256], 1.0, 0.25).unwrap();
+        assert_eq!(accum.accumulated_steps(), 1);
+
+        accum.accumulate(&vec![0.1; 256], 1.0, 0.25).unwrap();
+        assert_eq!(accum.accumulated_steps(), 2);
+    }
+
+    #[test]
+    fn test_grad_accum_reset_on_optimizer_step() {
+        let mut accum = GradAccumulator::new(256, 4);
+        accum.accumulate(&vec![0.1; 256], 1.0, 0.25).unwrap();
+        accum.accumulate(&vec![0.1; 256], 1.0, 0.25).unwrap();
+
+        assert_eq!(accum.accumulated_steps(), 2);
+
+        // After optimizer step, should reset
+        accum.reset(); // or similar finalize mechanism
+        assert_eq!(accum.accumulated_steps(), 0);
+    }
+
+    #[test]
+    fn test_grad_accum_is_ready() {
+        let mut accum = GradAccumulator::new(256, 2);
+        assert!(!accum.is_ready()); // Need 2 steps
+
+        accum.accumulate(&vec![0.1; 256], 1.0, 0.5).unwrap();
+        assert!(!accum.is_ready()); // Still need 1 more
+
+        accum.accumulate(&vec![0.1; 256], 1.0, 0.5).unwrap();
+        assert!(accum.is_ready()); // Now ready for optimizer step
+    }
 
     #[test]
     fn test_grad_accumulator_creation() {
