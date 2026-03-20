@@ -8,6 +8,7 @@ pub mod attention;
 pub mod checkpoint;
 pub mod conv;
 pub mod linear;
+pub mod mil_gen;
 pub mod model;
 pub mod normalization;
 pub mod sequential;
@@ -21,6 +22,7 @@ pub use attention::{
 pub use checkpoint::{Checkpoint, LayerWeights, ModelMetadata};
 pub use conv::Conv2d;
 pub use linear::Linear;
+pub use mil_gen::MILGenerator;
 pub use model::{LayerInfo, Model, ModelSummary};
 pub use normalization::{LayerNorm, LayerNormBuilder, RMSNorm, RMSNormBuilder};
 pub use sequential::{Sequential, SequentialBuilder, SharedLayer};
