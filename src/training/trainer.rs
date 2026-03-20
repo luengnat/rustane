@@ -1,11 +1,11 @@
 //! Training orchestration for models
 
-use std::fmt;
 use crate::data::Batch;
 use crate::error::Result;
-use crate::training::model::Model;
 use crate::training::loss::LossFn;
+use crate::training::model::Model;
 use crate::training::scheduler::LRScheduler;
+use std::fmt;
 
 /// Error type for training failures
 #[derive(Debug, Clone)]
@@ -38,9 +38,15 @@ pub enum TrainerError {
 impl fmt::Display for TrainerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TrainerError::ModelForwardFailed(msg) => write!(f, "Model forward pass failed: {}", msg),
-            TrainerError::ModelBackwardFailed(msg) => write!(f, "Model backward pass failed: {}", msg),
-            TrainerError::LossComputationFailed(msg) => write!(f, "Loss computation failed: {}", msg),
+            TrainerError::ModelForwardFailed(msg) => {
+                write!(f, "Model forward pass failed: {}", msg)
+            }
+            TrainerError::ModelBackwardFailed(msg) => {
+                write!(f, "Model backward pass failed: {}", msg)
+            }
+            TrainerError::LossComputationFailed(msg) => {
+                write!(f, "Loss computation failed: {}", msg)
+            }
             TrainerError::InvalidLogitsShape(msg) => write!(f, "Invalid logits shape: {}", msg),
             TrainerError::OptimizerStepFailed(msg) => write!(f, "Optimizer step failed: {}", msg),
             TrainerError::InvalidGradients(msg) => write!(f, "Invalid gradients: {}", msg),
@@ -150,7 +156,8 @@ impl Optimizer for AdamOptimizer {
     fn step(&mut self, grads: &[f32], params: &mut [f32], lr: f32) -> Result<()> {
         use crate::Error;
 
-        if grads.len() != params.len() || grads.len() != self.m.len() || grads.len() != self.v.len() {
+        if grads.len() != params.len() || grads.len() != self.m.len() || grads.len() != self.v.len()
+        {
             return Err(Error::Other(format!(
                 "adam optimizer state mismatch: grads={}, params={}, m={}, v={}",
                 grads.len(),
@@ -232,20 +239,23 @@ impl<'a, M: Model> TrainerBuilder<'a, M> {
 
     /// Build trainer, ensuring all components are set
     pub fn build(self) -> Result<Trainer<'a, M>> {
-        let optimizer = self.optimizer
-            .ok_or_else(|| crate::Error::Other(
-                TrainerError::IncompleteTrainer("optimizer not set".to_string()).to_string()
-            ))?;
+        let optimizer = self.optimizer.ok_or_else(|| {
+            crate::Error::Other(
+                TrainerError::IncompleteTrainer("optimizer not set".to_string()).to_string(),
+            )
+        })?;
 
-        let scheduler = self.scheduler
-            .ok_or_else(|| crate::Error::Other(
-                TrainerError::IncompleteTrainer("scheduler not set".to_string()).to_string()
-            ))?;
+        let scheduler = self.scheduler.ok_or_else(|| {
+            crate::Error::Other(
+                TrainerError::IncompleteTrainer("scheduler not set".to_string()).to_string(),
+            )
+        })?;
 
-        let loss_fn = self.loss_fn
-            .ok_or_else(|| crate::Error::Other(
-                TrainerError::IncompleteTrainer("loss function not set".to_string()).to_string()
-            ))?;
+        let loss_fn = self.loss_fn.ok_or_else(|| {
+            crate::Error::Other(
+                TrainerError::IncompleteTrainer("loss function not set".to_string()).to_string(),
+            )
+        })?;
 
         Ok(Trainer {
             model: self.model,
@@ -272,30 +282,36 @@ impl<'a, M: Model> Trainer<'a, M> {
     /// Single training step
     pub fn train_step(&mut self, batch: &Batch) -> Result<StepMetrics> {
         // 1. Forward: logits = model.forward(batch)
-        let logits = self.model.forward(batch)
-            .map_err(|_| crate::Error::Other(
-                TrainerError::ModelForwardFailed("forward pass failed".to_string()).to_string()
-            ))?;
+        let logits = self.model.forward(batch).map_err(|_| {
+            crate::Error::Other(
+                TrainerError::ModelForwardFailed("forward pass failed".to_string()).to_string(),
+            )
+        })?;
 
         // 2. Loss: loss = loss_fn.compute(&logits, batch)
-        let loss = self.loss_fn.compute(&logits, batch)
-            .map_err(|_| crate::Error::Other(
-                TrainerError::LossComputationFailed("loss computation failed".to_string()).to_string()
-            ))?;
+        let loss = self.loss_fn.compute(&logits, batch).map_err(|_| {
+            crate::Error::Other(
+                TrainerError::LossComputationFailed("loss computation failed".to_string())
+                    .to_string(),
+            )
+        })?;
 
         // 3. Backward: grads = model.backward_with_batch(batch, loss)
-        let grads = self.model.backward_with_batch(batch, loss)
-            .map_err(|_| crate::Error::Other(
-                TrainerError::ModelBackwardFailed("backward pass failed".to_string()).to_string()
-            ))?;
+        let grads = self.model.backward_with_batch(batch, loss).map_err(|_| {
+            crate::Error::Other(
+                TrainerError::ModelBackwardFailed("backward pass failed".to_string()).to_string(),
+            )
+        })?;
 
         // Verify gradient vector length matches parameter count
         if grads.len() != self.model.param_count() {
             return Err(crate::Error::Other(
-                TrainerError::InvalidGradients(
-                    format!("gradient count {} != param count {}",
-                        grads.len(), self.model.param_count())
-                ).to_string()
+                TrainerError::InvalidGradients(format!(
+                    "gradient count {} != param count {}",
+                    grads.len(),
+                    self.model.param_count()
+                ))
+                .to_string(),
             ));
         }
 
@@ -305,16 +321,14 @@ impl<'a, M: Model> Trainer<'a, M> {
         // Check for NaN/Inf in gradients
         if !grad_norm.is_finite() {
             return Err(crate::Error::Other(
-                TrainerError::InvalidGradients(format!("grad_norm is {}", grad_norm)).to_string()
+                TrainerError::InvalidGradients(format!("grad_norm is {}", grad_norm)).to_string(),
             ));
         }
 
         for (i, &g) in grads.iter().enumerate() {
             if !g.is_finite() {
                 return Err(crate::Error::Other(
-                    TrainerError::InvalidGradients(
-                        format!("gradient[{}] is {}", i, g)
-                    ).to_string()
+                    TrainerError::InvalidGradients(format!("gradient[{}] is {}", i, g)).to_string(),
                 ));
             }
         }
@@ -333,16 +347,25 @@ impl<'a, M: Model> Trainer<'a, M> {
         let learning_rate = self.scheduler.get_lr(self.current_step);
 
         // 6. Optimize: optimizer.step(&grads, model.parameters(), learning_rate)
-        self.optimizer.step(&clipped_grads, self.model.parameters(), learning_rate)
-            .map_err(|_| crate::Error::Other(
-                TrainerError::OptimizerStepFailed("optimizer step failed".to_string()).to_string()
-            ))?;
+        self.optimizer
+            .step(&clipped_grads, self.model.parameters(), learning_rate)
+            .map_err(|_| {
+                crate::Error::Other(
+                    TrainerError::OptimizerStepFailed("optimizer step failed".to_string())
+                        .to_string(),
+                )
+            })?;
 
         // 7. Increment: current_step += 1
         self.current_step += 1;
 
         // 8. Return: StepMetrics
-        Ok(StepMetrics::new(loss, grad_norm, learning_rate, self.current_step - 1))
+        Ok(StepMetrics::new(
+            loss,
+            grad_norm,
+            learning_rate,
+            self.current_step - 1,
+        ))
     }
 
     /// Train with explicit gradient accumulation over chunks
@@ -372,7 +395,7 @@ impl<'a, M: Model> Trainer<'a, M> {
 
         if accumulation_steps == 0 {
             return Err(crate::Error::Other(
-                "accumulation_steps must be > 0".to_string()
+                "accumulation_steps must be > 0".to_string(),
             ));
         }
 
@@ -385,30 +408,37 @@ impl<'a, M: Model> Trainer<'a, M> {
             let chunk = chunk_result?;
 
             // Forward pass
-            let logits = self.model.forward(&chunk)
-                .map_err(|_| crate::Error::Other(
-                    TrainerError::ModelForwardFailed("forward pass failed".to_string()).to_string()
-                ))?;
+            let logits = self.model.forward(&chunk).map_err(|_| {
+                crate::Error::Other(
+                    TrainerError::ModelForwardFailed("forward pass failed".to_string()).to_string(),
+                )
+            })?;
 
             // Compute loss
-            let loss = self.loss_fn.compute(&logits, &chunk)
-                .map_err(|_| crate::Error::Other(
-                    TrainerError::LossComputationFailed("loss computation failed".to_string()).to_string()
-                ))?;
+            let loss = self.loss_fn.compute(&logits, &chunk).map_err(|_| {
+                crate::Error::Other(
+                    TrainerError::LossComputationFailed("loss computation failed".to_string())
+                        .to_string(),
+                )
+            })?;
 
             // Backward pass
-            let grads = self.model.backward_with_batch(&chunk, loss)
-                .map_err(|_| crate::Error::Other(
-                    TrainerError::ModelBackwardFailed("backward pass failed".to_string()).to_string()
-                ))?;
+            let grads = self.model.backward_with_batch(&chunk, loss).map_err(|_| {
+                crate::Error::Other(
+                    TrainerError::ModelBackwardFailed("backward pass failed".to_string())
+                        .to_string(),
+                )
+            })?;
 
             // Validate gradient count
             if grads.len() != self.model.param_count() {
                 return Err(crate::Error::Other(
-                    TrainerError::InvalidGradients(
-                        format!("gradient count {} != param count {}",
-                            grads.len(), self.model.param_count())
-                    ).to_string()
+                    TrainerError::InvalidGradients(format!(
+                        "gradient count {} != param count {}",
+                        grads.len(),
+                        self.model.param_count()
+                    ))
+                    .to_string(),
                 ));
             }
 
@@ -416,9 +446,8 @@ impl<'a, M: Model> Trainer<'a, M> {
             for (i, &g) in grads.iter().enumerate() {
                 if !g.is_finite() {
                     return Err(crate::Error::Other(
-                        TrainerError::InvalidGradients(
-                            format!("gradient[{}] is {}", i, g)
-                        ).to_string()
+                        TrainerError::InvalidGradients(format!("gradient[{}] is {}", i, g))
+                            .to_string(),
                     ));
                 }
             }
@@ -430,9 +459,10 @@ impl<'a, M: Model> Trainer<'a, M> {
 
         // Verify we got the expected number of chunks
         if chunk_count != accumulation_steps {
-            return Err(crate::Error::Other(
-                format!("expected {} chunks, got {}", accumulation_steps, chunk_count)
-            ));
+            return Err(crate::Error::Other(format!(
+                "expected {} chunks, got {}",
+                accumulation_steps, chunk_count
+            )));
         }
 
         let mut clipped_grads = accum.gradients().to_vec();
@@ -448,10 +478,14 @@ impl<'a, M: Model> Trainer<'a, M> {
 
         // Apply accumulated gradients
         let learning_rate = self.scheduler.get_lr(self.current_step);
-        self.optimizer.step(&clipped_grads, self.model.parameters(), learning_rate)
-            .map_err(|_| crate::Error::Other(
-                TrainerError::OptimizerStepFailed("optimizer step failed".to_string()).to_string()
-            ))?;
+        self.optimizer
+            .step(&clipped_grads, self.model.parameters(), learning_rate)
+            .map_err(|_| {
+                crate::Error::Other(
+                    TrainerError::OptimizerStepFailed("optimizer step failed".to_string())
+                        .to_string(),
+                )
+            })?;
 
         self.current_step += 1;
 
@@ -520,7 +554,9 @@ mod builder_tests {
 
     #[test]
     fn test_builder_construction() {
-        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
         let builder = TrainerBuilder::new(&mut model);
 
         // Should fail - missing optimizer
@@ -529,9 +565,10 @@ mod builder_tests {
 
     #[test]
     fn test_builder_missing_component() {
-        let mut model = MockModel { params: vec![1.0, 2.0] };
-        let builder = TrainerBuilder::new(&mut model)
-            .with_optimizer(SimpleOptimizer::new(0.001));
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
+        let builder = TrainerBuilder::new(&mut model).with_optimizer(SimpleOptimizer::new(0.001));
 
         // Should fail - missing scheduler and loss_fn
         let result = builder.build();
@@ -592,7 +629,6 @@ mod trainer_tests {
     }
 }
 
-
 #[cfg(test)]
 mod accumulated_steps_tests {
     use super::*;
@@ -644,7 +680,9 @@ mod accumulated_steps_tests {
 
     #[test]
     fn test_train_accumulated_steps_basic() -> Result<()> {
-        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
         let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
 
         let mut trainer = TrainerBuilder::new(&mut model)
@@ -663,7 +701,9 @@ mod accumulated_steps_tests {
     #[test]
     fn test_train_accumulated_steps_single_batch() -> Result<()> {
         // Test with 1 batch, 1 accumulation step (should just call train_step equivalent)
-        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
         let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
 
         let mut trainer = TrainerBuilder::new(&mut model)
@@ -672,10 +712,7 @@ mod accumulated_steps_tests {
             .with_loss_fn(crate::training::CrossEntropyLoss::new())
             .build()?;
 
-        let metrics = trainer.train_accumulated_steps(
-            vec![Ok(batch)].into_iter(),
-            1
-        )?;
+        let metrics = trainer.train_accumulated_steps(vec![Ok(batch)].into_iter(), 1)?;
 
         assert!(metrics.loss.is_finite());
         assert!(metrics.grad_norm.is_finite());
@@ -687,7 +724,9 @@ mod accumulated_steps_tests {
     #[test]
     fn test_train_accumulated_steps_multiple_batches() -> Result<()> {
         // Test accumulating over 2 batches, then 1 optimizer step
-        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
         let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
 
         let mut trainer = TrainerBuilder::new(&mut model)
@@ -696,14 +735,11 @@ mod accumulated_steps_tests {
             .with_loss_fn(crate::training::CrossEntropyLoss::new())
             .build()?;
 
-        let batches = vec![
-            Ok(batch.clone()),
-            Ok(batch.clone()),
-        ];
+        let batches = vec![Ok(batch.clone()), Ok(batch.clone())];
 
         let metrics = trainer.train_accumulated_steps(
             batches.into_iter(),
-            2  // Accumulate every 2 batches
+            2, // Accumulate every 2 batches
         )?;
 
         assert!(metrics.loss.is_finite());
@@ -716,7 +752,9 @@ mod accumulated_steps_tests {
     fn test_train_accumulated_steps_exact_multiple() -> Result<()> {
         // Test with exact multiple: 4 batches, 2 per step = 2 steps
         // For now, we test a single 4-batch accumulation
-        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
         let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
 
         let mut trainer = TrainerBuilder::new(&mut model)
@@ -725,25 +763,25 @@ mod accumulated_steps_tests {
             .with_loss_fn(crate::training::CrossEntropyLoss::new())
             .build()?;
 
-        let batches = (0..4)
-            .map(|_| Ok(batch.clone()))
-            .collect::<Vec<_>>();
+        let batches = (0..4).map(|_| Ok(batch.clone())).collect::<Vec<_>>();
 
         let metrics = trainer.train_accumulated_steps(
             batches.into_iter(),
-            4  // 4 batches in one accumulation step
+            4, // 4 batches in one accumulation step
         )?;
 
         assert!(metrics.loss.is_finite());
         assert!(metrics.grad_norm.is_finite());
-        assert_eq!(metrics.step, 0);  // First step (0-indexed)
+        assert_eq!(metrics.step, 0); // First step (0-indexed)
         Ok(())
     }
 
     #[test]
     fn test_train_accumulated_steps_invalid_accumulation() -> Result<()> {
         // Test with 0 accumulation steps (should error)
-        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
         let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
 
         let mut trainer = TrainerBuilder::new(&mut model)
@@ -754,7 +792,7 @@ mod accumulated_steps_tests {
 
         let result = trainer.train_accumulated_steps(
             vec![Ok(batch)].into_iter(),
-            0  // Invalid: 0 accumulation steps
+            0, // Invalid: 0 accumulation steps
         );
 
         assert!(result.is_err());
@@ -764,7 +802,9 @@ mod accumulated_steps_tests {
     #[test]
     fn test_train_accumulated_steps_mismatched_count() -> Result<()> {
         // Test with fewer batches than accumulation_steps (should error)
-        let mut model = MockModel { params: vec![1.0, 2.0] };
+        let mut model = MockModel {
+            params: vec![1.0, 2.0],
+        };
         let batch = Batch::new(vec![1u32, 2, 3, 4], 1, 4)?;
 
         let mut trainer = TrainerBuilder::new(&mut model)
@@ -775,7 +815,7 @@ mod accumulated_steps_tests {
 
         let result = trainer.train_accumulated_steps(
             vec![Ok(batch)].into_iter(),
-            2  // Expect 2 batches, but only provide 1
+            2, // Expect 2 batches, but only provide 1
         );
 
         assert!(result.is_err());

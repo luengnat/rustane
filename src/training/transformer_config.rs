@@ -5,7 +5,7 @@ use crate::ane::ANEError;
 /// Transformer model configuration
 ///
 /// Defines the architecture of a transformer model with validation for ANE compatibility.
-    /// Ensures the model dimensions are internally consistent for training.
+/// Ensures the model dimensions are internally consistent for training.
 #[derive(Clone, Debug)]
 pub struct TransformerConfig {
     /// Vocabulary size (number of unique tokens)
@@ -73,9 +73,10 @@ impl TransformerConfig {
 
         // Validate that dim is divisible by n_heads
         if dim % n_heads != 0 {
-            return Err(ANEError::ConfigError(
-                format!("dim {} must be divisible by n_heads {}", dim, n_heads),
-            ));
+            return Err(ANEError::ConfigError(format!(
+                "dim {} must be divisible by n_heads {}",
+                dim, n_heads
+            )));
         }
 
         let head_dim = dim / n_heads;
@@ -135,7 +136,7 @@ impl TransformerConfig {
         let per_layer = 4 * self.dim * self.dim         // QKV + attention output projection
             + self.dim * self.hidden_dim * 2            // w1, w3 in FFN
             + self.hidden_dim * self.dim                // w2 in FFN
-            + 2 * self.dim;                             // RMSNorms
+            + 2 * self.dim; // RMSNorms
 
         embedding + classifier + per_layer * self.n_layers + self.dim
     }
@@ -147,8 +148,7 @@ mod tests {
 
     #[test]
     fn test_param_count_calculation() {
-        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
-            .expect("valid config");
+        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512).expect("valid config");
 
         // Manual calculation:
         // embedding: 4096 * 256 = 1,048,576
@@ -167,8 +167,7 @@ mod tests {
 
     #[test]
     fn test_head_dim_calculation() {
-        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
-            .expect("valid config");
+        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512).expect("valid config");
         assert_eq!(config.head_dim, 32);
     }
 
@@ -210,8 +209,7 @@ mod tests {
 
     #[test]
     fn test_clone() {
-        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
-            .expect("valid config");
+        let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512).expect("valid config");
         let cloned = config.clone();
         assert_eq!(config.param_count(), cloned.param_count());
         assert_eq!(config.dim, cloned.dim);
@@ -222,8 +220,7 @@ mod tests {
         let config = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
             .expect("valid config")
             .with_tie_embeddings(true);
-        let untied = TransformerConfig::new(4096, 256, 768, 8, 6, 512)
-            .expect("valid config");
+        let untied = TransformerConfig::new(4096, 256, 768, 8, 6, 512).expect("valid config");
         assert_eq!(untied.param_count() - 4096 * 256, config.param_count());
     }
 

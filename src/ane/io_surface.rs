@@ -73,13 +73,11 @@ impl IOSurface {
     /// ```
     pub fn write(&mut self, data: &[u8]) -> Result<()> {
         if data.len() > self._capacity {
-            return Err(crate::Error::Io(
-                format!(
-                    "IOSurface write size {} exceeds capacity {}",
-                    data.len(),
-                    self._capacity
-                )
-            ));
+            return Err(crate::Error::Io(format!(
+                "IOSurface write size {} exceeds capacity {}",
+                data.len(),
+                self._capacity
+            )));
         }
 
         self.buffer[..data.len()].copy_from_slice(data);
@@ -174,7 +172,7 @@ impl IOSurface {
     pub fn read_f32(&self, output: &mut [f32]) {
         let num_floats = self._capacity / 4;
         assert!(output.len() >= num_floats, "Output buffer too small");
-        
+
         unsafe {
             std::ptr::copy_nonoverlapping(
                 self.buffer.as_ptr() as *const f32,
@@ -192,7 +190,7 @@ impl IOSurface {
     pub fn write_f32(&self, data: &[f32]) {
         let num_bytes = data.len() * 4;
         assert!(num_bytes <= self._capacity, "Data too large for IOSurface");
-        
+
         unsafe {
             std::ptr::copy_nonoverlapping(
                 data.as_ptr(),

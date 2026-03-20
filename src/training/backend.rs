@@ -57,7 +57,9 @@ impl CpuTrainingBackend {
                             muon_nesterov,
                         ))
                     }
-                    _ => BackendOptimizer::Adam(AdamOptimizer::new(group.range.end - group.range.start)),
+                    _ => BackendOptimizer::Adam(AdamOptimizer::new(
+                        group.range.end - group.range.start,
+                    )),
                 };
 
                 BackendGroup {
@@ -85,7 +87,9 @@ impl TrainingBackend for CpuTrainingBackend {
         for group in &mut self.groups {
             let lr = group.base_lr * lr_scale;
             let range = group.range.clone();
-            group.optimizer.step(&grads[range.clone()], &mut params[range], lr)?;
+            group
+                .optimizer
+                .step(&grads[range.clone()], &mut params[range], lr)?;
         }
         Ok(())
     }
@@ -144,7 +148,9 @@ impl MuonOptimizer {
             )));
         }
         if self.rows == 0 || self.cols == 0 {
-            return Err(Error::Other("muon optimizer received empty matrix shape".to_string()));
+            return Err(Error::Other(
+                "muon optimizer received empty matrix shape".to_string(),
+            ));
         }
 
         let mut update = vec![0.0f32; grads.len()];
@@ -157,8 +163,10 @@ impl MuonOptimizer {
             };
         }
 
-        let mut update = zero_power_via_newton_schulz5(&update, self.rows, self.cols, self.backend_steps);
-        let scale = (self.rows.max(self.cols) as f32 / self.rows.min(self.cols).max(1) as f32).sqrt();
+        let mut update =
+            zero_power_via_newton_schulz5(&update, self.rows, self.cols, self.backend_steps);
+        let scale =
+            (self.rows.max(self.cols) as f32 / self.rows.min(self.cols).max(1) as f32).sqrt();
         for value in &mut update {
             *value *= scale;
         }
@@ -184,7 +192,11 @@ fn zero_power_via_newton_schulz5(
     if transposed {
         mat = transpose_matrix(&mat, rows, cols);
     }
-    let (cur_rows, cur_cols) = if transposed { (cols, rows) } else { (rows, cols) };
+    let (cur_rows, cur_cols) = if transposed {
+        (cols, rows)
+    } else {
+        (rows, cols)
+    };
     for _ in 0..steps {
         let xt = transpose_matrix(&mat, cur_rows, cur_cols);
         let a = matmul(&mat, &xt, cur_rows, cur_cols, cur_rows);

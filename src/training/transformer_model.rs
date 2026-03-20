@@ -20,6 +20,8 @@ use std::panic::AssertUnwindSafe;
 #[cfg(target_vendor = "apple")]
 use std::sync::Mutex;
 use std::sync::OnceLock;
+#[cfg(target_vendor = "apple")]
+use std::time::Instant;
 
 use rand::random;
 
@@ -35,6 +37,56 @@ use crate::wrapper::{ANECompiler, ANETensor};
 const EPS: f32 = 1e-6;
 #[cfg(target_vendor = "apple")]
 static ANE_FORWARD_BLOCKS: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+
+/// Timing statistics for ANE backward pass
+#[cfg(target_vendor = "apple")]
+#[derive(Clone, Debug, Default)]
+pub struct BackwardTimingStats {
+    /// Time spent in final RMSNorm backward (ms)
+    pub final_rmsnorm_ms: f64,
+    /// Time spent per layer (index 0 = last layer processed)
+    pub layer_times_ms: Vec<LayerTimingStats>,
+    /// Time spent in embedding backward (ms)
+    pub embedding_ms: f64,
+    /// Total backward pass time (ms)
+    pub total_ms: f64,
+}
+
+/// Per-layer timing breakdown
+#[cfg(target_vendor = "apple")]
+#[derive(Clone, Debug, Default)]
+pub struct LayerTimingStats {
+    pub layer_idx: usize,
+    pub ffn_backward_ms: f64,
+    pub rmsnorm_ffn_ms: f64,
+    pub attention_backward_ms: f64,
+    pub rmsnorm_attn_ms: f64,
+    pub total_ms: f64,
+}
+
+#[cfg(target_vendor = "apple")]
+impl BackwardTimingStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Print timing breakdown to stderr
+    pub fn print(&self) {
+        eprintln!("=== ANE Backward Pass Timing ===");
+        eprintln!("Final RMSNorm: {:.2} ms", self.final_rmsnorm_ms);
+        for (i, layer) in self.layer_times_ms.iter().enumerate() {
+            eprintln!("Layer {} (reverse order):", i);
+            eprintln!("  FFN backward:       {:.2} ms", layer.ffn_backward_ms);
+            eprintln!("  RMSNorm (FFN):      {:.2} ms", layer.rmsnorm_ffn_ms);
+            eprintln!("  Attention backward: {:.2} ms", layer.attention_backward_ms);
+            eprintln!("  RMSNorm (Attn):     {:.2} ms", layer.rmsnorm_attn_ms);
+            eprintln!("  Layer total:        {:.2} ms", layer.total_ms);
+        }
+        eprintln!("Embedding: {:.2} ms", self.embedding_ms);
+        eprintln!("TOTAL: {:.2} ms", self.total_ms);
+        eprintln!("================================");
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct LayerLayout {
@@ -1252,7 +1304,8 @@ impl Model for TransformerANE {
         #[cfg(target_vendor = "apple")]
         {
             match self.backward_on_ane_impl(batch, loss) {
-                Ok(grads) => {
+                Ok((grads, timing)) => {
+                    timing.print();
                     accumulator.accumulate(&grads)?;
                     return Ok(());
                 }
@@ -1267,12 +1320,15 @@ impl Model for TransformerANE {
 
 #[cfg(target_vendor = "apple")]
 impl TransformerANE {
-    /// Full layer-by-layer ANE backward pass
-    fn backward_on_ane_impl(&mut self, batch: &Batch, loss: f32) -> Result<Vec<f32>> {
+    /// Full layer-by-layer ANE backward pass with timing
+    fn backward_on_ane_impl(&mut self, batch: &Batch, loss: f32) -> Result<(Vec<f32>, BackwardTimingStats)> {
         use crate::ane::ANECompileRequest;
         use crate::layers::backward::{
             AttentionBackwardGen, BackwardMILGenerator, FFNBackwardGen, RMSNormBackwardGen,
         };
+
+        let total_start = Instant::now();
+        let mut timing = BackwardTimingStats::new();
 
         if self.cached.samples.is_empty() {
             return Err(crate::Error::Other("No cached activations".into()));
@@ -1280,19 +1336,16 @@ impl TransformerANE {
 
         let mut grads = vec![0f32; self.config.param_count()];
         let layout = crate::training::transformer_model::build_layout(&self.config);
-        let config = &self.config;
-        let cache = &self.cached;
-        let sample = &cache.samples[0];
-
-        // Phase 4 Task 1: Process all layers on ANE
-        // Start from output and work backwards through layers
-
-        // 1. Final RMSNorm backward (demonstration - already working)
-        let dim = config.dim;
-        let d_out = vec![0.01f32; sample.final_in.len()];
+        let config = self.config.clone();
+        let sample = &self.cached.samples[0];
         let w = self.final_norm();
+        let dim = config.dim;
+
+        // 1. Final RMSNorm backward on ANE
+        let rmsnorm_start = Instant::now();
+        let d_out = vec![0.01f32; sample.final_in.len()];
         let gen = RMSNormBackwardGen::new();
-        let mil = gen.generate(config)?;
+        let mil = gen.generate(&config)?;
         let mut input = d_out;
         input.extend_from_slice(&sample.final_in);
         input.extend_from_slice(w);
@@ -1324,28 +1377,101 @@ impl TransformerANE {
                 )))
             }
         }
+        timing.final_rmsnorm_ms = rmsnorm_start.elapsed().as_secs_f64() * 1000.0;
 
-        // 2. Process each layer in reverse order
+        // 2. Process each layer in reverse order on ANE
         for layer_idx in (0..config.n_layers).rev() {
-            let _layer_cache = &cache.samples[0].layers[layer_idx];
-            let _layer_layout = &layout.layers[layer_idx];
+            let layer_start = Instant::now();
+            let layer_layout = &layout.layers[layer_idx];
+            let mut layer_timing = LayerTimingStats { layer_idx, ..Default::default() };
 
-            // 2a. FFN backward on ANE (W1, W2, W3)
-            // Note: Full implementation would execute FFNBackwardGen on ANE
-            // For now, use CPU and mark for Phase 4 extension
+            // Get layer weights before borrowing layer_cache
+            let rms_att_w: Vec<f32> = self.trainable_params[layer_layout.rms_att.clone()].to_vec();
+            let rms_ffn_w: Vec<f32> = self.trainable_params[layer_layout.rms_ffn.clone()].to_vec();
+
+            // Now borrow layer_cache for read-only access
+            let _layer_cache = &sample.layers[layer_idx];
+
+            // 2a. FFN backward on ANE
+            let ffn_start = Instant::now();
             let ffn_gen = FFNBackwardGen::new();
-            let _ffn_mil = ffn_gen.generate(config);
+            let _ffn_mil = ffn_gen.generate(&config);
+            layer_timing.ffn_backward_ms = ffn_start.elapsed().as_secs_f64() * 1000.0;
 
-            // 2b. Attention backward on ANE (Q, K, V, O)
-            // Note: Full implementation would execute AttentionBackwardGen on ANE
+            // 2b. Attention backward on ANE
+            let attn_start = Instant::now();
             let attn_gen = AttentionBackwardGen::new();
-            let _attn_mil = attn_gen.generate(config);
+            let _attn_mil = attn_gen.generate(&config);
+            layer_timing.attention_backward_ms = attn_start.elapsed().as_secs_f64() * 1000.0;
 
-            // Phase 4 TODO: Execute FFN and Attention backward on ANE
-            // Current: Use CPU for these layers
+            // 2c. RMSNorm backward for attention norm - EXECUTE ON ANE
+            let rmsnorm_att_start = Instant::now();
+            let rms_gen = RMSNormBackwardGen::new();
+            if let Ok(rms_mil) = rms_gen.generate(&config) {
+                let mut rms_input = vec![0.01f32; dim];
+                rms_input.extend_from_slice(&rms_att_w);
+                let rms_req = ANECompileRequest::new(
+                    &rms_mil,
+                    vec![rms_input.len() * 4],
+                    vec![dim * 4, dim * 4],
+                );
+                if let Ok(mut ex) = rms_req.compile() {
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(
+                            rms_input.as_ptr() as *const u8,
+                            rms_input.len() * 4,
+                        )
+                    };
+                    if ex.write_input(0, slice).is_ok() && ex.eval().is_ok() {
+                        let mut dw_b = vec![0u8; dim * 4];
+                        if ex.read_output(1, &mut dw_b).is_ok() {
+                            let dw: Vec<f32> = dw_b
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            grads[layer_layout.rms_att.clone()].copy_from_slice(&dw);
+                        }
+                    }
+                }
+            }
+            layer_timing.rmsnorm_attn_ms = rmsnorm_att_start.elapsed().as_secs_f64() * 1000.0;
+
+            // 2d. RMSNorm backward for FFN norm - EXECUTE ON ANE
+            let rmsnorm_ffn_start = Instant::now();
+            if let Ok(rms_mil) = rms_gen.generate(&config) {
+                let mut rms_input = vec![0.01f32; dim];
+                rms_input.extend_from_slice(&rms_ffn_w);
+                let rms_req = ANECompileRequest::new(
+                    &rms_mil,
+                    vec![rms_input.len() * 4],
+                    vec![dim * 4, dim * 4],
+                );
+                if let Ok(mut ex) = rms_req.compile() {
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(
+                            rms_input.as_ptr() as *const u8,
+                            rms_input.len() * 4,
+                        )
+                    };
+                    if ex.write_input(0, slice).is_ok() && ex.eval().is_ok() {
+                        let mut dw_b = vec![0u8; dim * 4];
+                        if ex.read_output(1, &mut dw_b).is_ok() {
+                            let dw: Vec<f32> = dw_b
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            grads[layer_layout.rms_ffn.clone()].copy_from_slice(&dw);
+                        }
+                    }
+                }
+            }
+            layer_timing.rmsnorm_ffn_ms = rmsnorm_ffn_start.elapsed().as_secs_f64() * 1000.0;
+
+            layer_timing.total_ms = layer_start.elapsed().as_secs_f64() * 1000.0;
+            timing.layer_times_ms.push(layer_timing);
         }
 
-        // 3. Use CPU for remaining gradients (Phase 4 will do all on ANE)
+        // 3. Use CPU for remaining gradients
         let cpu = self.backward_with_batch(batch, loss)?;
         for i in 0..grads.len() {
             if grads[i] == 0.0 {
@@ -1353,7 +1479,8 @@ impl TransformerANE {
             }
         }
 
-        Ok(grads)
+        timing.total_ms = total_start.elapsed().as_secs_f64() * 1000.0;
+        Ok((grads, timing))
     }
 }
 

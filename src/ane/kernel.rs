@@ -7,9 +7,9 @@
 //! - Reading output data from the kernel
 //! - Evaluating the kernel on the ANE
 
+use crate::ane::IOSurface;
 use crate::error::Result;
 use crate::Error;
-use crate::ane::IOSurface;
 
 /// Compiled ANE kernel ready for evaluation
 ///
@@ -63,10 +63,7 @@ impl ANEKernel {
     /// assert_eq!(kernel.io_outputs.len(), 1);
     /// # Ok::<_, rustane::Error>(())
     /// ```
-    pub fn new(
-        input_sizes: Vec<usize>,
-        output_sizes: Vec<usize>,
-    ) -> Result<Self> {
+    pub fn new(input_sizes: Vec<usize>, output_sizes: Vec<usize>) -> Result<Self> {
         let mut io_inputs = Vec::new();
         let mut io_outputs = Vec::new();
 
@@ -116,7 +113,9 @@ impl ANEKernel {
     /// ```
     pub fn eval(&mut self) -> Result<()> {
         // TODO: Implement ANE evaluation via objc2 bindings
-        Err(Error::NotImplemented("ANE kernel evaluation not yet implemented".to_string()))
+        Err(Error::NotImplemented(
+            "ANE kernel evaluation not yet implemented".to_string(),
+        ))
     }
 
     /// Write input data to an IOSurface
@@ -148,26 +147,24 @@ impl ANEKernel {
     /// ```
     pub fn write_input(&mut self, idx: usize, data: &[f32]) -> Result<()> {
         if idx >= self.io_inputs.len() {
-            return Err(Error::InvalidParameter(
-                format!("input index {} out of bounds (have {} inputs)", idx, self.io_inputs.len()),
-            ));
+            return Err(Error::InvalidParameter(format!(
+                "input index {} out of bounds (have {} inputs)",
+                idx,
+                self.io_inputs.len()
+            )));
         }
 
         let expected_bytes = self.input_sizes[idx];
         let actual_bytes = data.len() * std::mem::size_of::<f32>();
 
         if actual_bytes != expected_bytes {
-            return Err(Error::Io(
-                format!("input size mismatch: expected {} bytes, got {}", expected_bytes, actual_bytes),
-            ));
+            return Err(Error::Io(format!(
+                "input size mismatch: expected {} bytes, got {}",
+                expected_bytes, actual_bytes
+            )));
         }
 
-        let bytes = unsafe {
-            std::slice::from_raw_parts(
-                data.as_ptr() as *const u8,
-                actual_bytes,
-            )
-        };
+        let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, actual_bytes) };
 
         self.io_inputs[idx].write(bytes)?;
         Ok(())
@@ -200,18 +197,22 @@ impl ANEKernel {
     /// ```
     pub fn read_output(&self, idx: usize) -> Result<Vec<f32>> {
         if idx >= self.io_outputs.len() {
-            return Err(Error::InvalidParameter(
-                format!("output index {} out of bounds (have {} outputs)", idx, self.io_outputs.len()),
-            ));
+            return Err(Error::InvalidParameter(format!(
+                "output index {} out of bounds (have {} outputs)",
+                idx,
+                self.io_outputs.len()
+            )));
         }
 
         let bytes = self.io_outputs[idx].read()?;
         let expected_bytes = self.output_sizes[idx];
 
         if bytes.len() != expected_bytes {
-            return Err(Error::Io(
-                format!("output size mismatch: expected {} bytes, got {}", expected_bytes, bytes.len()),
-            ));
+            return Err(Error::Io(format!(
+                "output size mismatch: expected {} bytes, got {}",
+                expected_bytes,
+                bytes.len()
+            )));
         }
 
         let floats = unsafe {

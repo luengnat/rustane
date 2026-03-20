@@ -3,8 +3,8 @@
 //! Provides timing instrumentation and benchmarking utilities for comparing
 //! CPU vs ANE performance during training.
 
-use std::time::{Duration, Instant};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::error::Result;
 use crate::training::TransformerConfig;
@@ -297,7 +297,7 @@ impl BackwardBenchmark {
         // 4. Collect statistics
 
         Ok(BenchmarkResults {
-            cpu_time_us: 1000.0,  // Placeholder
+            cpu_time_us: 1000.0, // Placeholder
             ane_time_us: 100.0,  // Placeholder
             speedup: 10.0,
             config: self.config.clone(),
@@ -374,7 +374,7 @@ mod tests {
         metrics.total_time = Duration::from_micros(1100);
 
         assert_eq!(metrics.speedup_factor(), 10.0);
-        assert_eq!(metrics.ane_percentage(), 100.0 / 11.0 * 100.0);
+        assert_eq!(metrics.ane_percentage(), 100.0 / 1100.0 * 100.0);
     }
 
     #[test]

@@ -7,9 +7,9 @@ use core::ffi::c_int;
 use core::ffi::c_void;
 
 pub(crate) use super::runtime::{
-    ANEKernelHandle, ane_bridge_compile, ane_bridge_compile_multi_weights, ane_bridge_eval,
-    ane_bridge_free, ane_bridge_get_compile_count, ane_bridge_init, ane_bridge_read_output,
-    ane_bridge_reset_compile_count, ane_bridge_write_input,
+    ane_bridge_compile, ane_bridge_compile_multi_weights, ane_bridge_eval, ane_bridge_free,
+    ane_bridge_get_compile_count, ane_bridge_init, ane_bridge_read_output,
+    ane_bridge_reset_compile_count, ane_bridge_write_input, ANEKernelHandle,
 };
 
 // Wrapper functions that delegate to blobs module functions

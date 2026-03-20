@@ -186,9 +186,8 @@ impl ANEGradientAccumulator {
         // Convert bytes to f32 slice
         let bytes = tensor.as_bytes();
         let num_floats = bytes.len() / 4;
-        let gradients: &[f32] = unsafe {
-            std::slice::from_raw_parts(bytes.as_ptr() as *const f32, num_floats)
-        };
+        let gradients: &[f32] =
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, num_floats) };
 
         self.accumulate(gradients)
     }
@@ -361,10 +360,10 @@ mod tests {
     fn test_accumulate_gradients() {
         let mut accumulator = ANEGradientAccumulator::new(10).unwrap();
         let gradients = vec![0.1f32; 10];
-        
+
         accumulator.accumulate(&gradients).unwrap();
         assert_eq!(accumulator.accumulation_count(), 1);
-        
+
         let result = accumulator.get_accumulated().unwrap();
         assert_eq!(result, vec![0.1f32; 10]);
     }
@@ -372,11 +371,11 @@ mod tests {
     #[test]
     fn test_accumulate_multiple_times() {
         let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
-        
+
         accumulator.accumulate(&vec![0.1f32; 5]).unwrap();
         accumulator.accumulate(&vec![0.2f32; 5]).unwrap();
         accumulator.accumulate(&vec![0.3f32; 5]).unwrap();
-        
+
         let result = accumulator.get_accumulated().unwrap();
         assert_eq!(result, vec![0.6f32; 5]);
         assert_eq!(accumulator.accumulation_count(), 3);
@@ -386,7 +385,7 @@ mod tests {
     fn test_accumulate_wrong_size() {
         let mut accumulator = ANEGradientAccumulator::new(10).unwrap();
         let gradients = vec![0.1f32; 5]; // Wrong size
-        
+
         let result = accumulator.accumulate(&gradients);
         assert!(matches!(result, Err(Error::InvalidParameter(_))));
     }
@@ -394,10 +393,10 @@ mod tests {
     #[test]
     fn test_reset() {
         let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
-        
+
         accumulator.accumulate(&vec![0.5f32; 5]).unwrap();
         assert!(!accumulator.is_empty());
-        
+
         accumulator.reset().unwrap();
         assert!(accumulator.is_empty());
         assert_eq!(accumulator.accumulation_count(), 0);
@@ -406,19 +405,21 @@ mod tests {
     #[test]
     fn test_max_abs_gradient() {
         let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
-        
-        accumulator.accumulate(&vec![0.1f32, -0.5f32, 0.3f32, -0.2f32, 0.4f32]).unwrap();
-        
+
+        accumulator
+            .accumulate(&vec![0.1f32, -0.5f32, 0.3f32, -0.2f32, 0.4f32])
+            .unwrap();
+
         assert_eq!(accumulator.max_abs_gradient(), 0.5f32);
     }
 
     #[test]
     fn test_scale() {
         let mut accumulator = ANEGradientAccumulator::new(5).unwrap();
-        
+
         accumulator.accumulate(&vec![0.1f32; 5]).unwrap();
         accumulator.scale(2.0f32);
-        
+
         let result = accumulator.get_accumulated().unwrap();
         assert_eq!(result, vec![0.2f32; 5]);
     }
@@ -428,9 +429,9 @@ mod tests {
         let mut accumulator = ANEGradientAccumulator::new(4).unwrap();
         let gradients = vec![0.1f32, 0.2f32, 0.3f32, 0.4f32];
         let tensor = ANETensor::from_fp32(gradients, vec![4]).unwrap();
-        
+
         accumulator.accumulate_tensor(&tensor).unwrap();
-        
+
         let result = accumulator.get_accumulated().unwrap();
         assert_eq!(result, vec![0.1f32, 0.2f32, 0.3f32, 0.4f32]);
     }
@@ -440,7 +441,7 @@ mod tests {
         let mut accumulator = ANEGradientAccumulator::new(4).unwrap();
         let data = vec![0x3c00u16; 4]; // FP16 data
         let tensor = ANETensor::from_fp16(data, vec![4]).unwrap();
-        
+
         let result = accumulator.accumulate_tensor(&tensor);
         assert!(matches!(result, Err(Error::InvalidParameter(_))));
     }
@@ -448,8 +449,10 @@ mod tests {
     #[test]
     fn test_get_accumulated_ref() {
         let mut accumulator = ANEGradientAccumulator::new(3).unwrap();
-        accumulator.accumulate(&vec![0.1f32, 0.2f32, 0.3f32]).unwrap();
-        
+        accumulator
+            .accumulate(&vec![0.1f32, 0.2f32, 0.3f32])
+            .unwrap();
+
         let reference = accumulator.get_accumulated_ref();
         assert_eq!(reference, &[0.1f32, 0.2f32, 0.3f32]);
     }

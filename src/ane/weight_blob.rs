@@ -139,11 +139,7 @@ impl WeightBlob {
     /// assert_eq!(scales.len(), 2); // One scale per row
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn quantize_f32(
-        weights: &[f32],
-        rows: usize,
-        cols: usize,
-    ) -> Result<(Self, Vec<f32>)> {
+    pub fn quantize_f32(weights: &[f32], rows: usize, cols: usize) -> Result<(Self, Vec<f32>)> {
         Self::validate_shape(weights.len(), rows, cols)?;
         let (quantized, scales) = quantize_f32_per_row(weights, rows, cols);
         Ok((WeightBlob(encode_int8_blob(&quantized, rows, cols)), scales))
@@ -190,12 +186,7 @@ impl WeightBlob {
     /// This helper is only valid for single-row tensors. Multi-row quantized
     /// tensors require one scale per row and should use
     /// [`WeightBlob::from_i8_quantized_per_row`].
-    pub fn from_i8_quantized(
-        weights: &[i8],
-        scale: f32,
-        rows: usize,
-        cols: usize,
-    ) -> Result<Self> {
+    pub fn from_i8_quantized(weights: &[i8], scale: f32, rows: usize, cols: usize) -> Result<Self> {
         if rows != 1 {
             return Err(ANEError::WeightBlobError(
                 "from_i8_quantized accepts a single scale and is only valid for single-row tensors; use from_i8_quantized_per_row for multi-row weights".into(),
@@ -289,7 +280,7 @@ mod tests {
     fn test_weight_blob_quantize_scales() {
         let weights = vec![
             100.0f32, 200.0, 300.0, // Row 0: max = 300.0
-            10.0f32, 20.0, 30.0,   // Row 1: max = 30.0
+            10.0f32, 20.0, 30.0, // Row 1: max = 30.0
         ];
         let (_, scales) = WeightBlob::quantize_f32(&weights, 2, 3).unwrap();
 

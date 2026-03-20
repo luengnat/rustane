@@ -162,14 +162,13 @@ impl LRScheduler for WarmupCosineScheduler {
             self.peak_lr * progress
         } else {
             // Cosine decay: peak_lr -> min_lr
-            let progress = (step - self.warmup_steps) as f32
-                / (self.total_steps - self.warmup_steps) as f32;
+            let progress =
+                (step - self.warmup_steps) as f32 / (self.total_steps - self.warmup_steps) as f32;
             let progress = progress.min(1.0); // Clamp to [0, 1]
 
             // Cosine annealing
             let cosine_decay = 0.5 * (1.0 + (std::f32::consts::PI * progress).cos());
-            self.min_lr
-                + (self.peak_lr - self.min_lr) * cosine_decay
+            self.min_lr + (self.peak_lr - self.min_lr) * cosine_decay
         }
     }
 }
@@ -271,7 +270,14 @@ mod tests {
         for step in 0..499 {
             let lr = scheduler.get_lr(step);
             let next_lr = scheduler.get_lr(step + 1);
-            assert!(next_lr >= lr - 1e-9, "Step {} -> {}: {} -> {}", step, step + 1, lr, next_lr);
+            assert!(
+                next_lr >= lr - 1e-9,
+                "Step {} -> {}: {} -> {}",
+                step,
+                step + 1,
+                lr,
+                next_lr
+            );
         }
     }
 
@@ -283,7 +289,14 @@ mod tests {
         for step in 500..999 {
             let lr = scheduler.get_lr(step);
             let next_lr = scheduler.get_lr(step + 1);
-            assert!(next_lr <= lr + 1e-9, "Step {} -> {}: {} -> {}", step, step + 1, lr, next_lr);
+            assert!(
+                next_lr <= lr + 1e-9,
+                "Step {} -> {}: {} -> {}",
+                step,
+                step + 1,
+                lr,
+                next_lr
+            );
         }
     }
 }

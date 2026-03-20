@@ -100,12 +100,13 @@ impl GradAccumulator {
     /// ```
     pub fn accumulate(&mut self, grads: &[f32], loss: f32, scale: f32) -> crate::Result<()> {
         use crate::Error;
-        
+
         if grads.len() != self.accumulated_grads.len() {
-            return Err(Error::Other(
-                format!("gradient count mismatch: got {}, expected {}",
-                    grads.len(), self.accumulated_grads.len())
-            ));
+            return Err(Error::Other(format!(
+                "gradient count mismatch: got {}, expected {}",
+                grads.len(),
+                self.accumulated_grads.len()
+            )));
         }
 
         // Accumulate scaled gradients
@@ -356,9 +357,9 @@ mod tests {
 
         accum.accumulate(&grads, 1.0, scale).unwrap();
         let accumulated = accum.gradients();
-        assert!((accumulated[0] - 1.0).abs() < 1e-6);  // 2.0 * 0.5
-        assert!((accumulated[1] - 2.0).abs() < 1e-6);  // 4.0 * 0.5
-        assert!((accumulated[2] - 3.0).abs() < 1e-6);  // 6.0 * 0.5
+        assert!((accumulated[0] - 1.0).abs() < 1e-6); // 2.0 * 0.5
+        assert!((accumulated[1] - 2.0).abs() < 1e-6); // 4.0 * 0.5
+        assert!((accumulated[2] - 3.0).abs() < 1e-6); // 6.0 * 0.5
     }
 
     #[test]
@@ -378,7 +379,7 @@ mod tests {
         let mut accum = GradAccumulator::new(2, 2);
         accum.accumulate(&vec![1.0, 2.0], 2.0, 0.5).unwrap();
         accum.accumulate(&vec![1.0, 2.0], 4.0, 0.5).unwrap();
-        assert!((accum.average_loss() - 3.0).abs() < 1e-6);  // (2.0 * 0.5) + (4.0 * 0.5)
+        assert!((accum.average_loss() - 3.0).abs() < 1e-6); // (2.0 * 0.5) + (4.0 * 0.5)
     }
 
     #[test]

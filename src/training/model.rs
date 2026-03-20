@@ -1,8 +1,8 @@
 //! Model trait for training orchestration
 
+use crate::data::Batch;
 use crate::error::Result;
 use crate::wrapper::ANETensor;
-use crate::data::Batch;
 
 /// Trait for models used in training
 ///
@@ -71,7 +71,8 @@ pub trait Model: Send {
     ) -> Result<()> {
         // Default: CPU backward → transfer to accumulator
         let grads = self.backward_with_batch(batch, loss)?;
-        accumulator.accumulate(&grads)
+        accumulator
+            .accumulate(&grads)
             .map_err(|e| crate::error::Error::Other(e.to_string()))?;
         Ok(())
     }

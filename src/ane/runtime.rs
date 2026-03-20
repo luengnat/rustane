@@ -3,9 +3,9 @@ mod apple {
     use core::ffi::{c_char, c_int, c_void, CStr};
     use core::ptr::{self, NonNull};
     use libc::{dlopen, RTLD_NOW};
-    use objc2::{extern_class, extern_conformance, extern_methods, msg_send, AnyThread, ClassType};
     use objc2::rc::{autoreleasepool, Retained};
     use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject, NSObjectProtocol};
+    use objc2::{extern_class, extern_conformance, extern_methods, msg_send, AnyThread, ClassType};
     use objc2_core_foundation::CFRetained;
     use objc2_foundation::{NSArray, NSData, NSDictionary, NSError, NSNumber, NSString};
     use objc2_io_surface::IOSurfaceRef;
@@ -112,11 +112,7 @@ mod apple {
 
             #[unsafe(method(unloadWithQoS:error:))]
             #[unsafe(method_family = none)]
-            pub unsafe fn unloadWithQoS_error(
-                &self,
-                qos: u32,
-                error: *mut *mut NSError,
-            ) -> Bool;
+            pub unsafe fn unloadWithQoS_error(&self, qos: u32, error: *mut *mut NSError) -> Bool;
         );
     }
 
@@ -164,9 +160,7 @@ mod apple {
         extern_methods!(
             #[unsafe(method(objectWithIOSurface:))]
             #[unsafe(method_family = none)]
-            pub unsafe fn objectWithIOSurface(
-                surface: &IOSurfaceRef,
-            ) -> Option<Retained<Self>>;
+            pub unsafe fn objectWithIOSurface(surface: &IOSurfaceRef) -> Option<Retained<Self>>;
         );
     }
 
@@ -189,19 +183,22 @@ mod apple {
 
     impl ANEPrivateRuntime {
         fn initialize() -> Option<()> {
-            CLASSES.get_or_init(|| {
-                let handle = unsafe { dlopen(cstr(ANE_FRAMEWORK_PATH).as_ptr(), RTLD_NOW) };
-                if handle.is_null() {
-                    return None;
-                }
+            CLASSES
+                .get_or_init(|| {
+                    let handle = unsafe { dlopen(cstr(ANE_FRAMEWORK_PATH).as_ptr(), RTLD_NOW) };
+                    if handle.is_null() {
+                        return None;
+                    }
 
-                AnyClass::get(cstr(CLASS_DESC))?;
-                AnyClass::get(cstr(CLASS_INMEM))?;
-                AnyClass::get(cstr(CLASS_REQ))?;
-                AnyClass::get(cstr(CLASS_IO))?;
+                    AnyClass::get(cstr(CLASS_DESC))?;
+                    AnyClass::get(cstr(CLASS_INMEM))?;
+                    AnyClass::get(cstr(CLASS_REQ))?;
+                    AnyClass::get(cstr(CLASS_IO))?;
 
-                Some(())
-            }).as_ref().map(|_| ())
+                    Some(())
+                })
+                .as_ref()
+                .map(|_| ())
         }
 
         fn create_surface(bytes: usize) -> Option<CFRetained<IOSurfaceRef>> {
@@ -225,8 +222,9 @@ mod apple {
             let props =
                 NSDictionary::<NSString, AnyObject>::from_retained_objects(&key_refs, &values);
 
-            let raw =
-                unsafe { IOSurfaceCreate((&*props as *const NSDictionary<NSString, AnyObject>).cast()) };
+            let raw = unsafe {
+                IOSurfaceCreate((&*props as *const NSDictionary<NSString, AnyObject>).cast())
+            };
             let raw = NonNull::new(raw as *mut IOSurfaceRef)?;
             Some(unsafe { CFRetained::from_raw(raw) })
         }
@@ -252,7 +250,9 @@ mod apple {
                     return None;
                 }
 
-                let name = unsafe { CStr::from_ptr(name_ptr) }.to_string_lossy().into_owned();
+                let name = unsafe { CStr::from_ptr(name_ptr) }
+                    .to_string_lossy()
+                    .into_owned();
                 let data = NSData::with_bytes(unsafe { slice::from_raw_parts(data_ptr, data_len) });
 
                 let inner_keys = [NSString::from_str("offset"), NSString::from_str("data")];
@@ -269,8 +269,7 @@ mod apple {
 
             let key_refs = keys.iter().map(|key| &**key).collect::<Vec<_>>();
             Some(NSDictionary::<NSString, AnyObject>::from_retained_objects(
-                &key_refs,
-                &values,
+                &key_refs, &values,
             ))
         }
 
@@ -421,7 +420,8 @@ mod apple {
 
             let options = empty_dictionary();
             let mut error: *mut NSError = ptr::null_mut();
-            let compiled = unsafe { model.compileWithQoS_options_error(ANE_QOS, &options, &mut error) };
+            let compiled =
+                unsafe { model.compileWithQoS_options_error(ANE_QOS, &options, &mut error) };
             if !compiled.as_bool() {
                 let _ = fs::remove_dir_all(&tmp_dir);
                 eprintln!("ane_bridge: ANE compile failed: {}", ns_error_string(error));
@@ -429,13 +429,13 @@ mod apple {
             }
 
             let mut error: *mut NSError = ptr::null_mut();
-            let mut loaded = unsafe { model.loadWithQoS_options_error(ANE_QOS, &options, &mut error) };
+            let mut loaded =
+                unsafe { model.loadWithQoS_options_error(ANE_QOS, &options, &mut error) };
             if !loaded.as_bool() {
                 thread::sleep(Duration::from_millis(100));
                 let mut retry_error: *mut NSError = ptr::null_mut();
-                loaded = unsafe {
-                    model.loadWithQoS_options_error(ANE_QOS, &options, &mut retry_error)
-                };
+                loaded =
+                    unsafe { model.loadWithQoS_options_error(ANE_QOS, &options, &mut retry_error) };
                 if !loaded.as_bool() {
                     let _ = fs::remove_dir_all(&tmp_dir);
                     eprintln!(
@@ -779,21 +779,13 @@ impl ANECompileRequest {
     }
 
     /// Add a named weight payload from raw bytes.
-    pub fn with_weight_bytes(
-        mut self,
-        name: impl Into<String>,
-        data: impl Into<Vec<u8>>,
-    ) -> Self {
+    pub fn with_weight_bytes(mut self, name: impl Into<String>, data: impl Into<Vec<u8>>) -> Self {
         self.weights.insert(name.into(), data.into());
         self
     }
 
     /// Add a named ANE weight blob to the request.
-    pub fn with_weight_blob(
-        self,
-        name: impl Into<String>,
-        blob: &crate::ane::WeightBlob,
-    ) -> Self {
+    pub fn with_weight_blob(self, name: impl Into<String>, blob: &crate::ane::WeightBlob) -> Self {
         self.with_weight_bytes(name, blob.as_bytes().to_vec())
     }
 
@@ -832,8 +824,14 @@ impl ANECompileRequest {
         }
 
         let sorted_weights = sort_named_weights(self.weights);
-        let weight_names: Vec<&str> = sorted_weights.iter().map(|(name, _)| name.as_str()).collect();
-        let weight_datas: Vec<&[u8]> = sorted_weights.iter().map(|(_, data)| data.as_slice()).collect();
+        let weight_names: Vec<&str> = sorted_weights
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let weight_datas: Vec<&[u8]> = sorted_weights
+            .iter()
+            .map(|(_, data)| data.as_slice())
+            .collect();
         let weight_lens: Vec<usize> = weight_datas.iter().map(|data| data.len()).collect();
 
         compiler.compile_multi(
@@ -863,7 +861,7 @@ impl ANECompileRequest {
 ///
 /// ```no_run
 /// use rustane::ane::runtime;
-/// 
+///
 /// fn main() -> rustane::Result<()> {
 ///     runtime::ane_init()?;
 ///     // ANE operations can now be performed
@@ -935,7 +933,10 @@ mod tests {
         assert_eq!(cloned.mil_text, request.mil_text);
         assert_eq!(cloned.input_sizes, request.input_sizes);
         assert_eq!(cloned.output_sizes, request.output_sizes);
-        assert_eq!(cloned.weights.get("@model_path/weights/w.bin"), Some(&vec![7u8; 4]));
+        assert_eq!(
+            cloned.weights.get("@model_path/weights/w.bin"),
+            Some(&vec![7u8; 4])
+        );
     }
 
     #[test]

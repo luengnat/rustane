@@ -1,8 +1,8 @@
 //! Loss functions for model training
 
+use crate::data::Batch;
 use crate::error::Result;
 use crate::wrapper::ANETensor;
-use crate::data::Batch;
 
 /// Trait for loss computation
 ///
@@ -39,10 +39,10 @@ impl CrossEntropyLoss {
     fn softmax(logits: &[f32]) -> Vec<f32> {
         // Find max for numerical stability
         let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        
+
         // Compute exp(logits - max)
         let mut exp_logits: Vec<f32> = logits.iter().map(|&x| (x - max_logit).exp()).collect();
-        
+
         // Normalize by sum
         let sum: f32 = exp_logits.iter().sum();
         if sum > 0.0 {
@@ -50,12 +50,10 @@ impl CrossEntropyLoss {
                 *x /= sum;
             }
         }
-        
+
         exp_logits
     }
 }
-
-
 
 impl Default for CrossEntropyLoss {
     fn default() -> Self {
@@ -75,10 +73,7 @@ impl LossFn for CrossEntropyLoss {
 
         // Convert bytes to f32 slice
         let logits_f32 = unsafe {
-            std::slice::from_raw_parts(
-                logits_bytes.as_ptr() as *const f32,
-                logits_bytes.len() / 4,
-            )
+            std::slice::from_raw_parts(logits_bytes.as_ptr() as *const f32, logits_bytes.len() / 4)
         };
 
         // Get the tensor shape
@@ -122,7 +117,8 @@ impl LossFn for CrossEntropyLoss {
                 let row_offset = sample_idx * (seq_len - 1);
                 for pos in 0..(seq_len - 1) {
                     let row_idx = row_offset + pos;
-                    let logits_at_pos = &logits_f32[row_idx * vocab_size..(row_idx + 1) * vocab_size];
+                    let logits_at_pos =
+                        &logits_f32[row_idx * vocab_size..(row_idx + 1) * vocab_size];
                     let target_token = tokens[sample_offset + pos + 1] as usize;
                     if target_token >= vocab_size {
                         return Err(crate::Error::Other(format!(

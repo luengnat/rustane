@@ -118,24 +118,39 @@
 //! - Advanced optimization (gradient accumulation on ANE, quantized training)
 //! - Production checkpointing and experiment tracking
 
+pub(crate) mod blobs;
 /// ANE-specific error types.
 pub mod error;
-pub(crate) mod blobs;
+/// Detailed error diagnostics and recovery analysis
+pub mod error_diagnostics;
+
+/// Error logging and reporting
+pub mod error_logging;
+/// Graceful degradation strategies
+pub mod fallback;
+/// IOSurface RAII wrapper for ANE I/O operations.
+pub mod io_surface;
+/// ANE kernel wrapper for managing compiled models and I/O operations.
+pub mod kernel;
+/// Automatic retry with adaptive batch size reduction
+pub mod retry_policy;
 /// Low-level runtime and compile/load/eval support for the private ANE APIs.
 pub mod runtime;
 pub(crate) mod sys;
-/// IOSurface RAII wrapper for ANE I/O operations.
-pub mod io_surface;
 /// Weight blob builders for ANE-compatible formats.
 pub mod weight_blob;
-/// ANE kernel wrapper for managing compiled models and I/O operations.
-pub mod kernel;
 
 pub use error::ANEError;
+pub use error_diagnostics::{ErrorAggregator, ErrorCategory, ErrorDiagnostic};
+pub use error_logging::{ErrorLog, ErrorLogEntry, ErrorReporter, ErrorSeverity};
+pub use fallback::{FallbackExecutor, FallbackResult, FallbackStrategy, FallbackStats};
 pub use io_surface::IOSurface;
+pub use kernel::ANEKernel;
+pub use retry_policy::{
+    execute_with_retry, RetryConfig, RetryPolicy, RetryResult, RetryableOperation,
+};
 pub use runtime::ANECompileRequest;
 pub use weight_blob::WeightBlob;
-pub use kernel::ANEKernel;
 
 /// Result type for ANE operations
 pub type Result<T> = std::result::Result<T, ANEError>;

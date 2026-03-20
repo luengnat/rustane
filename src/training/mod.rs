@@ -248,30 +248,33 @@
 //! }
 //! ```
 
+pub mod ane_backward_executor;
+pub mod ane_backward_kernel;
+pub mod ane_gradient_buffer;
+pub mod ane_persistent_buffer;
+pub mod backend;
+pub mod benchmark;
 pub mod grad_accum;
 pub mod loss;
 pub mod loss_scale;
 pub mod model;
 pub mod scheduler;
 pub mod trainer;
-pub mod backend;
 pub mod transformer_config;
 pub mod transformer_model;
-pub mod ane_backward_executor;
-pub mod ane_backward_kernel;
-pub mod ane_gradient_buffer;
-pub mod ane_persistent_buffer;
-pub mod benchmark;
 
+pub use ane_backward_executor::{ANEBackwardModel, ANEGradientAccumulator};
+pub use ane_backward_kernel::{ANEBackwardKernel, ANEBackwardKernelCache};
+pub use ane_gradient_buffer::ANEGradientBuffer;
+pub use backend::{CpuTrainingBackend, TrainingBackend};
+pub use benchmark::{BackwardBenchmark, TimingContext, TimingStats};
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
 pub use loss_scale::LossScaler;
 pub use model::Model;
 pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
-pub use backend::{CpuTrainingBackend, TrainingBackend};
 pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
 pub use transformer_config::TransformerConfig;
-pub use transformer_model::{ane_forward_block_summary, ParameterGroup, ParameterGroupKind, TransformerANE};
-pub use ane_backward_executor::{ANEGradientAccumulator, ANEBackwardModel};
-pub use ane_backward_kernel::{ANEBackwardKernel, ANEBackwardKernelCache};
-pub use ane_gradient_buffer::ANEGradientBuffer;
+pub use transformer_model::{
+    ane_forward_block_summary, ParameterGroup, ParameterGroupKind, TransformerANE,
+};

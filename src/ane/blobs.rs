@@ -20,7 +20,11 @@ pub(crate) fn encode_fp16_blob_from_f32_transposed(
     encode_fp16_blob_impl(weights, rows, cols, true)
 }
 
-pub(crate) fn encode_fp16_blob_from_f16(weights: &[half::f16], rows: usize, cols: usize) -> Vec<u8> {
+pub(crate) fn encode_fp16_blob_from_f16(
+    weights: &[half::f16],
+    rows: usize,
+    cols: usize,
+) -> Vec<u8> {
     let mut buf = vec![0u8; FP16_BLOB_HEADER_SIZE + rows * cols * 2];
     fill_fp16_header(&mut buf, rows * cols * 2);
     let fp16 = bytemuck_cast_slice_mut_u16(&mut buf[FP16_BLOB_HEADER_SIZE..]);
@@ -33,13 +37,20 @@ pub(crate) fn encode_fp16_blob_from_f16(weights: &[half::f16], rows: usize, cols
 pub(crate) fn encode_int8_blob(weights: &[i8], rows: usize, cols: usize) -> Vec<u8> {
     let mut buf = vec![0u8; INT8_BLOB_HEADER_SIZE + rows * cols];
     fill_int8_header(&mut buf);
-    for (dst, src) in buf[INT8_BLOB_HEADER_SIZE..].iter_mut().zip(weights.iter().copied()) {
+    for (dst, src) in buf[INT8_BLOB_HEADER_SIZE..]
+        .iter_mut()
+        .zip(weights.iter().copied())
+    {
         *dst = src as u8;
     }
     buf
 }
 
-pub(crate) fn quantize_f32_per_row(weights: &[f32], rows: usize, cols: usize) -> (Vec<i8>, Vec<f32>) {
+pub(crate) fn quantize_f32_per_row(
+    weights: &[f32],
+    rows: usize,
+    cols: usize,
+) -> (Vec<i8>, Vec<f32>) {
     let mut scales = Vec::with_capacity(rows);
     let mut quantized = Vec::with_capacity(rows * cols);
 
