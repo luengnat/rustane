@@ -1,116 +1,22 @@
-//! Backward Validation Suite
+//! Reference validation suite for backward pass kernels.
 //!
-//! This module provides the [`BackwardValidationSuite`] for validating ANE
-//! backward kernels against CPU reference implementations.
-//!
-//! # Validation Strategy
-//!
-//! The validation suite runs once at startup to ensure all backward kernels
-//! produce correct results (within 1e-6 relative tolerance) compared to
-//! CPU reference implementations.
-//!
-//! # Process
-//!
-//! 1. Create small reference config (fast validation)
-//! 2. Generate random test inputs
-//! 3. Run ANE backward kernel
-//! 4. Run CPU reference backward
-//! 5. Compare outputs with 1e-6 relative tolerance
-//! 6. Return validation report
+//! Runs once at startup to validate all backward kernels against
+//! CPU reference implementations with 1e-6 relative error tolerance.
 
-use crate::error::Result;
-use crate::error::Error;
-use crate::layers::backward::{
-    AttentionBackwardGen, BackwardMILGenerator, FFNBackwardGen, LossBackwardGen, RMSNormBackwardGen,
-};
+use super::*;
 use crate::training::TransformerConfig;
+use crate::ane::Result;
+use crate::ane::ANEError;
 
-/// Tolerance for validation (relative error)
-const VALIDATION_TOLERANCE: f32 = 1e-6;
-
-/// Validation report for backward kernels
-///
-/// Contains pass/fail status for each backward operation and the
-/// maximum relative error observed.
 #[derive(Debug, Clone)]
 pub struct ValidationReport {
-    /// RMSNorm backward validation passed
     pub rmsnorm_passed: bool,
-    /// Attention backward validation passed
     pub attention_passed: bool,
-    /// FFN backward validation passed
     pub ffn_passed: bool,
-    /// Loss backward validation passed
     pub loss_passed: bool,
-    /// Maximum relative error observed across all validations
     pub max_relative_error: f32,
-    /// Detailed error messages for failed validations
-    pub error_messages: Vec<String>,
 }
 
-impl ValidationReport {
-    /// Create a new validation report with all failures
-    fn new() -> Self {
-        Self {
-            rmsnorm_passed: false,
-            attention_passed: false,
-            ffn_passed: false,
-            loss_passed: false,
-            max_relative_error: 0.0f32,
-            error_messages: Vec::new(),
-        }
-    }
-
-    /// Check if all validations passed
-    pub fn all_passed(&self) -> bool {
-        self.rmsnorm_passed && self.attention_passed && self.ffn_passed && self.loss_passed
-    }
-
-    /// Get the number of passed validations
-    pub fn pass_count(&self) -> usize {
-        let mut count = 0;
-        if self.rmsnorm_passed {
-            count += 1;
-        }
-        if self.attention_passed {
-            count += 1;
-        }
-        if self.ffn_passed {
-            count += 1;
-        }
-        if self.loss_passed {
-            count += 1;
-        }
-        count
-    }
-
-    /// Get the number of failed validations
-    pub fn fail_count(&self) -> usize {
-        4 - self.pass_count()
-    }
-}
-
-/// Backward validation suite
-///
-/// Validates all ANE backward kernels against CPU reference implementations.
-/// This should be run once at startup before any training begins.
-///
-/// # Example
-///
-/// ```ignore
-/// use crate::layers::backward::validation::BackwardValidationSuite;
-///
-/// let suite = BackwardValidationSuite::new();
-/// let config = TransformerConfig::tiny();
-/// let report = suite.validate_all(&config)?;
-///
-/// if report.all_passed() {
-///     println!("All backward kernels validated successfully!");
-/// } else {
-///     eprintln!("Some validations failed: {:?}", report);
-/// }
-/// ```
-#[derive(Debug)]
 pub struct BackwardValidationSuite {
     rmsnorm_gen: RMSNormBackwardGen,
     attention_gen: AttentionBackwardGen,
@@ -118,216 +24,98 @@ pub struct BackwardValidationSuite {
     loss_gen: LossBackwardGen,
 }
 
-impl Default for BackwardValidationSuite {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BackwardValidationSuite {
-    /// Create a new validation suite
-    ///
-    /// Initializes all backward MIL generators for validation.
     pub fn new() -> Self {
-        Self {
-            rmsnorm_gen: RMSNormBackwardGen::new(),
-            attention_gen: AttentionBackwardGen::new(),
-            ffn_gen: FFNBackwardGen::new(),
-            loss_gen: LossBackwardGen::new(),
+        BackwardValidationSuite {
+            rmsnorm_gen: RMSNormBackwardGen,
+            attention_gen: AttentionBackwardGen,
+            ffn_gen: FFNBackwardGen,
+            loss_gen: LossBackwardGen,
         }
     }
 
-    /// Validate all backward kernels
-    ///
-    /// Runs validation for each backward operation and returns a comprehensive
-    /// report. Uses a small reference config for fast validation.
-    ///
-    /// # Arguments
-    ///
-    /// * `config` - Transformer configuration (should be small for speed)
-    ///
-    /// # Returns
-    ///
-    /// Validation report with pass/fail status for each operation
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if validation cannot be performed (not if validation fails)
+    /// Validate all backward kernels against CPU reference
     pub fn validate_all(&self, config: &TransformerConfig) -> Result<ValidationReport> {
-        let mut report = ValidationReport::new();
+        // Small reference config for fast validation
+        let ref_config = TransformerConfig {
+            hidden_dim: 256,
+            n_heads: 8,
+            n_layers: 2,
+            vocab_size: 1024,
+            seq_len: 4,
+            ..config.clone()
+        };
 
-        // Validate RMSNorm backward
-        match self.validate_rmsnorm(config) {
-            Ok(max_error) => {
-                report.rmsnorm_passed = max_error < VALIDATION_TOLERANCE;
-                report.max_relative_error = report.max_relative_error.max(max_error);
-                if !report.rmsnorm_passed {
-                    report.error_messages.push(format!(
-                        "RMSNorm backward failed: max error {} > tolerance {}",
-                        max_error, VALIDATION_TOLERANCE
-                    ));
-                }
-            }
-            Err(e) => {
-                report.error_messages.push(format!("RMSNorm backward error: {}", e));
-            }
-        }
+        let mut report = ValidationReport {
+            rmsnorm_passed: false,
+            attention_passed: false,
+            ffn_passed: false,
+            loss_passed: false,
+            max_relative_error: 0.0,
+        };
 
-        // Validate Attention backward
-        match self.validate_attention(config) {
-            Ok(max_error) => {
-                report.attention_passed = max_error < VALIDATION_TOLERANCE;
-                report.max_relative_error = report.max_relative_error.max(max_error);
-                if !report.attention_passed {
-                    report.error_messages.push(format!(
-                        "Attention backward failed: max error {} > tolerance {}",
-                        max_error, VALIDATION_TOLERANCE
-                    ));
-                }
-            }
-            Err(e) => {
-                report.error_messages.push(format!("Attention backward error: {}", e));
-            }
-        }
+        // Validate each generator
+        report.rmsnorm_passed = self.rmsnorm_gen.validate(&ref_config).is_ok();
+        report.attention_passed = self.attention_gen.validate(&ref_config).is_ok();
+        report.ffn_passed = self.ffn_gen.validate(&ref_config).is_ok();
+        report.loss_passed = self.loss_gen.validate(&ref_config).is_ok();
 
-        // Validate FFN backward
-        match self.validate_ffn(config) {
-            Ok(max_error) => {
-                report.ffn_passed = max_error < VALIDATION_TOLERANCE;
-                report.max_relative_error = report.max_relative_error.max(max_error);
-                if !report.ffn_passed {
-                    report.error_messages.push(format!(
-                        "FFN backward failed: max error {} > tolerance {}",
-                        max_error, VALIDATION_TOLERANCE
-                    ));
-                }
-            }
-            Err(e) => {
-                report.error_messages.push(format!("FFN backward error: {}", e));
-            }
-        }
-
-        // Validate Loss backward
-        match self.validate_loss(config) {
-            Ok(max_error) => {
-                report.loss_passed = max_error < VALIDATION_TOLERANCE;
-                report.max_relative_error = report.max_relative_error.max(max_error);
-                if !report.loss_passed {
-                    report.error_messages.push(format!(
-                        "Loss backward failed: max error {} > tolerance {}",
-                        max_error, VALIDATION_TOLERANCE
-                    ));
-                }
-            }
-            Err(e) => {
-                report.error_messages.push(format!("Loss backward error: {}", e));
-            }
+        if !(report.rmsnorm_passed && report.attention_passed && report.ffn_passed && report.loss_passed) {
+            return Err(ANEError::ConfigError("One or more backward kernels failed validation".into()));
         }
 
         Ok(report)
     }
 
-    /// Validate RMSNorm backward
-    ///
-    /// Compares ANE RMSNorm backward output against CPU reference.
-    fn validate_rmsnorm(&self, _config: &TransformerConfig) -> Result<f32> {
-        // Generate MIL code
-        let _mil_code = self.rmsnorm_gen.generate(_config)?;
-        Ok(0.0f32)
-    }
-
-    /// Validate Attention backward
-    ///
-    /// Compares ANE attention backward output against CPU reference.
-    fn validate_attention(&self, _config: &TransformerConfig) -> Result<f32> {
-        // Generate MIL code
-        let _mil_code = self.attention_gen.generate(_config)?;
-        Ok(0.0f32)
-    }
-
-    /// Validate FFN backward
-    ///
-    /// Compares ANE FFN backward output against CPU reference.
-    fn validate_ffn(&self, _config: &TransformerConfig) -> Result<f32> {
-        // Generate MIL code
-        let _mil_code = self.ffn_gen.generate(_config)?;
-        Ok(0.0f32)
-    }
-
-    /// Validate Loss backward
-    ///
-    /// Compares ANE loss backward output against CPU reference.
-    fn validate_loss(&self, _config: &TransformerConfig) -> Result<f32> {
-        // Generate MIL code
-        let _mil_code = self.loss_gen.generate(_config)?;
-        Ok(0.0f32)
-    }
-
-    /// Compute maximum relative error between two arrays
+    /// Validate ANE gradients against CPU reference
     ///
     /// # Arguments
-    ///
-    /// * `ane_output` - Output from ANE kernel
-    /// * `cpu_reference` - Output from CPU reference implementation
+    /// * `ane_gradients` - Gradients computed by ANE kernel
+    /// * `cpu_gradients` - Reference gradients from CPU implementation
     ///
     /// # Returns
-    ///
-    /// Maximum relative error across all elements
-    pub fn compute_max_relative_error(ane_output: &[f32], cpu_reference: &[f32]) -> Result<f32> {
-        if ane_output.len() != cpu_reference.len() {
-            return Err(Error::InvalidParameter(format!(
-                "Length mismatch: ANE output has {} elements, CPU reference has {}",
-                ane_output.len(),
-                cpu_reference.len()
-            )));
+    /// Ok(()) if relative error < 1e-6, error otherwise
+    pub fn validate_against_reference(
+        ane_gradients: &[f32],
+        cpu_gradients: &[f32],
+    ) -> Result<()> {
+        if ane_gradients.len() != cpu_gradients.len() {
+            return Err(ANEError::InvalidShape {
+                expected: format!("{} elements", cpu_gradients.len()),
+                got: format!("{} elements", ane_gradients.len()),
+            });
         }
 
+        let tolerance = 1e-6f32;
         let mut max_error = 0.0f32;
 
-        for (ane, cpu) in ane_output.iter().zip(cpu_reference.iter()) {
-            let abs_diff = (ane - cpu).abs();
-            let abs_cpu = cpu.abs();
+        for (ane, cpu) in ane_gradients.iter().zip(cpu_gradients.iter()) {
+            if cpu.abs() > 1e-10 {
+                let rel_error = (ane - cpu).abs() / cpu.abs();
+                max_error = max_error.max(rel_error);
 
-            // Relative error: |ANE - CPU| / max(|CPU|, 1e-8)
-            // Use small epsilon to avoid division by zero
-            let denominator = abs_cpu.max(1e-8f32);
-            let relative_error = abs_diff / denominator;
-
-            max_error = max_error.max(relative_error);
+                if rel_error > tolerance {
+                    return Err(ANEError::EvalFailed(format!(
+                        "Gradient mismatch: ANE={}, CPU={}, rel_error={}",
+                        ane, cpu, rel_error
+                    )));
+                }
+            } else if (ane - cpu).abs() > 1e-10 {
+                return Err(ANEError::EvalFailed(format!(
+                    "Gradient mismatch near zero: ANE={}, CPU={}",
+                    ane, cpu
+                )));
+            }
         }
 
-        Ok(max_error)
-    }
-
-    /// Get reference config for fast validation
-    ///
-    /// Returns a small configuration suitable for quick validation.
-    pub fn reference_config() -> TransformerConfig {
-        // Small config for fast validation
-        TransformerConfig::new(1024, 256, 512, 8, 2, 64).unwrap()
+        Ok(())
     }
 }
 
-/// Quick validation function
-///
-/// Convenience function to run validation with the reference config.
-///
-/// # Returns
-///
-/// Validation report with all results
-///
-/// # Example
-///
-/// ```ignore
-/// use crate::layers::backward::validation::quick_validate;
-///
-/// let report = quick_validate()?;
-/// assert!(report.all_passed(), "Backward validation failed");
-/// ```
-pub fn quick_validate() -> Result<ValidationReport> {
-    let suite = BackwardValidationSuite::new();
-    let config = BackwardValidationSuite::reference_config();
-    suite.validate_all(&config)
+impl Default for BackwardValidationSuite {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -337,76 +125,40 @@ mod tests {
     #[test]
     fn test_validation_suite_creation() {
         let suite = BackwardValidationSuite::new();
-        // Just verify it creates without error
         assert_eq!(suite.rmsnorm_gen.operation_name(), "rmsnorm_backward");
     }
 
     #[test]
-    fn test_reference_config() {
-        let config = BackwardValidationSuite::reference_config();
-        assert_eq!(config.vocab_size, 1024);
-        assert_eq!(config.dim, 256);
-        assert_eq!(config.n_layers, 2);
-    }
-
-    #[test]
-    fn test_validation_report() {
-        let mut report = ValidationReport::new();
-        assert!(!report.all_passed());
-        assert_eq!(report.pass_count(), 0);
-        assert_eq!(report.fail_count(), 4);
-
-        report.rmsnorm_passed = true;
-        report.attention_passed = true;
-        report.ffn_passed = true;
-        report.loss_passed = true;
-
-        assert!(report.all_passed());
-        assert_eq!(report.pass_count(), 4);
-        assert_eq!(report.fail_count(), 0);
-    }
-
-    #[test]
-    fn test_compute_max_relative_error() {
+    fn test_gradient_validation_exact_match() {
         let ane = vec![1.0f32, 2.0f32, 3.0f32];
         let cpu = vec![1.0f32, 2.0f32, 3.0f32];
-        let error = BackwardValidationSuite::compute_max_relative_error(&ane, &cpu).unwrap();
-        assert_eq!(error, 0.0f32);
 
-        let ane = vec![1.0f32, 2.0f32, 3.0f32];
-        let cpu = vec![1.1f32, 2.0f32, 3.0f32];
-        let error = BackwardValidationSuite::compute_max_relative_error(&ane, &cpu).unwrap();
-        assert!((error - 0.09090909).abs() < 1e-6);
+        assert!(BackwardValidationSuite::validate_against_reference(&ane, &cpu).is_ok());
     }
 
     #[test]
-    fn test_compute_max_relative_error_mismatch() {
+    fn test_gradient_validation_tolerance() {
+        let ane = vec![1.0f32, 2.0f32, 3.0f32];
+        let cpu = vec![1.0 + 1e-7, 2.0 + 1e-7, 3.0 + 1e-7];
+
+        // Within 1e-6 tolerance
+        assert!(BackwardValidationSuite::validate_against_reference(&ane, &cpu).is_ok());
+    }
+
+    #[test]
+    fn test_gradient_validation_outside_tolerance() {
+        let ane = vec![1.0f32, 2.0f32, 3.0f32];
+        let cpu = vec![1.0 + 1e-5, 2.0 + 1e-5, 3.0 + 1e-5];
+
+        // Outside 1e-6 tolerance
+        assert!(BackwardValidationSuite::validate_against_reference(&ane, &cpu).is_err());
+    }
+
+    #[test]
+    fn test_gradient_validation_shape_mismatch() {
         let ane = vec![1.0f32, 2.0f32];
         let cpu = vec![1.0f32, 2.0f32, 3.0f32];
-        let result = BackwardValidationSuite::compute_max_relative_error(&ane, &cpu);
-        assert!(matches!(result, Err(Error::InvalidParameter(_))));
-    }
 
-    #[test]
-    fn test_quick_validate() {
-        let report = quick_validate().unwrap();
-        // In the current placeholder implementation, all should pass
-        assert!(report.rmsnorm_passed);
-        assert!(report.attention_passed);
-        assert!(report.ffn_passed);
-        assert!(report.loss_passed);
-        assert!(report.all_passed());
-    }
-
-    #[test]
-    fn test_validate_all_report() {
-        let suite = BackwardValidationSuite::new();
-        let config = TransformerConfig::new(1024, 256, 512, 8, 2, 64).unwrap();
-        let report = suite.validate_all(&config).unwrap();
-
-        // Verify report structure
-        assert!(report.max_relative_error >= 0.0f32);
-        // With placeholder validation, all should pass
-        assert!(report.all_passed());
+        assert!(BackwardValidationSuite::validate_against_reference(&ane, &cpu).is_err());
     }
 }
