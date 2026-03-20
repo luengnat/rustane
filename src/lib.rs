@@ -58,7 +58,10 @@ pub use layers::{
 };
 pub use mil::{rmsnorm_mil, total_leaked_bytes, LinearLayer, MILBuilder, WeightBlob};
 pub use platform::ANEAvailability;
-pub use training::{GradAccumulator, LossScaler};
+pub use training::{
+    ConstantScheduler, GradAccumulator, LRScheduler, LossScaler, WarmupCosineScheduler,
+    WarmupLinearScheduler,
+};
 pub use wrapper::{ANECompiler, ANEExecutor, ANERuntime, ANETensor, KernelCache};
 
 /// Version information

@@ -7,6 +7,10 @@
 
 pub mod grad_accum;
 pub mod loss_scale;
+pub mod scheduler;
 
 pub use grad_accum::GradAccumulator;
 pub use loss_scale::LossScaler;
+pub use scheduler::{
+    ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler,
+};
