@@ -62,9 +62,9 @@ impl LRScheduler for ConstantScheduler {
 /// use rustane::training::{WarmupLinearScheduler, LRScheduler};
 ///
 /// let scheduler = WarmupLinearScheduler::new(
-///     peak_lr: 0.001,
-///     warmup_steps: 1000,
-///     total_steps: 10000,
+///     0.001,  // peak_lr
+///     1000,   // warmup_steps
+///     10000,  // total_steps
 /// );
 /// assert!(scheduler.get_lr(0) < scheduler.get_lr(500)); // Warmup phase
 /// assert!(scheduler.get_lr(5000) > scheduler.get_lr(9000)); // Decay phase
@@ -120,10 +120,10 @@ impl LRScheduler for WarmupLinearScheduler {
 /// use rustane::training::{WarmupCosineScheduler, LRScheduler};
 ///
 /// let scheduler = WarmupCosineScheduler::new(
-///     peak_lr: 0.001,
-///     warmup_steps: 500,
-///     total_steps: 5000,
-///     min_lr: 0.00001,
+///     0.001,   // peak_lr
+///     500,     // warmup_steps
+///     5000,    // total_steps
+///     0.00001, // min_lr
 /// );
 /// assert!(scheduler.get_lr(0) < scheduler.get_lr(250)); // Warmup
 /// // After warmup, LR follows cosine decay
