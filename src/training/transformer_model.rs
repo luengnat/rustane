@@ -997,6 +997,26 @@ fn log_ane_forward_block(block: &'static str, outcome: &'static str) {
     }
 }
 
+/// Return a compact summary of which ANE forward blocks were attempted.
+pub fn ane_forward_block_summary() -> Option<String> {
+    #[cfg(target_vendor = "apple")]
+    {
+        let seen = ANE_FORWARD_BLOCKS.get_or_init(|| Mutex::new(HashSet::new()));
+        let guard = seen.lock().ok()?;
+        if guard.is_empty() {
+            return None;
+        }
+
+        let mut blocks: Vec<_> = guard.iter().copied().collect();
+        blocks.sort_unstable();
+        Some(format!("ANE summary: attempted blocks = {}", blocks.join(", ")))
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        None
+    }
+}
+
 impl Model for TransformerANE {
     fn forward(&mut self, batch: &Batch) -> Result<ANETensor> {
         self.validate_batch(batch)?;
