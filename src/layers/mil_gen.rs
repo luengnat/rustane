@@ -38,14 +38,35 @@ impl MILGenerator {
 
         mil.push_str(&format!(
             "func attention_forward(x: (1, {}, 1, {})) -> (1, {}, 1, {}) {{\n",
-            dim, seq_len + 3 * dim, dim, seq_len
+            dim,
+            seq_len + 3 * dim,
+            dim,
+            seq_len
         ));
 
         // Extract x, Wq, Wk, Wv from packed input
-        mil.push_str(&format!("  let x = cast(x_slice_[0:1, 0:{}, 0:1, 0:{}]); /* input tokens */\n", dim, seq_len));
-        mil.push_str(&format!("  let Wq = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]); /* query weight */\n", dim, seq_len, seq_len + dim));
-        mil.push_str(&format!("  let Wk = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]); /* key weight */\n", dim, seq_len + dim, seq_len + 2 * dim));
-        mil.push_str(&format!("  let Wv = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]); /* value weight */\n", dim, seq_len + 2 * dim, seq_len + 3 * dim));
+        mil.push_str(&format!(
+            "  let x = cast(x_slice_[0:1, 0:{}, 0:1, 0:{}]); /* input tokens */\n",
+            dim, seq_len
+        ));
+        mil.push_str(&format!(
+            "  let Wq = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]); /* query weight */\n",
+            dim,
+            seq_len,
+            seq_len + dim
+        ));
+        mil.push_str(&format!(
+            "  let Wk = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]); /* key weight */\n",
+            dim,
+            seq_len + dim,
+            seq_len + 2 * dim
+        ));
+        mil.push_str(&format!(
+            "  let Wv = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]); /* value weight */\n",
+            dim,
+            seq_len + 2 * dim,
+            seq_len + 3 * dim
+        ));
 
         // Compute Q, K, V
         mil.push_str("  let Q = matmul(x, Wq); /* [seq_len, dim] */\n");
@@ -53,7 +74,10 @@ impl MILGenerator {
         mil.push_str("  let V = matmul(x, Wv);\n");
 
         // Scaled dot-product attention
-        mil.push_str(&format!("  let scale = 1.0 / sqrt({}); /* head_dim */\n", head_dim));
+        mil.push_str(&format!(
+            "  let scale = 1.0 / sqrt({}); /* head_dim */\n",
+            head_dim
+        ));
         mil.push_str("  let scores = matmul(Q, transpose(K)) * scale;\n");
         mil.push_str("  let weights = softmax(scores);\n");
         mil.push_str("  let attn_out = matmul(weights, V);\n");
@@ -75,16 +99,34 @@ impl MILGenerator {
 
         mil.push_str(&format!(
             "func ffn_forward(x: (1, {}, 1, {})) -> (1, {}, 1, {}) {{\n",
-            dim, seq_len + 2 * hidden_dim + hidden_dim, dim, seq_len
+            dim,
+            seq_len + 2 * hidden_dim + hidden_dim,
+            dim,
+            seq_len
         ));
 
-        mil.push_str(&format!("  let x = cast(x_slice_[0:1, 0:{}, 0:1, 0:{}]);\n", dim, seq_len));
-        mil.push_str(&format!("  let W1 = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]);\n",
-                             dim, seq_len, seq_len + hidden_dim));
-        mil.push_str(&format!("  let W3 = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]);\n",
-                             dim, seq_len + hidden_dim, seq_len + 2 * hidden_dim));
-        mil.push_str(&format!("  let W2 = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]);\n",
-                             hidden_dim, seq_len + 2 * hidden_dim, seq_len + 2 * hidden_dim + hidden_dim));
+        mil.push_str(&format!(
+            "  let x = cast(x_slice_[0:1, 0:{}, 0:1, 0:{}]);\n",
+            dim, seq_len
+        ));
+        mil.push_str(&format!(
+            "  let W1 = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]);\n",
+            dim,
+            seq_len,
+            seq_len + hidden_dim
+        ));
+        mil.push_str(&format!(
+            "  let W3 = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]);\n",
+            dim,
+            seq_len + hidden_dim,
+            seq_len + 2 * hidden_dim
+        ));
+        mil.push_str(&format!(
+            "  let W2 = cast(x_slice_[0:1, 0:{}, 0:1, {}:{}]);\n",
+            hidden_dim,
+            seq_len + 2 * hidden_dim,
+            seq_len + 2 * hidden_dim + hidden_dim
+        ));
 
         mil.push_str("  let hidden1 = matmul(x, W1);\n");
         mil.push_str("  let hidden3 = matmul(x, W3);\n");

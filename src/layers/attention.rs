@@ -126,9 +126,12 @@ impl SoftmaxWithCausalMask {
 pub struct MultiHeadAttention {
     name: String,
     num_heads: usize,
+    #[allow(dead_code)]
     embed_dim: usize,
     head_dim: usize,
+    #[allow(dead_code)]
     dropout: f32,
+    #[allow(dead_code)]
     causal: bool,
 
     // Q, K, V projections

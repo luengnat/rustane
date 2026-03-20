@@ -89,7 +89,17 @@ impl LossFn for CrossEntropyLoss {
             ));
         }
 
-        let vocab_size = shape[shape.len() - 1]; // Last dimension is vocab
+        let vocab_size = shape[shape.len() - 1];
+        if vocab_size == 0 {
+            return Err(crate::Error::Other(
+                "Logits vocab dimension must be > 0".to_string(),
+            ));
+        }
+        if logits_f32.len() % vocab_size != 0 {
+            return Err(crate::Error::Other(
+                "Logits buffer does not align with vocab dimension".to_string(),
+            ));
+        }
         let num_positions = logits_f32.len() / vocab_size;
 
         if num_positions == 0 {
@@ -99,61 +109,70 @@ impl LossFn for CrossEntropyLoss {
         }
 
         let tokens = batch.tokens();
+        let batch_size = batch.batch_size();
+        let seq_len = batch.seq_len();
+        let batched_positions = batch_size.saturating_mul(seq_len.saturating_sub(1));
+        let flattened_positions = tokens.len().saturating_sub(1);
 
-        // For next-token prediction:
-        // - tokens[0..num_positions] are inputs
-        // - tokens[1..num_positions+1] are targets
-        // - We predict tokens[i+1] given tokens[i:i+1] context
-        if tokens.len() < num_positions {
-            return Err(crate::Error::Other(
-                format!(
-                    "Not enough tokens in batch ({}) for {} positions",
-                    tokens.len(),
-                    num_positions
-                ),
-            ));
-        }
-
-        // Compute cross-entropy loss
         let mut total_loss: f32 = 0.0;
 
-        for pos in 0..num_positions {
-            let logits_at_pos = &logits_f32[pos * vocab_size..(pos + 1) * vocab_size];
-            
-            // Get target token (next token in sequence)
-            let target_token = if pos + 1 < tokens.len() {
-                tokens[pos + 1] as usize
-            } else {
-                // Fallback: use current token as target (shouldn't happen normally)
-                tokens[pos] as usize
-            };
-
-            if target_token >= vocab_size {
-                return Err(crate::Error::Other(
-                    format!(
+        if num_positions == batched_positions && batch_size > 0 && seq_len > 0 {
+            for sample_idx in 0..batch_size {
+                let sample_offset = sample_idx * seq_len;
+                let row_offset = sample_idx * (seq_len - 1);
+                for pos in 0..(seq_len - 1) {
+                    let row_idx = row_offset + pos;
+                    let logits_at_pos = &logits_f32[row_idx * vocab_size..(row_idx + 1) * vocab_size];
+                    let target_token = tokens[sample_offset + pos + 1] as usize;
+                    if target_token >= vocab_size {
+                        return Err(crate::Error::Other(format!(
+                            "Target token {} exceeds vocab size {}",
+                            target_token, vocab_size
+                        )));
+                    }
+                    let softmax = Self::softmax(logits_at_pos);
+                    let prob = softmax[target_token];
+                    total_loss += if prob > 0.0 { -prob.ln() } else { 10.0 };
+                }
+            }
+            Ok(total_loss / batched_positions as f32)
+        } else if num_positions == flattened_positions && flattened_positions > 0 {
+            for pos in 0..num_positions {
+                let logits_at_pos = &logits_f32[pos * vocab_size..(pos + 1) * vocab_size];
+                let target_token = tokens[pos + 1] as usize;
+                if target_token >= vocab_size {
+                    return Err(crate::Error::Other(format!(
                         "Target token {} exceeds vocab size {}",
                         target_token, vocab_size
-                    ),
-                ));
+                    )));
+                }
+                let softmax = Self::softmax(logits_at_pos);
+                let prob = softmax[target_token];
+                total_loss += if prob > 0.0 { -prob.ln() } else { 10.0 };
             }
-
-            // Compute softmax
-            let softmax = Self::softmax(logits_at_pos);
-
-            // Cross-entropy: -log(softmax[target])
-            let prob = softmax[target_token];
-            let loss_at_pos = if prob > 0.0 {
-                -prob.ln()
+            Ok(total_loss / num_positions as f32)
+        } else if num_positions == 1 && !tokens.is_empty() {
+            let logits_at_pos = &logits_f32[..vocab_size];
+            let target_token = if tokens.len() > 1 {
+                tokens[1] as usize
             } else {
-                // If probability is 0, use a large penalty
-                10.0
+                tokens[0] as usize
             };
-
-            total_loss += loss_at_pos;
+            if target_token >= vocab_size {
+                return Err(crate::Error::Other(format!(
+                    "Target token {} exceeds vocab size {}",
+                    target_token, vocab_size
+                )));
+            }
+            let softmax = Self::softmax(logits_at_pos);
+            let prob = softmax[target_token];
+            Ok(if prob > 0.0 { -prob.ln() } else { 10.0 })
+        } else {
+            Err(crate::Error::Other(format!(
+                "Logits rows ({}) do not match expected batched positions ({}) or flattened positions ({})",
+                num_positions, batched_positions, flattened_positions
+            )))
         }
-
-        // Return average loss in nats (natural log scale)
-        Ok(total_loss / num_positions as f32)
     }
 }
 
@@ -189,6 +208,7 @@ impl LossFn for MSELoss {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wrapper::ANETensor;
 
     #[test]
     fn test_cross_entropy_loss_creation() {
@@ -200,5 +220,25 @@ mod tests {
     fn test_mse_loss_creation() {
         let loss = MSELoss::new();
         assert_eq!(std::mem::size_of_val(&loss), 0); // Zero-sized type
+    }
+
+    #[test]
+    fn test_cross_entropy_loss_batched_layout() {
+        let loss = CrossEntropyLoss::new();
+        let batch = Batch::new(vec![1, 2, 3, 0, 1, 2], 2, 3).unwrap();
+        let logits = ANETensor::from_fp32(vec![0.0f32; 16], vec![4, 4]).unwrap();
+
+        let value = loss.compute(&logits, &batch).unwrap();
+        assert!((value - 4.0f32.ln()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cross_entropy_loss_flattened_layout() {
+        let loss = CrossEntropyLoss::new();
+        let batch = Batch::new(vec![1, 2, 3, 0], 1, 4).unwrap();
+        let logits = ANETensor::from_fp32(vec![0.0f32; 12], vec![3, 4]).unwrap();
+
+        let value = loss.compute(&logits, &batch).unwrap();
+        assert!((value - 4.0f32.ln()).abs() < 1e-6);
     }
 }

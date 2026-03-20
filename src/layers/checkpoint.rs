@@ -1,6 +1,6 @@
 //! Model checkpoint save/load functionality
 
-use crate::layers::{Layer, Model, Sequential};
+use crate::layers::{Model, Sequential};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;

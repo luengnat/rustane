@@ -1,7 +1,6 @@
 //! Linear (fully connected) layer
 
-use crate::layers::traits::{Layer, LayerBuilder, Shape, WeightsLayer};
-use crate::wrapper::ANEExecutor;
+use crate::layers::traits::{Layer, Shape, WeightsLayer};
 use crate::{Error, Result};
 
 /// Linear (fully connected) layer configuration
@@ -20,7 +19,9 @@ pub struct Linear {
     input_features: usize,
     output_features: usize,
     has_bias: bool,
+    #[allow(dead_code)]
     weight_data: Option<Vec<f32>>,
+    #[allow(dead_code)]
     bias_data: Option<Vec<f32>>,
     input_shape: Shape,
     output_shape: Shape,

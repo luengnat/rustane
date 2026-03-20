@@ -8,5 +8,7 @@ pub mod programs;
 pub mod util;
 
 pub use builder::MILBuilder;
-pub use programs::{rmsnorm_mil, LinearLayer};
+pub use programs::{
+    linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil, LinearLayer,
+};
 pub use util::{total_leaked_bytes, WeightBlob};

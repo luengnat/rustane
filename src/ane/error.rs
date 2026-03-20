@@ -1,4 +1,5 @@
-// src/ane/error.rs
+//! ANE-specific error types.
+
 use std::fmt;
 
 /// Errors from ANE operations
@@ -17,7 +18,12 @@ pub enum ANEError {
     IOSurfaceError(String),
 
     /// Tensor shape mismatch (expected vs got)
-    InvalidShape { expected: String, got: String },
+    InvalidShape {
+        /// Expected tensor/layout description.
+        expected: String,
+        /// Actual tensor/layout description received at runtime.
+        got: String,
+    },
 
     /// Weight blob building failed
     WeightBlobError(String),

@@ -66,7 +66,7 @@ fn test_transformer_ane_parameters_access() {
 
     let params = model.parameters();
     assert!(!params.is_empty());
-    assert!(params.len() <= model.param_count());
+    assert_eq!(params.len(), model.param_count());
 }
 
 #[test]

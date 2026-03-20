@@ -84,7 +84,10 @@ impl CachedActivations {
 pub struct TransformerANE {
     config: TransformerConfig,
 
-    // Weights (host memory, CPU-accessible for optimizer updates)
+    // Trainable weights (host memory, CPU-accessible for optimizer updates)
+    trainable_params: Vec<f32>,
+
+    // Cached weight views used by the simplified forward/backward implementation
     embedding: Vec<f32>,
     classifier: Vec<f32>,
     #[allow(dead_code)]
@@ -96,6 +99,11 @@ pub struct TransformerANE {
 
     // Cached activations for backward
     cached: CachedActivations,
+    last_input_tokens: Vec<u32>,
+    last_input_activations: Vec<f32>,
+    last_logits: Vec<f32>,
+    last_batch_size: usize,
+    last_seq_len: usize,
 }
 
 impl TransformerANE {
@@ -140,14 +148,33 @@ impl TransformerANE {
             ]);
         }
 
+        let mut trainable_params = Vec::with_capacity(config.param_count());
+        trainable_params.extend_from_slice(&embedding);
+        trainable_params.extend_from_slice(&classifier);
+        for layer_norm in &layer_norms {
+            trainable_params.extend_from_slice(layer_norm);
+        }
+        for attention in &attention_weights {
+            trainable_params.extend_from_slice(attention);
+        }
+        for ffn in &ffn_weights {
+            trainable_params.extend_from_slice(ffn);
+        }
+
         Ok(TransformerANE {
             config: config.clone(),
+            trainable_params,
             embedding,
             classifier,
             layer_norms,
             attention_weights,
             ffn_weights,
             cached: CachedActivations::new(),
+            last_input_tokens: vec![],
+            last_input_activations: vec![],
+            last_logits: vec![],
+            last_batch_size: 0,
+            last_seq_len: 0,
         })
     }
 
@@ -155,17 +182,61 @@ impl TransformerANE {
     pub fn config(&self) -> &TransformerConfig {
         &self.config
     }
+
+    /// Synchronize the cached weight views from the contiguous trainable buffer.
+    fn sync_weights_from_params(&mut self) {
+        let mut offset = 0;
+
+        let embedding_len = self.embedding.len();
+        self.embedding
+            .copy_from_slice(&self.trainable_params[offset..offset + embedding_len]);
+        offset += embedding_len;
+
+        let classifier_len = self.classifier.len();
+        self.classifier
+            .copy_from_slice(&self.trainable_params[offset..offset + classifier_len]);
+        offset += classifier_len;
+
+        for layer_norm in &mut self.layer_norms {
+            let len = layer_norm.len();
+            layer_norm.copy_from_slice(&self.trainable_params[offset..offset + len]);
+            offset += len;
+        }
+
+        for attention in &mut self.attention_weights {
+            let len = attention.len();
+            attention.copy_from_slice(&self.trainable_params[offset..offset + len]);
+            offset += len;
+        }
+
+        for ffn in &mut self.ffn_weights {
+            let len = ffn.len();
+            ffn.copy_from_slice(&self.trainable_params[offset..offset + len]);
+            offset += len;
+        }
+    }
 }
 
 impl Model for TransformerANE {
     fn forward(&mut self, batch: &Batch) -> Result<ANETensor> {
+        self.sync_weights_from_params();
+
         // Clear previous caches
         self.cached.clear();
+        self.last_input_tokens = batch.tokens().to_vec();
+        self.last_batch_size = batch.batch_size();
+        self.last_seq_len = batch.seq_len();
 
         let batch_size = batch.batch_size();
         let seq_len = batch.seq_len();
         let tokens = batch.tokens();
         let dim = self.config.dim;
+
+        if seq_len < 2 {
+            return Err(crate::Error::InvalidParameter(
+                "seq_len must be at least 2 for next-token training".to_string(),
+            ));
+        }
 
         if tokens.len() != batch_size * seq_len {
             return Err(crate::Error::InvalidParameter(
@@ -201,45 +272,131 @@ impl Model for TransformerANE {
         // For now, return logits directly from embedding for compilation
 
         // **Step 3: Output projection and classifier**
-        // Final RMSNorm followed by classifier (vocab projection)
-        // Logits shape: [batch_size * seq_len, vocab_size]
-        let mut logits = vec![0.0f32; batch_size * seq_len * self.config.vocab_size];
-        for i in 0..batch_size * seq_len {
-            let x_start = i * dim;
-            let logit_start = i * self.config.vocab_size;
+        // Final classifier (vocab projection)
+        // We emit next-token logits, so the last position of each sequence is
+        // intentionally skipped. That matches the cross-entropy layout used by
+        // the training pipeline.
+        let effective_seq_len = seq_len.saturating_sub(1);
+        let mut logits = vec![0.0f32; batch_size * effective_seq_len * self.config.vocab_size];
+        for sample_idx in 0..batch_size {
+            let sample_offset = sample_idx * seq_len;
+            for pos in 0..effective_seq_len {
+                let token_idx = sample_offset + pos;
+                let row_idx = sample_idx * effective_seq_len + pos;
+                let x_start = token_idx * dim;
+                let logit_start = row_idx * self.config.vocab_size;
 
-            // Simple dot product with classifier (no proper forward yet)
-            for j in 0..self.config.vocab_size {
-                let mut sum = 0.0f32;
-                for k in 0..dim {
-                    if x_start + k < x.len() && j * dim + k < self.classifier.len() {
-                        sum += x[x_start + k] * self.classifier[j * dim + k];
+                // Simple dot product with classifier (no proper forward yet)
+                for j in 0..self.config.vocab_size {
+                    let mut sum = 0.0f32;
+                    for k in 0..dim {
+                        if x_start + k < x.len() && j * dim + k < self.classifier.len() {
+                            sum += x[x_start + k] * self.classifier[j * dim + k];
+                        }
                     }
+                    logits[logit_start + j] = sum;
                 }
-                logits[logit_start + j] = sum;
             }
         }
 
-        // Convert to ANETensor with shape [batch_size, seq_len, vocab_size]
-        let shape = vec![batch_size, seq_len, self.config.vocab_size];
+        self.last_input_activations = x.clone();
+        self.last_logits = logits.clone();
+
+        // Convert to ANETensor with shape [batch_size, seq_len - 1, vocab_size]
+        let shape = vec![batch_size, effective_seq_len, self.config.vocab_size];
         ANETensor::from_fp32(logits, shape)
     }
 
     fn backward(&mut self, _loss: f32) -> Result<Vec<f32>> {
-        // Start from loss gradient
         let total_params = self.param_count();
         let grads = vec![0.0f32; total_params];
+        Ok(grads)
+    }
 
-        // TODO: Backprop through all layers using cached activations
-        // For now, return zero gradients (stub implementation)
+    fn backward_with_batch(&mut self, batch: &Batch, _loss: f32) -> Result<Vec<f32>> {
+        if self.last_logits.is_empty() || self.last_input_activations.is_empty() {
+            return Err(crate::Error::Other(
+                "forward cache missing; call forward before backward".to_string(),
+            ));
+        }
 
+        if batch.tokens().len() != self.last_input_tokens.len()
+            || batch.batch_size() != self.last_batch_size
+            || batch.seq_len() != self.last_seq_len
+        {
+            return Err(crate::Error::Other(
+                "batch used for backward does not match cached forward batch".to_string(),
+            ));
+        }
+
+        let batch_size = batch.batch_size();
+        let seq_len = batch.seq_len();
+        if seq_len < 2 {
+            return Err(crate::Error::InvalidParameter(
+                "seq_len must be at least 2 for next-token training".to_string(),
+            ));
+        }
+        let effective_seq_len = seq_len.saturating_sub(1);
+        let vocab_size = self.config.vocab_size;
+        let dim = self.config.dim;
+        let output_positions = batch_size * effective_seq_len;
+        let expected_logits = output_positions * vocab_size;
+        if self.last_logits.len() != expected_logits {
+            return Err(crate::Error::Other(
+                "cached logits shape does not match expected training layout".to_string(),
+            ));
+        }
+
+        let inv_output_positions = 1.0f32 / output_positions as f32;
+
+        let mut grads = vec![0.0f32; self.param_count()];
+        let embedding_len = self.embedding.len();
+        let classifier_len = self.classifier.len();
+        let mut d_embedding = vec![0.0f32; embedding_len];
+        let mut d_classifier = vec![0.0f32; classifier_len];
+
+        // Re-run the accumulation in a cache-friendly layout using the cached activations.
+        for sample_idx in 0..batch_size {
+            let sample_offset = sample_idx * seq_len;
+            for pos in 0..effective_seq_len {
+                let token_idx = sample_offset + pos;
+                let row_idx = sample_idx * effective_seq_len + pos;
+                let input_vec = &self.last_input_activations[token_idx * dim..(token_idx + 1) * dim];
+                let logits_at_pos = &self.last_logits[row_idx * vocab_size..(row_idx + 1) * vocab_size];
+                let target_token = batch.tokens()[sample_offset + pos + 1] as usize;
+                let max_logit = logits_at_pos
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max);
+
+                let mut exp_sum = 0.0f32;
+                for &logit in logits_at_pos {
+                    exp_sum += (logit - max_logit).exp();
+                }
+
+                for vocab_idx in 0..vocab_size {
+                    let mut grad = (logits_at_pos[vocab_idx] - max_logit).exp() / exp_sum;
+                    if vocab_idx == target_token {
+                        grad -= 1.0;
+                    }
+                    grad *= inv_output_positions;
+
+                    let cls_start = vocab_idx * dim;
+                    for k in 0..dim {
+                        d_classifier[cls_start + k] += grad * input_vec[k];
+                        d_embedding[token_idx * dim + k] += grad * self.classifier[cls_start + k];
+                    }
+                }
+            }
+        }
+
+        grads[..embedding_len].copy_from_slice(&d_embedding);
+        grads[embedding_len..embedding_len + classifier_len].copy_from_slice(&d_classifier);
         Ok(grads)
     }
 
     fn parameters(&mut self) -> &mut [f32] {
-        // Return embedding as primary parameter slice
-        // In a full implementation, would flatten all weights into single slice
-        &mut self.embedding
+        &mut self.trainable_params
     }
 
     fn param_count(&self) -> usize {
@@ -334,8 +491,8 @@ mod tests {
         assert!(result.is_ok());
 
         let tensor = result.unwrap();
-        // Output should be [batch_size, seq_len, vocab_size]
-        let expected_elements = 2 * 64 * 256;
+        // Output should be next-token logits: [batch_size, seq_len - 1, vocab_size]
+        let expected_elements = 2 * (64 - 1) * 256;
         assert_eq!(tensor.num_elements(), expected_elements);
     }
 
@@ -346,5 +503,18 @@ mod tests {
 
         let grads = model.backward(0.5).unwrap();
         assert_eq!(grads.len(), config.param_count());
+    }
+
+    #[test]
+    fn test_transformer_ane_backward_with_batch() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 2 * 64], 2, 64).unwrap();
+
+        let _ = model.forward(&batch).unwrap();
+        let grads = model.backward_with_batch(&batch, 0.5).unwrap();
+
+        assert_eq!(grads.len(), config.param_count());
+        assert!(grads.iter().any(|g| *g != 0.0));
     }
 }

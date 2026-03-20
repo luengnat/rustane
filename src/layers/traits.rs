@@ -1,7 +1,7 @@
 //! Core layer traits and interfaces
 
 use crate::wrapper::ANEExecutor;
-use crate::{Error, Result};
+use crate::Result;
 
 /// Shape of a tensor
 pub type Shape = Vec<usize>;

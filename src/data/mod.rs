@@ -174,7 +174,7 @@ impl Batch {
     /// let chunk1 = chunks.next().unwrap().unwrap();
     /// assert_eq!(chunk1.shape(), (1, 25)); // 25 tokens / 25 seq_len = batch_size 1
     /// ```
-    pub fn chunks(&self, max_chunk_tokens: usize) -> Result<ChunkIterator> {
+    pub fn chunks(&self, max_chunk_tokens: usize) -> Result<ChunkIterator<'_>> {
         if self.seq_len == 0 {
             return Err(crate::Error::InvalidParameter(
                 "seq_len must be > 0".to_string(),
@@ -297,7 +297,7 @@ impl<'a> Iterator for ChunkIterator<'a> {
 /// An iterator over batches from a dataset
 pub struct DataLoaderIter<D: Dataset, S: Sampler> {
     dataset: D,
-    sampler: S,
+    _sampler: S,
     batch_size: usize,
     indices: VecDeque<usize>,
     exhausted: bool,
@@ -396,7 +396,7 @@ impl<D: Dataset, S: Sampler> DataLoader<D, S> {
         let indices = self.sampler.sample();
         DataLoaderIter {
             dataset: self.dataset,
-            sampler: self.sampler,
+            _sampler: self.sampler,
             batch_size: self.batch_size,
             indices: VecDeque::from(indices),
             exhausted: false,

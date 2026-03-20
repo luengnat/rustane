@@ -395,7 +395,7 @@ impl SequentialBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layers::{Conv2d, Linear, ReLU};
+    use crate::layers::{Linear, ReLU};
 
     #[test]
     fn test_sequential_empty() {

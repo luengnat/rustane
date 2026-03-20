@@ -14,7 +14,7 @@ mod tests {
         // Blob should have header + data
         let bytes = blob.as_ref();
         assert!(bytes.len() >= 128); // At least header size
-        assert_eq!(bytes.len() % 4, 0); // Aligned to f32
+        assert_eq!(bytes.len(), 128 + 8); // FP16 payload
     }
 
     #[test]
@@ -23,7 +23,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 256, 512).unwrap();
 
         let bytes = blob.as_ref();
-        let expected_size = 128 + (256 * 512 * 4); // header + FP32 data
+        let expected_size = 128 + (256 * 512 * 2); // header + FP16 data
         assert_eq!(bytes.len(), expected_size);
     }
 
@@ -67,8 +67,7 @@ mod tests {
 
         let bytes = blob.as_ref();
         assert!(bytes.len() > 0);
-        // 128 byte header + 4 int8 values
-        assert_eq!(bytes.len(), 128 + 4);
+        assert_eq!(bytes.len(), 64 + 4);
     }
 
     #[test]
@@ -98,18 +97,41 @@ mod tests {
     #[test]
     fn test_weight_blob_from_i8_quantized() {
         let weights = vec![1i8, 2, 3, 4];
-        let scale = 0.5f32;
-        let blob = WeightBlob::from_i8_quantized(&weights, scale, 2, 2).unwrap();
+        let scales = vec![0.5f32, 0.25];
+        let blob = WeightBlob::from_i8_quantized_per_row(&weights, &scales, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        // 128 byte header + 4 i8 values
-        assert_eq!(bytes.len(), 128 + 4);
+        assert_eq!(bytes.len(), 64 + 4);
     }
 
     #[test]
     fn test_weight_blob_from_i8_quantized_invalid_shape() {
         let weights = vec![1i8, 2, 3];
+        let result = WeightBlob::from_i8_quantized_per_row(&weights, &[0.5, 0.25], 2, 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_weight_blob_from_i8_quantized_single_row() {
+        let weights = vec![1i8, 2, 3, 4];
+        let blob = WeightBlob::from_i8_quantized(&weights, 0.5, 1, 4).unwrap();
+
+        assert_eq!(blob.as_ref().len(), 64 + 4);
+    }
+
+    #[test]
+    fn test_weight_blob_from_i8_quantized_multi_row_requires_per_row_scales() {
+        let weights = vec![1i8, 2, 3, 4];
         let result = WeightBlob::from_i8_quantized(&weights, 0.5, 2, 2);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_weight_blob_from_i8_quantized_invalid_scales() {
+        let weights = vec![1i8, 2, 3, 4];
+        let result = WeightBlob::from_i8_quantized_per_row(&weights, &[0.5, 0.0], 2, 2);
+
         assert!(result.is_err());
     }
 
@@ -119,7 +141,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 
     #[test]
@@ -128,7 +150,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 
     #[test]
@@ -137,7 +159,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 
     #[test]
@@ -146,7 +168,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 1, 4).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 
     #[test]
@@ -155,7 +177,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 4, 1).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 
     #[test]
@@ -180,7 +202,7 @@ mod tests {
         assert!(scales[1] > 0.0);
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 4);
+        assert_eq!(bytes.len(), 64 + 4);
     }
 
     #[test]
@@ -189,7 +211,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 
     #[test]
@@ -198,6 +220,6 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 }

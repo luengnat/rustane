@@ -3,9 +3,9 @@ mod apple {
     use core::ffi::{c_char, c_int, c_void, CStr};
     use core::ptr::{self, NonNull};
     use libc::{dlopen, RTLD_NOW};
+    use objc2::{extern_class, extern_conformance, extern_methods, msg_send, AnyThread, ClassType};
     use objc2::rc::{autoreleasepool, Retained};
-    use objc2::runtime::{AnyClass, AnyObject, Bool};
-    use objc2::{class, msg_send};
+    use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject, NSObjectProtocol};
     use objc2_core_foundation::CFRetained;
     use objc2_foundation::{NSArray, NSData, NSDictionary, NSError, NSNumber, NSString};
     use objc2_io_surface::IOSurfaceRef;
@@ -34,47 +34,174 @@ mod apple {
         fn IOSurfaceGetBaseAddress(buffer: &IOSurfaceRef) -> *mut c_void;
     }
 
-    struct RuntimeClasses {
-        descriptor: &'static AnyClass,
-        in_memory_model: &'static AnyClass,
-        request: &'static AnyClass,
-        io_surface_object: &'static AnyClass,
+    extern_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = AnyThread]
+        #[name = "_ANEInMemoryModelDescriptor"]
+        struct ANEInMemoryModelDescriptor;
+    );
+
+    extern_conformance!(
+        unsafe impl NSObjectProtocol for ANEInMemoryModelDescriptor {}
+    );
+
+    #[allow(non_snake_case)]
+    impl ANEInMemoryModelDescriptor {
+        extern_methods!(
+            #[unsafe(method(modelWithMILText:weights:optionsPlist:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn modelWithMILText_weights_optionsPlist(
+                mil_text: &NSData,
+                weights: *const NSDictionary<NSString, AnyObject>,
+                options_plist: *const AnyObject,
+            ) -> Option<Retained<Self>>;
+        );
     }
 
-    static CLASSES: OnceLock<Option<RuntimeClasses>> = OnceLock::new();
+    extern_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = AnyThread]
+        #[name = "_ANEInMemoryModel"]
+        struct ANEInMemoryModel;
+    );
+
+    extern_conformance!(
+        unsafe impl NSObjectProtocol for ANEInMemoryModel {}
+    );
+
+    #[allow(non_snake_case)]
+    impl ANEInMemoryModel {
+        extern_methods!(
+            #[unsafe(method(inMemoryModelWithDescriptor:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn inMemoryModelWithDescriptor(
+                descriptor: &ANEInMemoryModelDescriptor,
+            ) -> Option<Retained<Self>>;
+
+            #[unsafe(method(hexStringIdentifier))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn hexStringIdentifier(&self) -> Retained<NSString>;
+
+            #[unsafe(method(compileWithQoS:options:error:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn compileWithQoS_options_error(
+                &self,
+                qos: u32,
+                options: &NSDictionary<AnyObject, AnyObject>,
+                error: *mut *mut NSError,
+            ) -> Bool;
+
+            #[unsafe(method(loadWithQoS:options:error:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn loadWithQoS_options_error(
+                &self,
+                qos: u32,
+                options: &NSDictionary<AnyObject, AnyObject>,
+                error: *mut *mut NSError,
+            ) -> Bool;
+
+            #[unsafe(method(evaluateWithQoS:options:request:error:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn evaluateWithQoS_options_request_error(
+                &self,
+                qos: u32,
+                options: &NSDictionary<AnyObject, AnyObject>,
+                request: &ANERequest,
+                error: *mut *mut NSError,
+            ) -> Bool;
+
+            #[unsafe(method(unloadWithQoS:error:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn unloadWithQoS_error(
+                &self,
+                qos: u32,
+                error: *mut *mut NSError,
+            ) -> Bool;
+        );
+    }
+
+    extern_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = AnyThread]
+        #[name = "_ANERequest"]
+        struct ANERequest;
+    );
+
+    extern_conformance!(
+        unsafe impl NSObjectProtocol for ANERequest {}
+    );
+
+    #[allow(non_snake_case)]
+    impl ANERequest {
+        extern_methods!(
+            #[unsafe(method(requestWithInputs:inputIndices:outputs:outputIndices:weightsBuffer:perfStats:procedureIndex:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn requestWithInputs_inputIndices_outputs_outputIndices_weightsBuffer_perfStats_procedureIndex(
+                inputs: &NSArray<AnyObject>,
+                input_indices: &NSArray<NSNumber>,
+                outputs: &NSArray<AnyObject>,
+                output_indices: &NSArray<NSNumber>,
+                weights_buffer: *const AnyObject,
+                perf_stats: *const AnyObject,
+                procedure_index: &NSNumber,
+            ) -> Option<Retained<Self>>;
+        );
+    }
+
+    extern_class!(
+        #[unsafe(super(NSObject))]
+        #[thread_kind = AnyThread]
+        #[name = "_ANEIOSurfaceObject"]
+        struct ANEIOSurfaceObject;
+    );
+
+    extern_conformance!(
+        unsafe impl NSObjectProtocol for ANEIOSurfaceObject {}
+    );
+
+    #[allow(non_snake_case)]
+    impl ANEIOSurfaceObject {
+        extern_methods!(
+            #[unsafe(method(objectWithIOSurface:))]
+            #[unsafe(method_family = none)]
+            pub unsafe fn objectWithIOSurface(
+                surface: &IOSurfaceRef,
+            ) -> Option<Retained<Self>>;
+        );
+    }
+
+    static CLASSES: OnceLock<Option<()>> = OnceLock::new();
     static COMPILE_COUNT: AtomicI32 = AtomicI32::new(0);
 
     pub struct ANEKernelHandle {
-        pub(crate) model: Retained<AnyObject>,
-        pub(crate) io_inputs: Vec<CFRetained<IOSurfaceRef>>,
-        pub(crate) io_outputs: Vec<CFRetained<IOSurfaceRef>>,
-        pub(crate) request: Retained<AnyObject>,
-        pub(crate) tmp_dir: PathBuf,
-        pub(crate) n_inputs: i32,
-        pub(crate) n_outputs: i32,
-        pub(crate) input_bytes: Vec<usize>,
-        pub(crate) output_bytes: Vec<usize>,
+        model: Retained<ANEInMemoryModel>,
+        io_inputs: Vec<CFRetained<IOSurfaceRef>>,
+        io_outputs: Vec<CFRetained<IOSurfaceRef>>,
+        request: Retained<ANERequest>,
+        tmp_dir: PathBuf,
+        n_inputs: i32,
+        n_outputs: i32,
+        input_bytes: Vec<usize>,
+        output_bytes: Vec<usize>,
     }
 
     struct ANEPrivateRuntime;
 
     impl ANEPrivateRuntime {
-        fn initialize() -> Option<&'static RuntimeClasses> {
-            CLASSES
-                .get_or_init(|| {
-                    let handle = unsafe { dlopen(cstr(ANE_FRAMEWORK_PATH).as_ptr(), RTLD_NOW) };
-                    if handle.is_null() {
-                        return None;
-                    }
+        fn initialize() -> Option<()> {
+            CLASSES.get_or_init(|| {
+                let handle = unsafe { dlopen(cstr(ANE_FRAMEWORK_PATH).as_ptr(), RTLD_NOW) };
+                if handle.is_null() {
+                    return None;
+                }
 
-                    Some(RuntimeClasses {
-                        descriptor: AnyClass::get(cstr(CLASS_DESC))?,
-                        in_memory_model: AnyClass::get(cstr(CLASS_INMEM))?,
-                        request: AnyClass::get(cstr(CLASS_REQ))?,
-                        io_surface_object: AnyClass::get(cstr(CLASS_IO))?,
-                    })
-                })
-                .as_ref()
+                AnyClass::get(cstr(CLASS_DESC))?;
+                AnyClass::get(cstr(CLASS_INMEM))?;
+                AnyClass::get(cstr(CLASS_REQ))?;
+                AnyClass::get(cstr(CLASS_IO))?;
+
+                Some(())
+            }).as_ref().map(|_| ())
         }
 
         fn create_surface(bytes: usize) -> Option<CFRetained<IOSurfaceRef>> {
@@ -148,14 +275,14 @@ mod apple {
         }
 
         fn write_model_files(
-            model: &AnyObject,
+            model: &ANEInMemoryModel,
             mil_data: &NSData,
             weight_names: *mut *const c_char,
             weight_datas: *mut *const u8,
             weight_lens: *const usize,
             n_weights: i32,
         ) -> Option<PathBuf> {
-            let hex_id: Retained<NSString> = unsafe { msg_send![model, hexStringIdentifier] };
+            let hex_id = unsafe { model.hexStringIdentifier() };
             let tmp_dir = std::env::temp_dir().join(hex_id.to_string());
             let weights_dir = tmp_dir.join("weights");
             fs::create_dir_all(&weights_dir).ok()?;
@@ -186,27 +313,22 @@ mod apple {
         }
 
         unsafe fn create_request(
-            classes: &RuntimeClasses,
             io_inputs: &[CFRetained<IOSurfaceRef>],
             io_outputs: &[CFRetained<IOSurfaceRef>],
-        ) -> Option<Retained<AnyObject>> {
+        ) -> Option<Retained<ANERequest>> {
             let mut input_objects = Vec::with_capacity(io_inputs.len());
             let mut input_indices = Vec::with_capacity(io_inputs.len());
             for (idx, surface) in io_inputs.iter().enumerate() {
-                let obj: Option<Retained<AnyObject>> = unsafe {
-                    msg_send![classes.io_surface_object, objectWithIOSurface: &**surface]
-                };
-                input_objects.push(obj?);
+                let obj = unsafe { ANEIOSurfaceObject::objectWithIOSurface(&**surface) }?;
+                input_objects.push(obj.into());
                 input_indices.push(NSNumber::new_usize(idx));
             }
 
             let mut output_objects = Vec::with_capacity(io_outputs.len());
             let mut output_indices = Vec::with_capacity(io_outputs.len());
             for (idx, surface) in io_outputs.iter().enumerate() {
-                let obj: Option<Retained<AnyObject>> = unsafe {
-                    msg_send![classes.io_surface_object, objectWithIOSurface: &**surface]
-                };
-                output_objects.push(obj?);
+                let obj = unsafe { ANEIOSurfaceObject::objectWithIOSurface(&**surface) }?;
+                output_objects.push(obj.into());
                 output_indices.push(NSNumber::new_usize(idx));
             }
 
@@ -217,16 +339,15 @@ mod apple {
             let procedure = NSNumber::new_u8(0);
 
             unsafe {
-                msg_send![
-                    classes.request,
-                    requestWithInputs: &*inputs,
-                    inputIndices: &*input_ids,
-                    outputs: &*outputs,
-                    outputIndices: &*output_ids,
-                    weightsBuffer: ptr::null::<AnyObject>(),
-                    perfStats: ptr::null::<AnyObject>(),
-                    procedureIndex: &*procedure
-                ]
+                ANERequest::requestWithInputs_inputIndices_outputs_outputIndices_weightsBuffer_perfStats_procedureIndex(
+                    &inputs,
+                    &input_ids,
+                    &outputs,
+                    &output_ids,
+                    ptr::null::<AnyObject>(),
+                    ptr::null::<AnyObject>(),
+                    &procedure,
+                )
             }
         }
     }
@@ -252,7 +373,7 @@ mod apple {
         output_sizes: *const usize,
     ) -> *mut ANEKernelHandle {
         autoreleasepool(|_| {
-            let Some(classes) = ANEPrivateRuntime::initialize() else {
+            let Some(()) = ANEPrivateRuntime::initialize() else {
                 return ptr::null_mut();
             };
             if mil_text.is_null() || input_sizes.is_null() || output_sizes.is_null() {
@@ -268,23 +389,21 @@ mod apple {
                 n_weights,
             );
 
-            let desc: Option<Retained<AnyObject>> = unsafe {
-                msg_send![
-                    classes.descriptor,
-                    modelWithMILText: &*mil_data,
-                    weights: weights
+            let desc = unsafe {
+                ANEInMemoryModelDescriptor::modelWithMILText_weights_optionsPlist(
+                    &mil_data,
+                    weights
                         .as_ref()
                         .map(|dict| &**dict as *const NSDictionary<NSString, AnyObject>)
                         .unwrap_or(ptr::null()),
-                    optionsPlist: ptr::null::<AnyObject>()
-                ]
+                    ptr::null::<AnyObject>(),
+                )
             };
             let Some(desc) = desc else {
                 return ptr::null_mut();
             };
 
-            let model: Option<Retained<AnyObject>> =
-                unsafe { msg_send![classes.in_memory_model, inMemoryModelWithDescriptor: &*desc] };
+            let model = unsafe { ANEInMemoryModel::inMemoryModelWithDescriptor(&desc) };
             let Some(model) = model else {
                 return ptr::null_mut();
             };
@@ -302,9 +421,7 @@ mod apple {
 
             let options = empty_dictionary();
             let mut error: *mut NSError = ptr::null_mut();
-            let compiled: Bool = unsafe {
-                msg_send![&*model, compileWithQoS: ANE_QOS, options: &*options, error: &mut error]
-            };
+            let compiled = unsafe { model.compileWithQoS_options_error(ANE_QOS, &options, &mut error) };
             if !compiled.as_bool() {
                 let _ = fs::remove_dir_all(&tmp_dir);
                 eprintln!("ane_bridge: ANE compile failed: {}", ns_error_string(error));
@@ -312,19 +429,12 @@ mod apple {
             }
 
             let mut error: *mut NSError = ptr::null_mut();
-            let mut loaded: Bool = unsafe {
-                msg_send![&*model, loadWithQoS: ANE_QOS, options: &*options, error: &mut error]
-            };
+            let mut loaded = unsafe { model.loadWithQoS_options_error(ANE_QOS, &options, &mut error) };
             if !loaded.as_bool() {
                 thread::sleep(Duration::from_millis(100));
                 let mut retry_error: *mut NSError = ptr::null_mut();
                 loaded = unsafe {
-                    msg_send![
-                        &*model,
-                        loadWithQoS: ANE_QOS,
-                        options: &*options,
-                        error: &mut retry_error
-                    ]
+                    model.loadWithQoS_options_error(ANE_QOS, &options, &mut retry_error)
                 };
                 if !loaded.as_bool() {
                     let _ = fs::remove_dir_all(&tmp_dir);
@@ -357,7 +467,7 @@ mod apple {
             };
 
             let Some(request) =
-                (unsafe { ANEPrivateRuntime::create_request(classes, &io_inputs, &io_outputs) })
+                (unsafe { ANEPrivateRuntime::create_request(&io_inputs, &io_outputs) })
             else {
                 let _ = fs::remove_dir_all(&tmp_dir);
                 return ptr::null_mut();
@@ -433,14 +543,13 @@ mod apple {
             };
             let options = empty_dictionary();
             let mut error: *mut NSError = ptr::null_mut();
-            let ok: Bool = unsafe {
-                msg_send![
-                    &*kernel.model,
-                    evaluateWithQoS: ANE_QOS,
-                    options: &*options,
-                    request: &*kernel.request,
-                    error: &mut error
-                ]
+            let ok = unsafe {
+                kernel.model.evaluateWithQoS_options_request_error(
+                    ANE_QOS,
+                    &options,
+                    &kernel.request,
+                    &mut error,
+                )
             };
             if !ok.as_bool() {
                 eprintln!("ane_bridge: ANE eval failed: {}", ns_error_string(error));
@@ -506,8 +615,7 @@ mod apple {
             };
 
             let mut error: *mut NSError = ptr::null_mut();
-            let _: Bool =
-                unsafe { msg_send![&*kernel.model, unloadWithQoS: ANE_QOS, error: &mut error] };
+            let _ = unsafe { kernel.model.unloadWithQoS_error(ANE_QOS, &mut error) };
             let _ = fs::remove_dir_all(&kernel.tmp_dir);
 
             kernel.io_inputs.clear();
@@ -539,7 +647,7 @@ mod apple {
     }
 
     fn empty_dictionary() -> Retained<NSDictionary<AnyObject, AnyObject>> {
-        unsafe { msg_send![class!(NSDictionary), new] }
+        unsafe { msg_send![NSDictionary::<AnyObject, AnyObject>::class(), new] }
     }
 }
 
@@ -649,7 +757,59 @@ pub struct ANECompileRequest {
     pub output_sizes: Vec<usize>,
 }
 
+fn sort_named_weights(weights: HashMap<String, Vec<u8>>) -> Vec<(String, Vec<u8>)> {
+    let mut sorted_weights: Vec<(String, Vec<u8>)> = weights.into_iter().collect();
+    sorted_weights.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+    sorted_weights
+}
+
 impl ANECompileRequest {
+    /// Create a new compile request with no weights.
+    pub fn new(
+        mil_text: impl Into<String>,
+        input_sizes: impl Into<Vec<usize>>,
+        output_sizes: impl Into<Vec<usize>>,
+    ) -> Self {
+        Self {
+            mil_text: mil_text.into(),
+            weights: HashMap::new(),
+            input_sizes: input_sizes.into(),
+            output_sizes: output_sizes.into(),
+        }
+    }
+
+    /// Add a named weight payload from raw bytes.
+    pub fn with_weight_bytes(
+        mut self,
+        name: impl Into<String>,
+        data: impl Into<Vec<u8>>,
+    ) -> Self {
+        self.weights.insert(name.into(), data.into());
+        self
+    }
+
+    /// Add a named ANE weight blob to the request.
+    pub fn with_weight_blob(
+        self,
+        name: impl Into<String>,
+        blob: &crate::ane::WeightBlob,
+    ) -> Self {
+        self.with_weight_bytes(name, blob.as_bytes().to_vec())
+    }
+
+    /// Extend the request with multiple named raw weight payloads.
+    pub fn with_weights<I, N, D>(mut self, weights: I) -> Self
+    where
+        I: IntoIterator<Item = (N, D)>,
+        N: Into<String>,
+        D: Into<Vec<u8>>,
+    {
+        for (name, data) in weights {
+            self.weights.insert(name.into(), data.into());
+        }
+        self
+    }
+
     /// Compile MIL code and weights into an ANE kernel
     ///
     /// # Errors
@@ -659,9 +819,31 @@ impl ANECompileRequest {
     /// - The MIL code is invalid
     /// - Compilation fails on the ANE
     pub fn compile(self) -> crate::Result<crate::wrapper::ANEExecutor> {
-        // TODO: Implement actual ANE compilation
-        // This will use the low-level ane_bridge_compile FFI
-        Err(crate::Error::Other("ANE compilation not yet implemented".to_string()))
+        let _runtime = crate::wrapper::ANERuntime::init()?;
+        let mut compiler = crate::wrapper::ANECompiler::new();
+
+        if self.weights.is_empty() {
+            return compiler.compile_single(
+                &self.mil_text,
+                None,
+                &self.input_sizes,
+                &self.output_sizes,
+            );
+        }
+
+        let sorted_weights = sort_named_weights(self.weights);
+        let weight_names: Vec<&str> = sorted_weights.iter().map(|(name, _)| name.as_str()).collect();
+        let weight_datas: Vec<&[u8]> = sorted_weights.iter().map(|(_, data)| data.as_slice()).collect();
+        let weight_lens: Vec<usize> = weight_datas.iter().map(|data| data.len()).collect();
+
+        compiler.compile_multi(
+            &self.mil_text,
+            &weight_names,
+            &weight_datas,
+            &weight_lens,
+            &self.input_sizes,
+            &self.output_sizes,
+        )
     }
 }
 
@@ -695,5 +877,116 @@ pub fn ane_init() -> crate::Result<()> {
         Ok(())
     } else {
         Err(crate::Error::from(crate::ane::ANEError::FrameworkNotFound))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sort_named_weights, ANECompileRequest};
+    use crate::ane::WeightBlob;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_sort_named_weights_orders_by_name() {
+        let mut weights = HashMap::new();
+        weights.insert("@model_path/weights/wk.bin".to_string(), vec![2u8; 2]);
+        weights.insert("@model_path/weights/wq.bin".to_string(), vec![1u8; 3]);
+        weights.insert("@model_path/weights/wv.bin".to_string(), vec![3u8; 1]);
+
+        let sorted = sort_named_weights(weights);
+        let names: Vec<&str> = sorted.iter().map(|(name, _)| name.as_str()).collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "@model_path/weights/wk.bin",
+                "@model_path/weights/wq.bin",
+                "@model_path/weights/wv.bin",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sort_named_weights_preserves_payloads() {
+        let mut weights = HashMap::new();
+        weights.insert("@model_path/weights/wq.bin".to_string(), vec![1u8, 2, 3]);
+        weights.insert("@model_path/weights/wk.bin".to_string(), vec![4u8, 5]);
+
+        let sorted = sort_named_weights(weights);
+
+        assert_eq!(sorted[0].0, "@model_path/weights/wk.bin");
+        assert_eq!(sorted[0].1, vec![4u8, 5]);
+        assert_eq!(sorted[1].0, "@model_path/weights/wq.bin");
+        assert_eq!(sorted[1].1, vec![1u8, 2, 3]);
+    }
+
+    #[test]
+    fn test_compile_request_clone_preserves_weights() {
+        let mut weights = HashMap::new();
+        weights.insert("@model_path/weights/w.bin".to_string(), vec![7u8; 4]);
+        let request = ANECompileRequest {
+            mil_text: "program(1.0) { }".to_string(),
+            weights,
+            input_sizes: vec![16],
+            output_sizes: vec![16],
+        };
+
+        let cloned = request.clone();
+        assert_eq!(cloned.mil_text, request.mil_text);
+        assert_eq!(cloned.input_sizes, request.input_sizes);
+        assert_eq!(cloned.output_sizes, request.output_sizes);
+        assert_eq!(cloned.weights.get("@model_path/weights/w.bin"), Some(&vec![7u8; 4]));
+    }
+
+    #[test]
+    fn test_compile_request_builder_starts_empty() {
+        let request = ANECompileRequest::new("program(1.0) { }", vec![16], vec![8]);
+
+        assert_eq!(request.mil_text, "program(1.0) { }");
+        assert!(request.weights.is_empty());
+        assert_eq!(request.input_sizes, vec![16]);
+        assert_eq!(request.output_sizes, vec![8]);
+    }
+
+    #[test]
+    fn test_compile_request_with_weight_bytes() {
+        let request = ANECompileRequest::new("program(1.0) { }", vec![16], vec![8])
+            .with_weight_bytes("@model_path/weights/w.bin", vec![1u8, 2, 3]);
+
+        assert_eq!(
+            request.weights.get("@model_path/weights/w.bin"),
+            Some(&vec![1u8, 2, 3])
+        );
+    }
+
+    #[test]
+    fn test_compile_request_with_weight_blob() {
+        let blob = WeightBlob::from_f32(&[1.0f32, 2.0, 3.0, 4.0], 2, 2).unwrap();
+        let request = ANECompileRequest::new("program(1.0) { }", vec![16], vec![8])
+            .with_weight_blob("@model_path/weights/w.bin", &blob);
+
+        assert_eq!(
+            request.weights.get("@model_path/weights/w.bin"),
+            Some(&blob.as_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn test_compile_request_with_weights_overwrites_by_name() {
+        let request = ANECompileRequest::new("program(1.0) { }", vec![16], vec![8]).with_weights([
+            ("@model_path/weights/wq.bin", vec![1u8, 2]),
+            ("@model_path/weights/wk.bin", vec![3u8]),
+            ("@model_path/weights/wq.bin", vec![4u8, 5, 6]),
+        ]);
+
+        assert_eq!(request.weights.len(), 2);
+        assert_eq!(
+            request.weights.get("@model_path/weights/wq.bin"),
+            Some(&vec![4u8, 5, 6])
+        );
+        assert_eq!(
+            request.weights.get("@model_path/weights/wk.bin"),
+            Some(&vec![3u8])
+        );
     }
 }

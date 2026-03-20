@@ -34,6 +34,16 @@ pub trait Model: Send {
     /// Returns error if backward pass fails (gradient computation, NaN/Inf, etc.)
     fn backward(&mut self, loss: f32) -> Result<Vec<f32>>;
 
+    /// Batch-aware backward pass.
+    ///
+    /// Models that cache forward activations and need target context can override
+    /// this hook. The default behavior falls back to `backward(loss)` for older
+    /// implementations.
+    fn backward_with_batch(&mut self, batch: &Batch, loss: f32) -> Result<Vec<f32>> {
+        let _ = batch;
+        self.backward(loss)
+    }
+
     /// Get mutable reference to model parameters
     ///
     /// Used by optimizer to update weights in-place.

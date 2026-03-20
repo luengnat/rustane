@@ -2,7 +2,12 @@
 //!
 //! Provides safe wrappers for creating ANE-compatible weight blobs.
 
-use crate::sys::{ane_bridge_build_weight_blob, ane_bridge_build_weight_blob_transposed};
+use crate::ane::blobs::quantize_f32_per_row;
+use crate::sys::{
+    ane_bridge_build_weight_blob, ane_bridge_build_weight_blob_int8,
+    ane_bridge_build_weight_blob_quantized, ane_bridge_build_weight_blob_transposed,
+    ane_bridge_free_blob,
+};
 use crate::{Error, Result};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -45,7 +50,7 @@ pub fn reset_leaked_bytes() {
 ///
 /// # Safety
 ///
-/// Weight blobs are allocated by the C bridge and must be explicitly freed.
+/// Weight blobs are allocated by the ANE bridge layer and must be explicitly freed.
 /// This struct handles cleanup via Drop.
 pub struct WeightBlob {
     ptr: *mut u8,
@@ -53,6 +58,16 @@ pub struct WeightBlob {
 }
 
 impl WeightBlob {
+    fn validate_scale(scale: f32) -> Result<()> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(Error::InvalidParameter(format!(
+                "quantization scale must be finite and positive, got {}",
+                scale
+            )));
+        }
+        Ok(())
+    }
+
     /// Create a weight blob from FP32 data
     ///
     /// # Arguments
@@ -126,29 +141,94 @@ impl WeightBlob {
         Ok(WeightBlob { ptr, len: out_len })
     }
 
-    // Note: INT8 and quantized weight blobs are not yet implemented in the C bridge
-    // These functions are stubbed for future implementation
-
-    /// Create an INT8 weight blob (not yet implemented)
-    ///
-    /// This function currently returns an error as the underlying C bridge
-    /// does not yet support INT8 weight blobs.
+    /// Create an INT8 weight blob from pre-quantized data.
     #[allow(dead_code)]
-    pub fn from_int8(_data: &[i8], _rows: i32, _cols: i32) -> Result<Self> {
-        Err(Error::CompilationFailed(
-            "INT8 weight blobs not yet implemented in C bridge".to_string(),
-        ))
+    pub fn from_int8(data: &[i8], rows: i32, cols: i32) -> Result<Self> {
+        let mut out_len = 0;
+        let ptr =
+            unsafe { ane_bridge_build_weight_blob_int8(data.as_ptr(), rows, cols, &mut out_len) };
+
+        if ptr.is_null() {
+            return Err(Error::CompilationFailed(
+                "Failed to build INT8 weight blob".to_string(),
+            ));
+        }
+
+        TOTAL_LEAKED_BYTES.fetch_add(out_len, Ordering::Relaxed);
+
+        Ok(WeightBlob { ptr, len: out_len })
     }
 
-    /// Create a quantized weight blob from FP32 data (not yet implemented)
+    /// Create a quantized weight blob from FP32 data.
     ///
-    /// This function currently returns an error as the underlying C bridge
-    /// does not yet support quantized weight blobs.
+    /// This convenience API is only valid for single-row tensors because it
+    /// returns a single scale. Multi-row quantized tensors need one scale per
+    /// row and should use [`WeightBlob::from_fp32_quantized_per_row`].
     #[allow(dead_code)]
-    pub fn from_fp32_quantized(_data: &[f32], _rows: i32, _cols: i32) -> Result<(Self, f32)> {
-        Err(Error::CompilationFailed(
-            "Quantized weight blobs not yet implemented in C bridge".to_string(),
-        ))
+    pub fn from_fp32_quantized(data: &[f32], rows: i32, cols: i32) -> Result<(Self, f32)> {
+        if rows != 1 {
+            return Err(Error::InvalidParameter(
+                "from_fp32_quantized returns a single scale and is only valid for single-row tensors; use from_fp32_quantized_per_row for multi-row weights".to_string(),
+            ));
+        }
+
+        let mut out_len = 0;
+        let mut out_scale = 0.0f32;
+        let ptr = unsafe {
+            ane_bridge_build_weight_blob_quantized(
+                data.as_ptr(),
+                rows,
+                cols,
+                &mut out_scale,
+                &mut out_len,
+            )
+        };
+
+        if ptr.is_null() {
+            return Err(Error::CompilationFailed(
+                "Failed to build quantized weight blob".to_string(),
+            ));
+        }
+
+        Self::validate_scale(out_scale)?;
+        TOTAL_LEAKED_BYTES.fetch_add(out_len, Ordering::Relaxed);
+
+        Ok((WeightBlob { ptr, len: out_len }, out_scale))
+    }
+
+    /// Create a quantized weight blob from FP32 data and return one scale per row.
+    #[allow(dead_code)]
+    pub fn from_fp32_quantized_per_row(
+        data: &[f32],
+        rows: i32,
+        cols: i32,
+    ) -> Result<(Self, Vec<f32>)> {
+        if rows <= 0 || cols <= 0 {
+            return Err(Error::InvalidParameter(format!(
+                "rows and cols must be positive, got rows={}, cols={}",
+                rows, cols
+            )));
+        }
+
+        let rows_usize = rows as usize;
+        let cols_usize = cols as usize;
+        let expected = rows_usize.saturating_mul(cols_usize);
+        if data.len() != expected {
+            return Err(Error::InvalidTensorShape(format!(
+                "weight count mismatch: expected {}, got {}",
+                expected,
+                data.len()
+            )));
+        }
+
+        let (quantized, scales) = quantize_f32_per_row(data, rows_usize, cols_usize);
+        for &scale in &scales {
+            Self::validate_scale(scale)?;
+        }
+
+        let blob = Self::from_int8(&quantized, rows, cols)?;
+
+        Ok((blob, scales))
     }
 
     /// Get the blob data as a byte slice
@@ -172,9 +252,7 @@ impl Drop for WeightBlob {
         // Decrement leaked bytes counter if this blob wasn't already freed
         if !self.ptr.is_null() {
             TOTAL_LEAKED_BYTES.fetch_sub(self.len, Ordering::Relaxed);
-            // Note: ane_bridge_free_blob is not yet implemented in the C bridge
-            // The memory will be cleaned up when the program exits
-            // TODO: Call ane_bridge_free_blob once it's available
+            unsafe { ane_bridge_free_blob(self.ptr.cast()) };
             self.ptr = std::ptr::null_mut();
         }
     }
@@ -248,16 +326,33 @@ mod tests {
     }
 
     #[test]
-    fn test_weight_blob_int8_not_implemented() {
+    fn test_weight_blob_int8() {
         let weights = vec![0i8; 256 * 512];
-        let result = WeightBlob::from_int8(&weights, 256, 512);
-        assert!(matches!(result, Err(Error::CompilationFailed(_))));
+        let blob = WeightBlob::from_int8(&weights, 256, 512).unwrap();
+        assert_eq!(blob.len(), 64 + (256 * 512));
     }
 
     #[test]
-    fn test_weight_blob_quantized_not_implemented() {
+    fn test_weight_blob_quantized_single_row() {
+        let weights = vec![1.0f32; 512];
+        let (blob, scale) = WeightBlob::from_fp32_quantized(&weights, 1, 512).unwrap();
+        assert_eq!(blob.len(), 64 + 512);
+        assert!(scale > 0.0);
+    }
+
+    #[test]
+    fn test_weight_blob_quantized_per_row() {
+        let weights = vec![1.0f32; 256 * 512];
+        let (blob, scales) = WeightBlob::from_fp32_quantized_per_row(&weights, 256, 512).unwrap();
+        assert_eq!(blob.len(), 64 + (256 * 512));
+        assert_eq!(scales.len(), 256);
+        assert!(scales.iter().all(|scale| *scale > 0.0));
+    }
+
+    #[test]
+    fn test_weight_blob_quantized_rejects_multi_row_single_scale() {
         let weights = vec![1.0f32; 256 * 512];
         let result = WeightBlob::from_fp32_quantized(&weights, 256, 512);
-        assert!(matches!(result, Err(Error::CompilationFailed(_))));
+        assert!(matches!(result, Err(Error::InvalidParameter(_))));
     }
 }

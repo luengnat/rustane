@@ -6,7 +6,9 @@ use std::collections::HashMap;
 /// Profile report containing profiling statistics
 #[derive(Clone, Debug)]
 pub struct ProfileReport {
+    /// Host-side memory usage summary.
     pub memory_usage: MemoryStats,
+    /// ANE compilation and execution counters.
     pub ane_stats: ANEStats,
 }
 
@@ -23,9 +25,13 @@ impl std::fmt::Display for ProfileReport {
 /// Memory usage statistics
 #[derive(Clone, Debug)]
 pub struct MemoryStats {
+    /// Total bytes tracked across all categories.
     pub total_bytes: usize,
+    /// Bytes attributed to tensor storage.
     pub tensor_memory: usize,
+    /// Bytes attributed to gradients.
     pub gradient_memory: usize,
+    /// Bytes attributed to miscellaneous allocations.
     pub other_memory: usize,
 }
 
@@ -42,8 +48,11 @@ impl std::fmt::Display for MemoryStats {
 /// ANE execution statistics
 #[derive(Clone, Debug)]
 pub struct ANEStats {
+    /// Number of kernel compilations issued in-process.
     pub compile_count: usize,
+    /// Number of ANE evaluations issued.
     pub execution_count: usize,
+    /// Total model parameters associated with the profile.
     pub total_parameters: usize,
 }
 
@@ -187,8 +196,11 @@ impl Default for ANEProfiler {
 /// Data type for size calculation
 #[derive(Clone, Copy, Debug)]
 pub enum DataType {
+    /// 32-bit floating point values.
     FP32,
+    /// 16-bit floating point values.
     FP16,
+    /// 8-bit signed integer values.
     INT8,
 }
 

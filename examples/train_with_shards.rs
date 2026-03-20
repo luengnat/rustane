@@ -6,8 +6,8 @@
 //! - Chunking batches and training with gradient accumulation
 //! - Integration with parameter-golf datasets
 //!
-//! Note: The SimpleModel is intentionally minimal to show the data pipeline.
-//! For realistic training, integrate with actual transformer models.
+//! This example now uses a real tiny causal-attention model with manual
+//! backward gradients so the training loop exercises actual learning.
 
 use rustane::data::{
     Batch, DataLoader, Dataset, JsonlDataset, RandomSampler, ShardConfig, ShardedDataLoader,
@@ -51,10 +51,10 @@ fn main() -> Result<()> {
         println!("Source count: {}", bin_files.len());
         println!("Max steps: {}\n", max_steps);
 
-        let mut model = SimpleModel::new(32);
+        let mut model = TinyAttentionLanguageModel::new(1024, 32, 512);
         let mut trainer = TrainerBuilder::new(&mut model)
-            .with_optimizer(SimpleOptimizer::new(0.5))
-            .with_scheduler(ConstantScheduler::new(0.5))
+            .with_optimizer(SimpleOptimizer::new(0.001))
+            .with_scheduler(ConstantScheduler::new(0.001))
             .with_loss_fn(CrossEntropyLoss::new())
             .build()?;
 
@@ -132,10 +132,10 @@ fn main() -> Result<()> {
 
     println!("Discovered {} shard(s)\n", loader.shard_count());
 
-    let mut model = SimpleModel::new(32);
+    let mut model = TinyAttentionLanguageModel::new(1024, 32, 512);
     let mut trainer = TrainerBuilder::new(&mut model)
-        .with_optimizer(SimpleOptimizer::new(0.5))
-        .with_scheduler(ConstantScheduler::new(0.5))
+        .with_optimizer(SimpleOptimizer::new(0.001))
+        .with_scheduler(ConstantScheduler::new(0.001))
         .with_loss_fn(CrossEntropyLoss::new())
         .build()?;
 
@@ -501,112 +501,336 @@ fn write_shard(path: &Path, samples: &[Vec<u32>]) -> Result<()> {
     Ok(())
 }
 
-/// Simple logits-based model: directly learns per-token-per-prediction logits
-pub struct SimpleModel {
-    /// Logits: [vocab_size] values that directly predict probabilities
-    /// For simplicity, uses same logits for all tokens in a batch
+#[derive(Clone, Debug)]
+struct TinyAttentionCache {
+    tokens: Vec<u32>,
+    batch_size: usize,
+    seq_len: usize,
+    x: Vec<f32>,
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    context: Vec<f32>,
     logits: Vec<f32>,
-    vocab_size: usize,
-    /// Store last batch tokens for gradient computation
-    last_tokens: Option<Vec<u32>>,
-    /// Store last expanded logits for gradient computation
-    last_expanded_logits: Option<Vec<f32>>,
+    probs: Vec<Vec<Vec<f32>>>,
 }
 
-impl SimpleModel {
-    fn new(_hidden_dim: usize) -> Self {
-        let vocab_size = 1024; // SentencePiece sp1024
+#[derive(Clone, Debug)]
+struct ParamRanges {
+    token_embed: std::ops::Range<usize>,
+    pos_embed: std::ops::Range<usize>,
+    wq: std::ops::Range<usize>,
+    wk: std::ops::Range<usize>,
+    wv: std::ops::Range<usize>,
+    wo: std::ops::Range<usize>,
+}
 
-        // Initialize logits to uniform distribution (will give loss = ln(vocab_size))
-        let logits = vec![0.0f32; vocab_size];
+/// Small causal-attention language model with real next-token gradients.
+///
+/// This is intentionally small enough to train on CPU while still exercising
+/// token embeddings, QKV projections, causal attention, and output projection.
+pub struct TinyAttentionLanguageModel {
+    params: Vec<f32>,
+    ranges: ParamRanges,
+    vocab_size: usize,
+    d_model: usize,
+    max_seq_len: usize,
+    cache: Option<TinyAttentionCache>,
+}
+
+impl TinyAttentionLanguageModel {
+    fn new(vocab_size: usize, d_model: usize, max_seq_len: usize) -> Self {
+        let token_embed = vocab_size * d_model;
+        let pos_embed = max_seq_len * d_model;
+        let wq = d_model * d_model;
+        let wk = d_model * d_model;
+        let wv = d_model * d_model;
+        let wo = d_model * vocab_size;
+        let total = token_embed + pos_embed + 3 * d_model * d_model + wo;
+
+        let mut params = vec![0.0f32; total];
+        for (i, p) in params.iter_mut().enumerate() {
+            let scale = 0.02f32;
+            *p = ((i as f32) * 0.013).sin() * scale;
+        }
+
+        let ranges = ParamRanges {
+            token_embed: 0..token_embed,
+            pos_embed: token_embed..token_embed + pos_embed,
+            wq: token_embed + pos_embed..token_embed + pos_embed + wq,
+            wk: token_embed + pos_embed + wq..token_embed + pos_embed + wq + wk,
+            wv: token_embed + pos_embed + wq + wk..token_embed + pos_embed + wq + wk + wv,
+            wo: token_embed + pos_embed + 3 * d_model * d_model..total,
+        };
 
         Self {
-            logits,
+            params,
+            ranges,
             vocab_size,
-            last_tokens: None,
-            last_expanded_logits: None,
+            d_model,
+            max_seq_len,
+            cache: None,
         }
+    }
+
+    fn slice(&self, r: &std::ops::Range<usize>) -> &[f32] {
+        &self.params[r.clone()]
+    }
+
+    fn softmax(values: &[f32]) -> Vec<f32> {
+        let max_val = values.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let mut exps: Vec<f32> = values.iter().map(|&x| (x - max_val).exp()).collect();
+        let sum: f32 = exps.iter().sum();
+        if sum > 0.0 {
+            for x in &mut exps {
+                *x /= sum;
+            }
+        }
+        exps
+    }
+
+    fn matmul_row(input: &[f32], weights: &[f32], in_dim: usize, out_dim: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; out_dim];
+        for o in 0..out_dim {
+            let mut sum = 0.0f32;
+            for i in 0..in_dim {
+                sum += input[i] * weights[i * out_dim + o];
+            }
+            out[o] = sum;
+        }
+        out
+    }
+
+    fn add_outer(grad: &mut [f32], input: &[f32], output_grad: &[f32], in_dim: usize, out_dim: usize) {
+        for i in 0..in_dim {
+            for o in 0..out_dim {
+                grad[i * out_dim + o] += input[i] * output_grad[o];
+            }
+        }
+    }
+
+    fn matmul_row_t(output_grad: &[f32], weights: &[f32], in_dim: usize, out_dim: usize) -> Vec<f32> {
+        let mut out = vec![0.0f32; in_dim];
+        for i in 0..in_dim {
+            let mut sum = 0.0f32;
+            for o in 0..out_dim {
+                sum += output_grad[o] * weights[i * out_dim + o];
+            }
+            out[i] = sum;
+        }
+        out
     }
 }
 
-impl Model for SimpleModel {
+impl Model for TinyAttentionLanguageModel {
     fn forward(&mut self, batch: &Batch) -> Result<ANETensor> {
         let tokens = batch.tokens();
-        let num_tokens = tokens.len();
-        let vocab_size = self.vocab_size;
-
-        // Store tokens for backward pass
-        self.last_tokens = Some(tokens.to_vec());
-
-        // Expanded logits: replicate learned logits for each token
-        // (simplified version that allows proper gradient flow)
-        let mut expanded_logits = Vec::with_capacity(num_tokens * vocab_size);
-        for _ in 0..num_tokens {
-            expanded_logits.extend_from_slice(&self.logits);
+        let batch_size = batch.batch_size();
+        let seq_len = batch.seq_len();
+        if seq_len < 2 {
+            return Err(rustane::Error::Other("seq_len must be at least 2".to_string()));
+        }
+        if seq_len > self.max_seq_len {
+            return Err(rustane::Error::Other(format!(
+                "seq_len {} exceeds max_seq_len {}",
+                seq_len, self.max_seq_len
+            )));
+        }
+        if tokens.len() != batch_size * seq_len {
+            return Err(rustane::Error::Other("batch token shape mismatch".to_string()));
         }
 
-        // Store for backward pass
-        self.last_expanded_logits = Some(expanded_logits.clone());
+        let d = self.d_model;
+        let vocab = self.vocab_size;
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let token_embed = self.slice(&self.ranges.token_embed);
+        let pos_embed = self.slice(&self.ranges.pos_embed);
+        let wq = self.slice(&self.ranges.wq);
+        let wk = self.slice(&self.ranges.wk);
+        let wv = self.slice(&self.ranges.wv);
+        let wo = self.slice(&self.ranges.wo);
 
-        ANETensor::from_fp32(expanded_logits, vec![num_tokens, self.vocab_size])
-    }
+        let mut x = vec![0.0f32; batch_size * seq_len * d];
+        let mut q = vec![0.0f32; batch_size * seq_len * d];
+        let mut k = vec![0.0f32; batch_size * seq_len * d];
+        let mut v = vec![0.0f32; batch_size * seq_len * d];
+        let mut context = vec![0.0f32; batch_size * (seq_len - 1) * d];
+        let mut logits = vec![0.0f32; batch_size * (seq_len - 1) * vocab];
+        let mut probs = vec![vec![vec![]; seq_len - 1]; batch_size];
 
-    fn backward(&mut self, _loss: f32) -> Result<Vec<f32>> {
-        // REAL gradient computation: dL/dlogits = softmax(logits) - one_hot(target)
-        // This is the actual gradient from cross-entropy loss!
-        //
-        // KEY: Different gradient for each logit enables softmax to change, loss to decrease
-        // Without this (all same gradients), softmax is invariant and loss is stuck
+        for b in 0..batch_size {
+            for t in 0..seq_len {
+                let token_id = tokens[b * seq_len + t] as usize % vocab;
+                let x_offset = (b * seq_len + t) * d;
+                let embed_offset = token_id * d;
+                let pos_offset = t * d;
+                for i in 0..d {
+                    x[x_offset + i] = token_embed[embed_offset + i] + pos_embed[pos_offset + i];
+                }
+                let x_row = &x[x_offset..x_offset + d];
+                let q_row = Self::matmul_row(x_row, wq, d, d);
+                let k_row = Self::matmul_row(x_row, wk, d, d);
+                let v_row = Self::matmul_row(x_row, wv, d, d);
+                q[x_offset..x_offset + d].copy_from_slice(&q_row);
+                k[x_offset..x_offset + d].copy_from_slice(&k_row);
+                v[x_offset..x_offset + d].copy_from_slice(&v_row);
+            }
 
-        let tokens = self.last_tokens.as_ref().ok_or_else(|| {
-            rustane::Error::Other("No batch tokens stored".to_string())
-        })?;
+            for t in 0..(seq_len - 1) {
+                let q_row = &q[(b * seq_len + t) * d..(b * seq_len + t + 1) * d];
+                let mut scores = vec![0.0f32; t + 1];
+                for j in 0..=t {
+                    let k_row = &k[(b * seq_len + j) * d..(b * seq_len + j + 1) * d];
+                    let mut score = 0.0f32;
+                    for i in 0..d {
+                        score += q_row[i] * k_row[i];
+                    }
+                    scores[j] = score * scale;
+                }
+                let p = Self::softmax(&scores);
+                probs[b][t] = p.clone();
 
-        let expanded_logits = self.last_expanded_logits.as_ref().ok_or_else(|| {
-            rustane::Error::Other("No logits stored".to_string())
-        })?;
+                let mut ctx = vec![0.0f32; d];
+                for j in 0..=t {
+                    let v_row = &v[(b * seq_len + j) * d..(b * seq_len + j + 1) * d];
+                    for i in 0..d {
+                        ctx[i] += p[j] * v_row[i];
+                    }
+                }
+                let ctx_offset = (b * (seq_len - 1) + t) * d;
+                context[ctx_offset..ctx_offset + d].copy_from_slice(&ctx);
 
-        let mut grad_sum = vec![0.0f32; self.vocab_size];
-        let num_tokens = tokens.len();
-
-        // For each position, compute gradient = softmax - one_hot(target)
-        for pos in 0..num_tokens {
-            let logits_at_pos = &expanded_logits[pos * self.vocab_size..(pos + 1) * self.vocab_size];
-
-            // Compute softmax with numerical stability
-            let max_logit = logits_at_pos.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let exp_logits: Vec<f32> = logits_at_pos.iter()
-                .map(|&x| (x - max_logit).exp())
-                .collect();
-            let sum_exp: f32 = exp_logits.iter().sum();
-
-            // Get target token for next-token prediction
-            let target_idx = if pos + 1 < tokens.len() {
-                (tokens[pos + 1] as usize).min(self.vocab_size - 1)
-            } else {
-                (tokens[pos] as usize).min(self.vocab_size - 1)
-            };
-
-            // Compute gradient: softmax - one_hot(target)
-            for pred_id in 0..self.vocab_size {
-                let softmax_val = exp_logits[pred_id] / sum_exp;
-                let target_val = if pred_id == target_idx { 1.0 } else { 0.0 };
-                grad_sum[pred_id] += (softmax_val - target_val) / num_tokens as f32;
+                let row = Self::matmul_row(&ctx, wo, d, vocab);
+                let logit_offset = (b * (seq_len - 1) + t) * vocab;
+                logits[logit_offset..logit_offset + vocab].copy_from_slice(&row);
             }
         }
 
-        // Scale gradients for stable training (larger scale = faster learning)
-        let grads = grad_sum.iter().map(|&g| g * 1.0).collect();
+        self.cache = Some(TinyAttentionCache {
+            tokens: tokens.to_vec(),
+            batch_size,
+            seq_len,
+            x,
+            q,
+            k,
+            v,
+            context,
+            logits: logits.clone(),
+            probs,
+        });
+
+        ANETensor::from_fp32(logits, vec![batch_size * (seq_len - 1), vocab])
+    }
+
+    fn backward(&mut self, _loss: f32) -> Result<Vec<f32>> {
+        let cache = self
+            .cache
+            .as_ref()
+            .ok_or_else(|| rustane::Error::Other("No forward cache available".to_string()))?;
+
+        let d = self.d_model;
+        let vocab = self.vocab_size;
+        let seq_len = cache.seq_len;
+        let batch_size = cache.batch_size;
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let num_rows = batch_size * (seq_len - 1);
+
+        let mut grads = vec![0.0f32; self.params.len()];
+        let wq = self.slice(&self.ranges.wq).to_vec();
+        let wk = self.slice(&self.ranges.wk).to_vec();
+        let wv = self.slice(&self.ranges.wv).to_vec();
+        let wo = self.slice(&self.ranges.wo).to_vec();
+
+        for b in 0..batch_size {
+            let mut d_q = vec![vec![0.0f32; d]; seq_len - 1];
+            let mut d_k = vec![vec![0.0f32; d]; seq_len];
+            let mut d_v = vec![vec![0.0f32; d]; seq_len];
+
+            for t in 0..(seq_len - 1) {
+                let row_idx = b * (seq_len - 1) + t;
+                let logits = &cache.logits[row_idx * vocab..(row_idx + 1) * vocab];
+                let mut p = Self::softmax(logits);
+                let target = cache.tokens[b * seq_len + t + 1] as usize % vocab;
+                p[target] -= 1.0;
+                let inv_rows = 1.0 / num_rows as f32;
+                for x in &mut p {
+                    *x *= inv_rows;
+                }
+
+                let ctx = &cache.context[row_idx * d..(row_idx + 1) * d];
+                let grad_wo = &mut grads[self.ranges.wo.clone()];
+                Self::add_outer(grad_wo, ctx, &p, d, vocab);
+
+                let d_ctx = Self::matmul_row_t(&p, &wo, d, vocab);
+                let probs = &cache.probs[b][t];
+
+                let mut dot_terms = vec![0.0f32; t + 1];
+                for j in 0..=t {
+                    let v_row = &cache.v[(b * seq_len + j) * d..(b * seq_len + j + 1) * d];
+                    let mut dot = 0.0f32;
+                    for i in 0..d {
+                        dot += d_ctx[i] * v_row[i];
+                    }
+                    dot_terms[j] = dot;
+                    for i in 0..d {
+                        d_v[j][i] += probs[j] * d_ctx[i];
+                    }
+                }
+
+                let mut weighted_dot = 0.0f32;
+                for j in 0..=t {
+                    weighted_dot += dot_terms[j] * probs[j];
+                }
+
+                let q_row = &cache.q[(b * seq_len + t) * d..(b * seq_len + t + 1) * d];
+                for j in 0..=t {
+                    let dscore = probs[j] * (dot_terms[j] - weighted_dot) * scale;
+                    let k_row = &cache.k[(b * seq_len + j) * d..(b * seq_len + j + 1) * d];
+                    for i in 0..d {
+                        d_q[t][i] += dscore * k_row[i];
+                        d_k[j][i] += dscore * q_row[i];
+                    }
+                }
+            }
+
+            for t in 0..(seq_len - 1) {
+                let x_row = &cache.x[(b * seq_len + t) * d..(b * seq_len + t + 1) * d];
+                let token_idx = cache.tokens[b * seq_len + t] as usize % vocab;
+                let pos_idx = t;
+
+                {
+                    let grad_wq = &mut grads[self.ranges.wq.clone()];
+                    Self::add_outer(grad_wq, x_row, &d_q[t], d, d);
+                }
+                {
+                    let grad_wk = &mut grads[self.ranges.wk.clone()];
+                    Self::add_outer(grad_wk, x_row, &d_k[t], d, d);
+                }
+                {
+                    let grad_wv = &mut grads[self.ranges.wv.clone()];
+                    Self::add_outer(grad_wv, x_row, &d_v[t], d, d);
+                }
+
+                let dx_q = Self::matmul_row_t(&d_q[t], &wq, d, d);
+                let dx_k = Self::matmul_row_t(&d_k[t], &wk, d, d);
+                let dx_v = Self::matmul_row_t(&d_v[t], &wv, d, d);
+                for i in 0..d {
+                    let dx = dx_q[i] + dx_k[i] + dx_v[i];
+                    grads[self.ranges.token_embed.start + token_idx * d + i] += dx;
+                    grads[self.ranges.pos_embed.start + pos_idx * d + i] += dx;
+                }
+            }
+        }
 
         Ok(grads)
     }
 
     fn parameters(&mut self) -> &mut [f32] {
-        &mut self.logits
+        &mut self.params
     }
 
     fn param_count(&self) -> usize {
-        self.logits.len()
+        self.params.len()
     }
 }
 

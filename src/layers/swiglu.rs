@@ -242,10 +242,12 @@ impl Layer for SwiGLU {
 pub struct SiLU;
 
 impl SiLU {
+    /// Apply the SiLU activation to a single scalar.
     pub fn forward(x: f32) -> f32 {
         x * (1.0 / (1.0 + (-x).exp()))
     }
 
+    /// Apply the SiLU activation elementwise to a slice.
     pub fn forward_batch(input: &[f32]) -> Vec<f32> {
         input.iter().map(|&x| Self::forward(x)).collect()
     }
@@ -263,6 +265,7 @@ pub struct SwiGLUBuilder {
 }
 
 impl SwiGLUBuilder {
+    /// Create a builder for a SwiGLU block with the given input dimension.
     pub fn new(input_dim: usize) -> Self {
         Self {
             input_dim,
@@ -282,11 +285,13 @@ impl SwiGLUBuilder {
         self
     }
 
+    /// Set a custom display name for the layer.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Build the configured [`SwiGLU`] layer.
     pub fn build(self) -> Result<SwiGLU> {
         let mut swiglu = SwiGLU::with_multiplier(self.input_dim, self.multiplier)?;
         swiglu.name = self.name;

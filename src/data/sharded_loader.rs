@@ -180,6 +180,7 @@ pub struct ShardedDataLoader {
     /// List of shard file paths discovered via glob pattern
     shard_files: Vec<PathBuf>,
     /// Configuration
+    #[allow(dead_code)]
     config: ShardConfig,
 }
 

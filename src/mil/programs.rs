@@ -3,6 +3,7 @@
 //! This module contains commonly used MIL program templates.
 //! Includes templates for linear layers, convolution, and attention ops.
 
+use crate::ane::{ANECompileRequest, WeightBlob as ANEWeightBlob};
 use crate::mil::MILBuilder;
 
 /// Simple linear layer MIL program (backward compat)
@@ -185,6 +186,24 @@ pub fn linear_matmul_mil(seq_len: usize, in_dim: usize, out_dim: usize) -> Strin
     mil
 }
 
+/// Build a compile request for the `linear_matmul_mil` template.
+///
+/// This helper packages the generated MIL text together with the correctly
+/// named ANE weight blob expected by the `BLOBFILE` reference.
+pub fn linear_matmul_compile_request(
+    seq_len: usize,
+    in_dim: usize,
+    out_dim: usize,
+    weights: &ANEWeightBlob,
+) -> ANECompileRequest {
+    ANECompileRequest::new(
+        linear_matmul_mil(seq_len, in_dim, out_dim),
+        vec![in_dim * seq_len * 4],
+        vec![out_dim * seq_len * 4],
+    )
+    .with_weight_blob("@model_path/weights/weight.bin", weights)
+}
+
 /// RMSNorm forward MIL program (program 1.3 format)
 ///
 /// Implements the upstream ANE pattern:
@@ -257,6 +276,24 @@ pub fn rmsnorm_mil(seq_len: usize, dim: usize) -> String {
     mil.push_str("    } -> (y16);\n");
     mil.push_str("}\n");
     mil
+}
+
+/// Build a compile request for the `rmsnorm_mil` template.
+///
+/// The request uses the canonical `@model_path/weights/rms_w.bin` weight name
+/// referenced by the generated MIL.
+pub fn rmsnorm_compile_request(
+    seq_len: usize,
+    dim: usize,
+    weights: &ANEWeightBlob,
+) -> ANECompileRequest {
+    let tensor_bytes = dim * seq_len * 2;
+    ANECompileRequest::new(
+        rmsnorm_mil(seq_len, dim),
+        vec![tensor_bytes],
+        vec![tensor_bytes],
+    )
+    .with_weight_blob("@model_path/weights/rms_w.bin", weights)
 }
 
 /// GQA (Grouped Query Attention) SDPA kernel (program 1.3 format)
@@ -347,6 +384,7 @@ pub fn pg_attention_mil(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ane::WeightBlob as ANEWeightBlob;
 
     #[test]
     fn test_linear_layer_creation() {
@@ -402,6 +440,20 @@ mod tests {
     }
 
     #[test]
+    fn test_linear_matmul_compile_request() {
+        let blob = ANEWeightBlob::from_f32(&vec![1.0f32; 4 * 8], 4, 8).unwrap();
+        let request = linear_matmul_compile_request(16, 8, 4, &blob);
+
+        assert!(request.mil_text.contains("@model_path/weights/weight.bin"));
+        assert_eq!(request.input_sizes, vec![8 * 16 * 4]);
+        assert_eq!(request.output_sizes, vec![4 * 16 * 4]);
+        assert_eq!(
+            request.weights.get("@model_path/weights/weight.bin"),
+            Some(&blob.as_bytes().to_vec())
+        );
+    }
+
+    #[test]
     fn test_gqa_sdpa_mil() {
         let mil = gqa_sdpa_mil(1, 8, 4, 256, 64);
         assert!(mil.contains("program(1.3)"));
@@ -425,5 +477,19 @@ mod tests {
         assert!(mil.contains("reduce_sum"));
         assert!(mil.contains("pow"));
         assert!(mil.contains("rms_w.bin"));
+    }
+
+    #[test]
+    fn test_rmsnorm_compile_request() {
+        let blob = ANEWeightBlob::from_f16(&vec![half::f16::from_f32(1.0); 8], 1, 8).unwrap();
+        let request = rmsnorm_compile_request(32, 8, &blob);
+
+        assert!(request.mil_text.contains("@model_path/weights/rms_w.bin"));
+        assert_eq!(request.input_sizes, vec![8 * 32 * 2]);
+        assert_eq!(request.output_sizes, vec![8 * 32 * 2]);
+        assert_eq!(
+            request.weights.get("@model_path/weights/rms_w.bin"),
+            Some(&blob.as_bytes().to_vec())
+        );
     }
 }

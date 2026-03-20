@@ -1,9 +1,8 @@
 //! Training orchestration for models
 
 use std::fmt;
-use crate::error::Result;
-use crate::wrapper::ANETensor;
 use crate::data::Batch;
+use crate::error::Result;
 use crate::training::model::Model;
 use crate::training::loss::LossFn;
 use crate::training::scheduler::LRScheduler;
@@ -203,8 +202,8 @@ impl<'a, M: Model> Trainer<'a, M> {
                 TrainerError::LossComputationFailed("loss computation failed".to_string()).to_string()
             ))?;
 
-        // 3. Backward: grads = model.backward(loss)
-        let grads = self.model.backward(loss)
+        // 3. Backward: grads = model.backward_with_batch(batch, loss)
+        let grads = self.model.backward_with_batch(batch, loss)
             .map_err(|_| crate::Error::Other(
                 TrainerError::ModelBackwardFailed("backward pass failed".to_string()).to_string()
             ))?;
@@ -307,7 +306,7 @@ impl<'a, M: Model> Trainer<'a, M> {
                 ))?;
 
             // Backward pass
-            let grads = self.model.backward(loss)
+            let grads = self.model.backward_with_batch(&chunk, loss)
                 .map_err(|_| crate::Error::Other(
                     TrainerError::ModelBackwardFailed("backward pass failed".to_string()).to_string()
                 ))?;
@@ -375,6 +374,7 @@ fn compute_l2_norm(grads: &[f32]) -> f32 {
 #[cfg(test)]
 mod builder_tests {
     use super::*;
+    use crate::wrapper::ANETensor;
 
     // Mock types for testing
     struct MockModel {
@@ -497,7 +497,6 @@ mod trainer_tests {
 #[cfg(test)]
 mod accumulated_steps_tests {
     use super::*;
-    use crate::training::GradAccumulator;
     use crate::wrapper::ANETensor;
 
     // Mock types for accumulated steps testing

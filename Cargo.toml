@@ -8,6 +8,11 @@ license = "MIT"
 [dependencies]
 # High-level safe wrappers (added in later phases)
 half = "2.4"
+libc = "0.2"
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSValue", "NSString"] }
+objc2-io-surface = "0.3"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -16,10 +21,6 @@ glob = "0.3"
 # Python bindings (optional, feature-gated)
 pyo3 = { version = "0.23", features = ["extension-module"], optional = true }
 numpy = { version = "0.23", optional = true }
-
-[build-dependencies]
-bindgen = "0.70"
-cc = "1.0"
 
 [features]
 default = []

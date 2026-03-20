@@ -1,8 +1,8 @@
 //! Model trait and inspection utilities
 
 use crate::layers::Shape;
-use crate::wrapper::{ANEExecutor, ANETensor};
-use crate::{Error, Result};
+use crate::wrapper::ANETensor;
+use crate::Result;
 use std::fmt;
 
 /// Information about a single layer in a model

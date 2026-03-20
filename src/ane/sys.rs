@@ -31,6 +31,25 @@ pub(crate) unsafe fn ane_bridge_build_weight_blob_transposed(
     super::blobs::build_weight_blob_transposed(src, rows, cols, out_len)
 }
 
+pub(crate) unsafe fn ane_bridge_build_weight_blob_int8(
+    src: *const i8,
+    rows: c_int,
+    cols: c_int,
+    out_len: *mut usize,
+) -> *mut u8 {
+    super::blobs::build_weight_blob_int8(src, rows, cols, out_len)
+}
+
+pub(crate) unsafe fn ane_bridge_build_weight_blob_quantized(
+    src: *const f32,
+    rows: c_int,
+    cols: c_int,
+    out_scale: *mut f32,
+    out_len: *mut usize,
+) -> *mut u8 {
+    super::blobs::build_weight_blob_quantized(src, rows, cols, out_scale, out_len)
+}
+
 pub(crate) unsafe fn ane_bridge_free_blob(ptr: *mut c_void) {
     super::blobs::free_blob(ptr)
 }

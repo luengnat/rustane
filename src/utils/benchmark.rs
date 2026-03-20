@@ -1,15 +1,19 @@
 //! Benchmarking utilities for measuring inference performance
 
 use crate::wrapper::ANEExecutor;
-use crate::{Error, Result};
+use crate::Result;
 use std::time::{Duration, Instant};
 
 /// Results from a benchmark run
 #[derive(Clone, Debug)]
 pub struct BenchmarkResults {
+    /// Total wall-clock time across all benchmark iterations.
     pub total_time: Duration,
+    /// Average per-iteration runtime.
     pub avg_time: Duration,
+    /// Effective throughput in samples per second.
     pub throughput_samples_per_sec: f64,
+    /// Number of timed benchmark iterations.
     pub num_iterations: usize,
 }
 

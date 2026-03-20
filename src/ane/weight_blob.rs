@@ -1,21 +1,61 @@
-//! Weight blob builders for ANE-compatible formats
+//! Weight blob builders for ANE-compatible formats.
 //!
-//! Provides builders for creating ANE-compatible weight blobs in various formats:
-//! FP32, FP16, int8, and quantized formats.
+//! These wrappers expose the same blob encodings used by the crate's internal
+//! ANE bridge code so the public API and runtime share a single source of
+//! truth.
 
+use crate::ane::blobs::{
+    encode_fp16_blob_from_f16, encode_fp16_blob_from_f32, encode_int8_blob, quantize_f32_per_row,
+};
 use crate::ane::{ANEError, Result};
 
 /// ANE-formatted weight blob
 ///
 /// Provides memory layout compatible with ANE kernel operations.
-/// Format: [global_header (64 bytes)][chunk_header (64 bytes)][data]
 #[derive(Clone)]
 pub struct WeightBlob(Vec<u8>);
 
 impl WeightBlob {
+    fn validate_shape(actual: usize, rows: usize, cols: usize) -> Result<()> {
+        let expected = rows.saturating_mul(cols);
+        if actual != expected {
+            return Err(ANEError::WeightBlobError(format!(
+                "weight count mismatch: expected {}, got {}",
+                expected, actual
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_scale(scale: f32) -> Result<()> {
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(ANEError::WeightBlobError(format!(
+                "quantization scale must be finite and positive, got {}",
+                scale
+            )));
+        }
+        Ok(())
+    }
+
+    fn validate_per_row_scales(scales: &[f32], rows: usize) -> Result<()> {
+        if scales.len() != rows {
+            return Err(ANEError::WeightBlobError(format!(
+                "scale count mismatch: expected {}, got {}",
+                rows,
+                scales.len()
+            )));
+        }
+
+        for &scale in scales {
+            Self::validate_scale(scale)?;
+        }
+
+        Ok(())
+    }
+
     /// Build blob from FP32 weights
     ///
-    /// Creates a weight blob with proper ANE layout from FP32 data.
+    /// Encodes the weights into ANE's fp16 blob format.
     ///
     /// # Arguments
     ///
@@ -36,33 +76,13 @@ impl WeightBlob {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn from_f32(weights: &[f32], rows: usize, cols: usize) -> Result<Self> {
-        if weights.len() != rows * cols {
-            return Err(ANEError::WeightBlobError(format!(
-                "weight count mismatch: expected {}, got {}",
-                rows * cols,
-                weights.len()
-            )));
-        }
-
-        let mut blob = Vec::new();
-
-        // Global header (64 bytes, zeros for now)
-        blob.extend_from_slice(&[0u8; 64]);
-
-        // Chunk header (64 bytes, zeros for now)
-        blob.extend_from_slice(&[0u8; 64]);
-
-        // FP32 data
-        for &w in weights {
-            blob.extend_from_slice(&w.to_le_bytes());
-        }
-
-        Ok(WeightBlob(blob))
+        Self::validate_shape(weights.len(), rows, cols)?;
+        Ok(WeightBlob(encode_fp16_blob_from_f32(weights, rows, cols)))
     }
 
     /// Build blob from FP16 weights
     ///
-    /// Creates a weight blob with proper ANE layout from FP16 data.
+    /// Encodes the weights into ANE's fp16 blob format.
     ///
     /// # Arguments
     ///
@@ -84,34 +104,14 @@ impl WeightBlob {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn from_f16(weights: &[half::f16], rows: usize, cols: usize) -> Result<Self> {
-        if weights.len() != rows * cols {
-            return Err(ANEError::WeightBlobError(format!(
-                "weight count mismatch: expected {}, got {}",
-                rows * cols,
-                weights.len()
-            )));
-        }
-
-        let mut blob = Vec::new();
-
-        // Global header (64 bytes, zeros for now)
-        blob.extend_from_slice(&[0u8; 64]);
-
-        // Chunk header (64 bytes, zeros for now)
-        blob.extend_from_slice(&[0u8; 64]);
-
-        // FP16 data
-        for &w in weights {
-            blob.extend_from_slice(&w.to_le_bytes());
-        }
-
-        Ok(WeightBlob(blob))
+        Self::validate_shape(weights.len(), rows, cols)?;
+        Ok(WeightBlob(encode_fp16_blob_from_f16(weights, rows, cols)))
     }
 
     /// Quantize FP32 weights to int8 and build blob
     ///
-    /// Performs per-row quantization from FP32 to int8, storing quantization
-    /// scales for later dequantization.
+    /// Performs per-row quantization from FP32 to int8 and returns the ANE int8
+    /// blob alongside one scale per row.
     ///
     /// # Arguments
     ///
@@ -144,56 +144,20 @@ impl WeightBlob {
         rows: usize,
         cols: usize,
     ) -> Result<(Self, Vec<f32>)> {
-        if weights.len() != rows * cols {
-            return Err(ANEError::WeightBlobError(format!(
-                "weight count mismatch: expected {}, got {}",
-                rows * cols,
-                weights.len()
-            )));
-        }
-
-        let mut scales = Vec::with_capacity(rows);
-        let mut quantized = Vec::with_capacity(rows * cols);
-
-        // Per-row quantization
-        for row in 0..rows {
-            let row_start = row * cols;
-            let row_end = row_start + cols;
-            let row_weights = &weights[row_start..row_end];
-
-            // Find max absolute value
-            let max_abs = row_weights
-                .iter()
-                .map(|w| w.abs())
-                .fold(0.0f32, f32::max)
-                .max(1e-6); // Avoid division by zero
-
-            let scale = max_abs / 127.0;
-            scales.push(scale);
-
-            // Quantize to int8
-            for &w in row_weights {
-                let q = ((w / scale).round() as i8) as u8;
-                quantized.push(q);
-            }
-        }
-
-        let mut blob = Vec::new();
-        blob.extend_from_slice(&[0u8; 64]); // Global header
-        blob.extend_from_slice(&[0u8; 64]); // Chunk header
-        blob.extend_from_slice(&quantized);
-
-        Ok((WeightBlob(blob), scales))
+        Self::validate_shape(weights.len(), rows, cols)?;
+        let (quantized, scales) = quantize_f32_per_row(weights, rows, cols);
+        Ok((WeightBlob(encode_int8_blob(&quantized, rows, cols)), scales))
     }
 
-    /// Build blob from quantized int8 weights with provided scale
+    /// Build blob from quantized int8 weights with per-row scales.
     ///
-    /// Creates a weight blob from pre-quantized int8 weights and their scale factor.
+    /// The blob stores only the quantized payload, so callers must keep the
+    /// returned scales alongside the blob for any later dequantization.
     ///
     /// # Arguments
     ///
     /// * `weights` - Pre-quantized int8 weight values
-    /// * `scale` - Quantization scale (dequantized value = q * scale)
+    /// * `scales` - One positive quantization scale per row
     /// * `rows` - Number of rows in the weight matrix
     /// * `cols` - Number of columns in the weight matrix
     ///
@@ -206,32 +170,39 @@ impl WeightBlob {
     /// ```no_run
     /// # use rustane::ane::WeightBlob;
     /// let weights = vec![1i8, 2, 3, 4];
-    /// let blob = WeightBlob::from_i8_quantized(&weights, 0.5, 2, 2)?;
+    /// let scales = vec![0.5, 0.25];
+    /// let blob = WeightBlob::from_i8_quantized_per_row(&weights, &scales, 2, 2)?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn from_i8_quantized(
+    pub fn from_i8_quantized_per_row(
         weights: &[i8],
-        _scale: f32,
+        scales: &[f32],
         rows: usize,
         cols: usize,
     ) -> Result<Self> {
-        if weights.len() != rows * cols {
-            return Err(ANEError::WeightBlobError(format!(
-                "weight count mismatch: expected {}, got {}",
-                rows * cols,
-                weights.len()
-            )));
+        Self::validate_shape(weights.len(), rows, cols)?;
+        Self::validate_per_row_scales(scales, rows)?;
+        Ok(WeightBlob(encode_int8_blob(weights, rows, cols)))
+    }
+
+    /// Build blob from quantized int8 weights with a single scale.
+    ///
+    /// This helper is only valid for single-row tensors. Multi-row quantized
+    /// tensors require one scale per row and should use
+    /// [`WeightBlob::from_i8_quantized_per_row`].
+    pub fn from_i8_quantized(
+        weights: &[i8],
+        scale: f32,
+        rows: usize,
+        cols: usize,
+    ) -> Result<Self> {
+        if rows != 1 {
+            return Err(ANEError::WeightBlobError(
+                "from_i8_quantized accepts a single scale and is only valid for single-row tensors; use from_i8_quantized_per_row for multi-row weights".into(),
+            ));
         }
-
-        let mut blob = Vec::new();
-        blob.extend_from_slice(&[0u8; 64]); // Global header
-        blob.extend_from_slice(&[0u8; 64]); // Chunk header
-
-        for &w in weights {
-            blob.push(w as u8);
-        }
-
-        Ok(WeightBlob(blob))
+        Self::validate_scale(scale)?;
+        Self::from_i8_quantized_per_row(weights, &[scale], rows, cols)
     }
 
     /// Get the blob data as a byte slice
@@ -269,8 +240,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        // Header is 128 bytes (64 + 64), data is 16 bytes (4 * 4)
-        assert_eq!(bytes.len(), 128 + 16);
+        assert_eq!(bytes.len(), 128 + 8);
     }
 
     #[test]
@@ -312,8 +282,7 @@ mod tests {
         assert!(scales[1] > 0.0);
 
         let bytes = blob.as_ref();
-        // Header is 128 bytes, data is 4 bytes (4 * 1)
-        assert_eq!(bytes.len(), 128 + 4);
+        assert_eq!(bytes.len(), 64 + 4);
     }
 
     #[test]
@@ -343,16 +312,40 @@ mod tests {
     #[test]
     fn test_weight_blob_from_i8_quantized_basic() {
         let weights = vec![1i8, 2, 3, 4];
-        let blob = WeightBlob::from_i8_quantized(&weights, 0.5, 2, 2).unwrap();
+        let blob = WeightBlob::from_i8_quantized_per_row(&weights, &[0.5, 0.25], 2, 2).unwrap();
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 4);
+        assert_eq!(bytes.len(), 64 + 4);
     }
 
     #[test]
     fn test_weight_blob_from_i8_quantized_shape_mismatch() {
         let weights = vec![1i8, 2, 3];
+        let result = WeightBlob::from_i8_quantized_per_row(&weights, &[0.5, 0.25], 2, 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_weight_blob_from_i8_quantized_single_row() {
+        let weights = vec![1i8, 2, 3, 4];
+        let blob = WeightBlob::from_i8_quantized(&weights, 0.5, 1, 4).unwrap();
+
+        assert_eq!(blob.len(), 64 + 4);
+    }
+
+    #[test]
+    fn test_weight_blob_from_i8_quantized_rejects_multi_row_single_scale() {
+        let weights = vec![1i8, 2, 3, 4];
         let result = WeightBlob::from_i8_quantized(&weights, 0.5, 2, 2);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_weight_blob_from_i8_quantized_rejects_invalid_scales() {
+        let weights = vec![1i8, 2, 3, 4];
+        let result = WeightBlob::from_i8_quantized_per_row(&weights, &[0.5, 0.0], 2, 2);
+
         assert!(result.is_err());
     }
 
@@ -380,7 +373,7 @@ mod tests {
         let blob = WeightBlob::from_f32(&weights, 256, 512).unwrap();
 
         let bytes = blob.as_ref();
-        let expected_size = 128 + (256 * 512 * 4);
+        let expected_size = 128 + (256 * 512 * 2);
         assert_eq!(bytes.len(), expected_size);
     }
 
@@ -395,7 +388,7 @@ mod tests {
         assert!(scales[1] > 0.0);
 
         let bytes = blob.as_ref();
-        assert_eq!(bytes.len(), 128 + 4);
+        assert_eq!(bytes.len(), 64 + 4);
     }
 
     #[test]

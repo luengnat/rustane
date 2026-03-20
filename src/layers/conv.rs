@@ -1,7 +1,6 @@
 //! Convolutional (Conv2d) layer
 
-use crate::layers::traits::{Layer, LayerBuilder, Shape, WeightsLayer};
-use crate::wrapper::ANEExecutor;
+use crate::layers::traits::{Layer, Shape, WeightsLayer};
 use crate::{Error, Result};
 
 /// Convolutional layer configuration
@@ -11,10 +10,14 @@ pub struct Conv2d {
     in_channels: usize,
     out_channels: usize,
     kernel_size: (usize, usize),
+    #[allow(dead_code)]
     stride: (usize, usize),
+    #[allow(dead_code)]
     padding: (usize, usize, usize, usize),
     has_bias: bool,
+    #[allow(dead_code)]
     weight_data: Option<Vec<f32>>,
+    #[allow(dead_code)]
     bias_data: Option<Vec<f32>>,
     input_shape: Shape,
     output_shape: Shape,
@@ -104,7 +107,9 @@ pub struct Conv2dBuilder {
     stride: (usize, usize),
     padding: (usize, usize, usize, usize),
     has_bias: bool,
+    #[allow(dead_code)]
     weight_init: Option<Vec<f32>>,
+    #[allow(dead_code)]
     bias_init: Option<Vec<f32>>,
 }
 

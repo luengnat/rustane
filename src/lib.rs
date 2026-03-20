@@ -58,7 +58,10 @@ pub use layers::{LayerInfo, Model, ModelSummary, Sequential, SequentialBuilder};
 pub use layers::{
     MultiHeadAttention, MultiHeadAttentionBuilder, SelfAttention, SelfAttentionBuilder,
 };
-pub use mil::{rmsnorm_mil, total_leaked_bytes, LinearLayer, MILBuilder, WeightBlob};
+pub use mil::{
+    linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil, total_leaked_bytes,
+    LinearLayer, MILBuilder, WeightBlob,
+};
 pub use platform::ANEAvailability;
 pub use training::{
     ConstantScheduler, CrossEntropyLoss, GradAccumulator, LRScheduler, LossFn, LossScaler,

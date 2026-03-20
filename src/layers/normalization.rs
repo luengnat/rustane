@@ -300,6 +300,7 @@ pub struct LayerNormBuilder {
 }
 
 impl LayerNormBuilder {
+    /// Create a builder for a LayerNorm with the given normalized size.
     pub fn new(normalized_shape: usize) -> Self {
         Self {
             normalized_shape,
@@ -308,16 +309,19 @@ impl LayerNormBuilder {
         }
     }
 
+    /// Override the epsilon used for numerical stability.
     pub fn with_epsilon(mut self, epsilon: f32) -> Self {
         self.epsilon = epsilon;
         self
     }
 
+    /// Set a custom display name for the layer.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Build the configured [`LayerNorm`].
     pub fn build(self) -> Result<LayerNorm> {
         let mut norm = LayerNorm::with_epsilon(self.normalized_shape, self.epsilon)?;
         norm.name = self.name;
@@ -333,6 +337,7 @@ pub struct RMSNormBuilder {
 }
 
 impl RMSNormBuilder {
+    /// Create a builder for an RMSNorm with the given normalized size.
     pub fn new(normalized_shape: usize) -> Self {
         Self {
             normalized_shape,
@@ -341,16 +346,19 @@ impl RMSNormBuilder {
         }
     }
 
+    /// Override the epsilon used for numerical stability.
     pub fn with_epsilon(mut self, epsilon: f32) -> Self {
         self.epsilon = epsilon;
         self
     }
 
+    /// Set a custom display name for the layer.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// Build the configured [`RMSNorm`].
     pub fn build(self) -> Result<RMSNorm> {
         let mut norm = RMSNorm::with_epsilon(self.normalized_shape, self.epsilon)?;
         norm.name = self.name;
