@@ -30,7 +30,8 @@
 //!
 //! // Iterate over batches
 //! for batch in dataloader.iter() {
-//!     println!(\"Batch shape: {:?}\", batch?.shape());
+//!     let _batch = batch?;
+//!     println!("Batch: {:?}", _batch.shape());
 //! }
 //! # Ok::<(), rustane::Error>(())
 //! ```

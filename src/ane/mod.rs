@@ -22,6 +22,10 @@
 //! }
 //! "#;
 //!
+//! // Prepare input data
+//! let input_a = vec![1.0f32; 32];
+//! let input_b = vec![2.0f32; 32];
+//!
 //! // Compile and execute
 //! let mut kernel = ANECompileRequest::new(mil_code, vec![32*4], vec![32*4])
 //!     .compile()
@@ -31,8 +35,8 @@
 //! kernel.write_input(1, &input_b).unwrap();
 //! kernel.eval().unwrap();
 //!
-//! let mut output = vec![0f32; 32];
-//! kernel.read_output(0, &mut output).unwrap();
+//! let mut output_bytes = vec![0u8; 32*4];
+//! kernel.read_output(0, &mut output_bytes).unwrap();
 //! ```
 //!
 //! # Architecture
