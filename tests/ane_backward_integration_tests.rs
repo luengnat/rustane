@@ -368,48 +368,48 @@ fn test_gradient_accumulation_across_chunks() {
 
 #[test]
 fn test_ane_backward_with_timing() {
-    use rustane::training::{TransformerANE, TransformerConfig, Model, ANEGradientAccumulator};
-    
+    use rustane::training::{ANEGradientAccumulator, Model, TransformerANE, TransformerConfig};
+
     let config = TransformerConfig::new(256, 128, 512, 8, 4, 128).unwrap();
     let mut model = TransformerANE::new(&config).unwrap();
-    
+
     let batch = test_batch(4, 64);
     let _out = model.forward(&batch).unwrap();
-    
+
     let mut accum = ANEGradientAccumulator::from_config(&config).unwrap();
     let result = model.backward_on_ane(&batch, 1.0, &mut accum);
-    
+
     assert!(result.is_ok(), "ANE backward should succeed");
     assert!(!accum.is_empty(), "Gradients should be accumulated");
 }
 
 #[test]
 fn test_ane_backward_gradient_correctness() {
-    use rustane::training::{TransformerANE, TransformerConfig, Model, ANEGradientAccumulator};
-    
+    use rustane::training::{ANEGradientAccumulator, Model, TransformerANE, TransformerConfig};
+
     let config = TransformerConfig::new(256, 64, 256, 4, 2, 64).unwrap();
     let mut model_ane = TransformerANE::new(&config).unwrap();
     let mut model_cpu = TransformerANE::new(&config).unwrap();
-    
+
     // Same initial weights
     let weights: Vec<f32> = model_ane.parameters().to_vec();
     model_cpu.parameters().copy_from_slice(&weights);
-    
+
     let batch = test_batch(2, 32);
     let _ = model_ane.forward(&batch).unwrap();
     let _ = model_cpu.forward(&batch).unwrap();
-    
+
     // ANE backward
     let mut accum_ane = ANEGradientAccumulator::from_config(&config).unwrap();
     let _ = model_ane.backward_on_ane(&batch, 1.0, &mut accum_ane);
-    
+
     // CPU backward
     let grads_cpu = model_cpu.backward_with_batch(&batch, 1.0).unwrap();
-    
+
     // Verify ANE produced gradients
     let grads_ane = accum_ane.get_accumulated().expect("ANE gradients");
     assert_eq!(grads_ane.len(), grads_cpu.len());
-    
+
     // Check non-zero gradients match roughly
     let mut nonzero_match = 0;
     let mut nonzero_total = 0;
@@ -421,10 +421,14 @@ fn test_ane_backward_gradient_correctness() {
             }
         }
     }
-    
+
     // At least some gradients should match within 50% tolerance
     if nonzero_total > 0 {
         let match_rate = nonzero_match as f32 / nonzero_total as f32;
-        assert!(match_rate > 0.1, "Gradient match rate {} too low", match_rate);
+        assert!(
+            match_rate > 0.1,
+            "Gradient match rate {} too low",
+            match_rate
+        );
     }
 }

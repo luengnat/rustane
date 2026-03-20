@@ -50,6 +50,101 @@ impl GradientCheckpointingConfig {
     }
 }
 
+/// Mixed precision training configuration.
+///
+/// Specifies the data type used for forward/backward pass computations.
+/// Master weights are always stored in FP32 for numerical stability.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Precision {
+    /// Full 32-bit floating point (default, best numerical stability)
+    #[default]
+    Fp32,
+    /// 16-bit floating point (half precision, 2x memory savings)
+    Fp16,
+    /// 16-bit brain floating point (2x memory savings, better dynamic range than FP16)
+    Bf16,
+}
+
+impl Precision {
+    /// Get the number of bytes per element for this precision
+    pub fn bytes_per_element(&self) -> usize {
+        match self {
+            Self::Fp32 => 4,
+            Self::Fp16 | Self::Bf16 => 2,
+        }
+    }
+
+    /// Check if this is a reduced precision format
+    pub fn is_reduced(&self) -> bool {
+        match self {
+            Self::Fp32 => false,
+            Self::Fp16 | Self::Bf16 => true,
+        }
+    }
+
+    /// Get memory savings factor compared to FP32 (0.0 = no savings, 0.5 = 50% savings)
+    pub fn memory_savings_factor(&self) -> f32 {
+        match self {
+            Self::Fp32 => 0.0,
+            Self::Fp16 | Self::Bf16 => 0.5,
+        }
+    }
+}
+
+/// Mixed precision training configuration
+#[derive(Clone, Debug, Default)]
+pub struct MixedPrecisionConfig {
+    /// Enable mixed precision training
+    pub enabled: bool,
+    /// Target precision for forward/backward computations
+    pub precision: Precision,
+    /// Enable dynamic loss scaling (for FP16 to prevent gradient underflow)
+    pub use_loss_scaling: bool,
+    /// Initial loss scale (only used if use_loss_scaling is true)
+    pub initial_loss_scale: f32,
+}
+
+impl MixedPrecisionConfig {
+    /// Create a new mixed precision configuration
+    pub fn new(precision: Precision) -> Self {
+        let is_fp16 = precision == Precision::Fp16;
+        Self {
+            enabled: precision != Precision::Fp32,
+            precision,
+            use_loss_scaling: is_fp16,
+            initial_loss_scale: 256.0,
+        }
+    }
+
+    /// Create an FP32 (full precision) configuration
+    pub fn full_precision() -> Self {
+        Self::new(Precision::Fp32)
+    }
+
+    /// Create an FP16 mixed precision configuration
+    pub fn fp16() -> Self {
+        Self::new(Precision::Fp16)
+    }
+
+    /// Create a BF16 mixed precision configuration
+    pub fn bf16() -> Self {
+        Self::new(Precision::Bf16)
+    }
+
+    /// Check if mixed precision is enabled
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && self.precision != Precision::Fp32
+    }
+
+    /// Calculate memory savings factor for activations
+    pub fn activation_savings_factor(&self) -> f32 {
+        if !self.is_enabled() {
+            return 0.0;
+        }
+        self.precision.memory_savings_factor()
+    }
+}
+
 /// Transformer model configuration
 ///
 /// Defines the architecture of a transformer model with validation for ANE compatibility.
@@ -76,6 +171,8 @@ pub struct TransformerConfig {
     pub logit_softcap: f32,
     /// Gradient checkpointing configuration for memory-efficient training.
     pub gradient_checkpointing: GradientCheckpointingConfig,
+    /// Mixed precision training configuration.
+    pub mixed_precision: MixedPrecisionConfig,
 }
 
 impl TransformerConfig {
@@ -142,6 +239,7 @@ impl TransformerConfig {
             tie_embeddings: false,
             logit_softcap: 30.0,
             gradient_checkpointing: GradientCheckpointingConfig::disabled(),
+            mixed_precision: MixedPrecisionConfig::full_precision(),
         })
     }
 
@@ -156,6 +254,24 @@ impl TransformerConfig {
         gradient_checkpointing: GradientCheckpointingConfig,
     ) -> Self {
         self.gradient_checkpointing = gradient_checkpointing;
+        self
+    }
+
+    /// Set mixed precision configuration.
+    pub fn with_mixed_precision(mut self, mixed_precision: MixedPrecisionConfig) -> Self {
+        self.mixed_precision = mixed_precision;
+        self
+    }
+
+    /// Enable FP16 mixed precision training with loss scaling.
+    pub fn with_fp16(mut self) -> Self {
+        self.mixed_precision = MixedPrecisionConfig::fp16();
+        self
+    }
+
+    /// Enable BF16 mixed precision training.
+    pub fn with_bf16(mut self) -> Self {
+        self.mixed_precision = MixedPrecisionConfig::bf16();
         self
     }
 

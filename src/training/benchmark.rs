@@ -24,7 +24,7 @@ impl BackwardBenchmark {
             ane_used: false,
         }
     }
-    
+
     pub fn record_times(&mut self, ane_time: Duration, cpu_time: Duration) {
         self.ane_time_ms = ane_time.as_secs_f64() * 1000.0;
         self.cpu_time_ms = cpu_time.as_secs_f64() * 1000.0;
@@ -35,9 +35,10 @@ impl BackwardBenchmark {
         };
         self.ane_used = true;
     }
-    
+
     pub fn print(&self) {
-        println!("{:<10} {:>8}M params | ANE: {:>8.2}ms | CPU: {:>8.2}ms | Speedup: {:>6.2}x {}",
+        println!(
+            "{:<10} {:>8}M params | ANE: {:>8.2}ms | CPU: {:>8.2}ms | Speedup: {:>6.2}x {}",
             self.config_name,
             self.param_count / 1_000_000,
             self.ane_time_ms,
@@ -51,19 +52,28 @@ impl BackwardBenchmark {
 /// Run benchmarks across multiple configurations
 pub fn run_benchmarks() -> Vec<BackwardBenchmark> {
     use crate::data::Batch;
-    use crate::training::{TransformerANE, TransformerConfig, Model, ANEGradientAccumulator};
-    
+    use crate::training::{ANEGradientAccumulator, Model, TransformerANE, TransformerConfig};
+
     let configs = vec![
-        ("Tiny", TransformerConfig::new(256, 32, 128, 2, 1, 32).unwrap()),
-        ("Small", TransformerConfig::new(512, 64, 256, 4, 2, 64).unwrap()),
-        ("Medium", TransformerConfig::new(1024, 128, 512, 8, 4, 128).unwrap()),
+        (
+            "Tiny",
+            TransformerConfig::new(256, 32, 128, 2, 1, 32).unwrap(),
+        ),
+        (
+            "Small",
+            TransformerConfig::new(512, 64, 256, 4, 2, 64).unwrap(),
+        ),
+        (
+            "Medium",
+            TransformerConfig::new(1024, 128, 512, 8, 4, 128).unwrap(),
+        ),
     ];
-    
+
     let mut results = Vec::new();
-    
+
     for (name, config) in configs {
         let mut benchmark = BackwardBenchmark::new(name, config.param_count());
-        
+
         let mut model = match TransformerANE::new(&config) {
             Ok(m) => m,
             Err(e) => {
@@ -72,9 +82,13 @@ pub fn run_benchmarks() -> Vec<BackwardBenchmark> {
                 continue;
             }
         };
-        
+
         let batch_size = 4.min(128 / config.seq_len);
-        let batch = match Batch::new(vec![0u32; batch_size * config.seq_len], batch_size, config.seq_len) {
+        let batch = match Batch::new(
+            vec![0u32; batch_size * config.seq_len],
+            batch_size,
+            config.seq_len,
+        ) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("Failed to create batch: {:?}", e);
@@ -82,10 +96,10 @@ pub fn run_benchmarks() -> Vec<BackwardBenchmark> {
                 continue;
             }
         };
-        
+
         // Warmup
         let _ = model.forward(&batch);
-        
+
         // ANE backward
         let mut ane_times = Vec::new();
         for _ in 0..5 {
@@ -98,7 +112,7 @@ pub fn run_benchmarks() -> Vec<BackwardBenchmark> {
             let _ = model.backward_on_ane(&batch, 1.0, &mut accum);
             ane_times.push(start.elapsed());
         }
-        
+
         // CPU backward
         let mut cpu_times = Vec::new();
         for _ in 0..5 {
@@ -107,21 +121,21 @@ pub fn run_benchmarks() -> Vec<BackwardBenchmark> {
             let _ = model.backward_with_batch(&batch, 1.0);
             cpu_times.push(start.elapsed());
         }
-        
+
         let ane_avg = ane_times.iter().sum::<Duration>() / ane_times.len() as u32;
         let cpu_avg = cpu_times.iter().sum::<Duration>() / cpu_times.len() as u32;
-        
+
         benchmark.record_times(ane_avg, cpu_avg);
         results.push(benchmark);
     }
-    
+
     results
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_benchmark_creation() {
         let bench = BackwardBenchmark::new("Test", 1000000);
@@ -130,14 +144,11 @@ mod tests {
         assert_eq!(bench.speedup, 1.0);
         assert!(!bench.ane_used);
     }
-    
+
     #[test]
     fn test_benchmark_record_times() {
         let mut bench = BackwardBenchmark::new("Test", 1000000);
-        bench.record_times(
-            Duration::from_millis(50),
-            Duration::from_millis(100),
-        );
+        bench.record_times(Duration::from_millis(50), Duration::from_millis(100));
         assert!(bench.ane_used);
         assert!((bench.ane_time_ms - 50.0).abs() < 0.1);
         assert!((bench.cpu_time_ms - 100.0).abs() < 0.1);

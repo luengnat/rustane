@@ -24,9 +24,9 @@
 //! ```
 
 use rustane::data::Batch;
-use rustane::TrainingModel;
-use rustane::training::{LossScaler, TransformerANE, TransformerConfig};
 use rustane::training::transformer_config::GradientCheckpointingConfig;
+use rustane::training::{LossScaler, TransformerANE, TransformerConfig};
+use rustane::TrainingModel;
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,9 +40,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_layers = 4;
     let seq_len = 64;
 
-    let config = TransformerConfig::new(
-        vocab_size, dim, hidden_dim, n_heads, n_layers, seq_len,
-    )?;
+    let config = TransformerConfig::new(vocab_size, dim, hidden_dim, n_heads, n_layers, seq_len)?;
 
     println!("Configuration:");
     println!("  Layers: {}", n_layers);
@@ -59,7 +57,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Memory Usage:");
     println!("  FP32 weights:     {} MB", fp32_memory_mb);
     println!("  FP16 weights:     {} MB", fp16_memory_mb);
-    println!("  Memory saved:     {} MB ({:.1}%)\n", memory_saved_mb, 50.0);
+    println!(
+        "  Memory saved:     {} MB ({:.1}%)\n",
+        memory_saved_mb, 50.0
+    );
 
     // Create model with gradient checkpointing for additional memory savings
     let config_with_checkpointing = config

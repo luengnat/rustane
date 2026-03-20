@@ -269,14 +269,16 @@ pub use ane_backward_kernel::{ANEBackwardKernel, ANEBackwardKernelCache};
 pub use ane_gradient_buffer::ANEGradientBuffer;
 pub use backend::{CpuTrainingBackend, TrainingBackend};
 pub use benchmark::BackwardBenchmark;
-pub use checkpoint::{checkpoint_filename, Checkpoint, LossScalerState, ModelConfig, OptimizerState};
+pub use checkpoint::{
+    checkpoint_filename, Checkpoint, LossScalerState, ModelConfig, OptimizerState,
+};
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
 pub use loss_scale::LossScaler;
 pub use model::Model;
 pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
 pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
-pub use transformer_config::TransformerConfig;
+pub use transformer_config::{MixedPrecisionConfig, Precision, TransformerConfig};
 pub use transformer_model::{
     ane_forward_block_summary, ParameterGroup, ParameterGroupKind, TransformerANE,
 };

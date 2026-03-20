@@ -18,10 +18,12 @@
 //! cargo run --example distributed_training
 //! ```
 
-use rustane::ane::{detect_ane_devices, get_optimal_device_count, per_device_batch_size, MultiANEConfig};
+use rustane::ane::{
+    detect_ane_devices, get_optimal_device_count, per_device_batch_size, MultiANEConfig,
+};
 use rustane::data::Batch;
+use rustane::training::{TransformerANE, TransformerConfig};
 use rustane::TrainingModel;
-use rustane::training::{TransformerConfig, TransformerANE};
 use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,7 +35,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Device Detection ---");
     println!("  Available ANE devices: {}", devices.len());
     for (i, device) in devices.iter().enumerate() {
-        println!("    Device {}: {} (~{} MB)", i, device.name, device.available_memory_mb);
+        println!(
+            "    Device {}: {} (~{} MB)",
+            i, device.name, device.available_memory_mb
+        );
     }
     println!();
 
@@ -46,7 +51,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("--- Model Configuration ---");
     println!("  Parameters: {}", config.param_count());
-    println!("  Memory per ANE: ~{} MB", estimate_model_memory_mb(&config));
+    println!(
+        "  Memory per ANE: ~{} MB",
+        estimate_model_memory_mb(&config)
+    );
     println!();
 
     // Demonstrate batch distribution
@@ -72,7 +80,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n--- Scaling Analysis ---");
-    println!("Theoretical speedup with {} ANEs: {:.1}x", num_devices, num_devices as f32 * 0.85);
+    println!(
+        "Theoretical speedup with {} ANEs: {:.1}x",
+        num_devices,
+        num_devices as f32 * 0.85
+    );
     println!("  (85% efficiency due to communication overhead)");
     println!();
     println!("Real-world considerations:");
@@ -111,7 +123,10 @@ fn simulate_distributed_training(
         let token_start = device_id * per_device_batch * config.seq_len;
         let token_end = (device_id + 1) * per_device_batch * config.seq_len;
 
-        println!("    Device {}: tokens[{}..{}]", device_id, token_start, token_end);
+        println!(
+            "    Device {}: tokens[{}..{}]",
+            device_id, token_start, token_end
+        );
 
         // Simulate model creation and forward pass
         let mut model = TransformerANE::new(config)?;

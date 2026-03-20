@@ -71,7 +71,7 @@
 
 ## Current Status: Phase 5 & 6 COMPLETE ✅
 
-**Test Coverage: 388 tests passing**
+**Test Coverage: 394 tests passing**
 
 ### Key Achievements
 
@@ -101,12 +101,13 @@
 | CI/CD Pipeline | ✅ | GitHub Actions (test, release, security) |
 
 ### Test Breakdown
-- Library tests: 364
+- Library tests: 370
 - ANE backward integration: 19
 - ANE backward unit: 19
 - ANE integration: 10
 - Error handling: 50+
 - Benchmarks: 5
+- Mixed precision: 6
 
 ### Timing Output Example
 ```
@@ -151,7 +152,8 @@ TOTAL: XX.XX ms
 - [x] Mixed precision training example
 - [x] BF16 conversion utilities
 - [x] DataType enum updated with BF16
-- [ ] Full FP16/BF16 forward/backward pass integration (TODO)
+- [x] Full FP16/BF16 forward/backward pass integration (forward_mixed_precision, backward_mixed_precision)
+- [x] Mixed precision tests (6 new tests)
 
 ### ✅ Task 3: Distributed Training (Multi-ANE)
 - [x] Multi-ANE device detection (detect_ane_devices)

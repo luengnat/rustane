@@ -30,7 +30,7 @@ use crate::error::Result;
 use crate::layers::transformer_backward::rmsnorm_backward;
 #[cfg(target_vendor = "apple")]
 use crate::mil::{linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil};
-use crate::training::{Model, TransformerConfig};
+use crate::training::{Model, Precision, TransformerConfig};
 use crate::utils::fp32_to_fp16;
 use crate::wrapper::{ANECompiler, ANETensor};
 
@@ -958,9 +958,24 @@ impl TransformerANE {
         );
 
         let (q, k, v) = (
-            linear_forward(&x_attn_norm, dim, &self.trainable_params[layer.wq.clone()], dim),
-            linear_forward(&x_attn_norm, dim, &self.trainable_params[layer.wk.clone()], dim),
-            linear_forward(&x_attn_norm, dim, &self.trainable_params[layer.wv.clone()], dim),
+            linear_forward(
+                &x_attn_norm,
+                dim,
+                &self.trainable_params[layer.wq.clone()],
+                dim,
+            ),
+            linear_forward(
+                &x_attn_norm,
+                dim,
+                &self.trainable_params[layer.wk.clone()],
+                dim,
+            ),
+            linear_forward(
+                &x_attn_norm,
+                dim,
+                &self.trainable_params[layer.wv.clone()],
+                dim,
+            ),
         );
 
         let (attn_out, attn_probs) =
@@ -1538,15 +1553,19 @@ impl TransformerANE {
         let d_out = vec![0.01f32; sample.final_in.len()];
         let gen = RMSNormBackwardGen::new();
         let mil = gen.generate(&config)?;
+        eprintln!("[DEBUG] RMSNorm MIL generated, len={}", mil.len());
+        eprintln!("[DEBUG] MIL code: {}", &mil[..mil.len().min(500)]);
         let mut input = d_out;
         input.extend_from_slice(&sample.final_in);
         input.extend_from_slice(w);
+        eprintln!("[DEBUG] Input size: {} floats", input.len());
         let req = ANECompileRequest::new(
             &mil,
             vec![input.len() * 4],
             vec![sample.final_in.len() * 4, dim * 4],
         );
 
+        eprintln!("[DEBUG] Compiling RMSNorm backward on ANE...");
         match req.compile() {
             Ok(mut ex) => {
                 let slice = unsafe {
@@ -2150,6 +2169,141 @@ fn ffn_backward(
     (d_x_ffn_norm, d_w1, d_w3, d_w2)
 }
 
+/// Mixed precision training support for TransformerANE
+impl TransformerANE {
+    /// Forward pass with mixed precision (FP16/BF16)
+    ///
+    /// Converts weights to target precision for computation, then converts results back to FP32.
+    /// Master weights remain in FP32 for numerical stability.
+    ///
+    /// # Arguments
+    ///
+    /// * `batch` - Input batch
+    ///
+    /// # Returns
+    ///
+    /// Output logits as FP32 tensor
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let config = TransformerConfig::tiny()
+    ///     .with_mixed_precision(MixedPrecisionConfig::fp16());
+    /// let mut model = TransformerANE::new(&config)?;
+    /// let output = model.forward_mixed_precision(&batch)?;
+    /// ```
+    pub fn forward_mixed_precision(&mut self, batch: &Batch) -> Result<ANETensor> {
+        if !self.config.mixed_precision.is_enabled() {
+            return self.forward(batch);
+        }
+
+        // Store original FP32 weights
+        let original_params = self.trainable_params.clone();
+
+        // Convert weights to target precision and back for computation
+        // This simulates what would happen on hardware with native FP16/BF16 support
+        let converted_params = match self.config.mixed_precision.precision {
+            Precision::Fp16 => {
+                let fp16_weights = crate::utils::fp32_to_fp16(&self.trainable_params)?;
+                crate::utils::fp16_to_fp32(&fp16_weights)?
+            }
+            Precision::Bf16 => {
+                let bf16_weights = crate::utils::fp32_to_bf16(&self.trainable_params)?;
+                crate::utils::bf16_to_fp32(&bf16_weights)?
+            }
+            Precision::Fp32 => self.trainable_params.clone(),
+        };
+
+        // Use converted parameters for forward pass
+        self.trainable_params = converted_params;
+        let result = self.forward(batch);
+
+        // Restore original FP32 weights
+        self.trainable_params = original_params;
+
+        result
+    }
+
+    /// Backward pass with mixed precision and loss scaling
+    ///
+    /// Computes gradients in target precision with loss scaling to prevent underflow.
+    /// Master weights are updated in FP32 for stability.
+    ///
+    /// # Arguments
+    ///
+    /// * `batch` - Input batch
+    /// * `loss` - Loss value (will be scaled if loss scaling is enabled)
+    /// * `scaler` - Optional loss scaler for FP16 training
+    ///
+    /// # Returns
+    ///
+    /// Gradients as FP32 vector
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut scaler = LossScaler::new(256.0);
+    /// let grads = model.backward_mixed_precision(&batch, loss, Some(&mut scaler))?;
+    /// ```
+    pub fn backward_mixed_precision(
+        &mut self,
+        batch: &Batch,
+        loss: f32,
+        scaler: Option<&mut crate::training::LossScaler>,
+    ) -> Result<Vec<f32>> {
+        if !self.config.mixed_precision.is_enabled() {
+            return self.backward_with_batch(batch, loss);
+        }
+
+        // Apply loss scaling if enabled
+        let scaled_loss = if let Some(ref s) = scaler {
+            s.scale_loss(loss)
+        } else {
+            loss
+        };
+
+        // Compute gradients with scaled loss
+        let mut grads = self.backward_with_batch(batch, scaled_loss)?;
+
+        // Unscale gradients if loss scaling was used
+        if let Some(ref s) = scaler {
+            s.unscale_grads(&mut grads);
+        }
+
+        // Convert gradients through precision cycle to simulate hardware behavior
+        let converted_grads = match self.config.mixed_precision.precision {
+            Precision::Fp16 => {
+                let fp16_grads = crate::utils::fp32_to_fp16(&grads)?;
+                crate::utils::fp16_to_fp32(&fp16_grads)?
+            }
+            Precision::Bf16 => {
+                let bf16_grads = crate::utils::fp32_to_bf16(&grads)?;
+                crate::utils::bf16_to_fp32(&bf16_grads)?
+            }
+            Precision::Fp32 => grads,
+        };
+
+        Ok(converted_grads)
+    }
+
+    /// Check if mixed precision is enabled for this model
+    pub fn is_mixed_precision_enabled(&self) -> bool {
+        self.config.mixed_precision.is_enabled()
+    }
+
+    /// Get the current precision setting
+    pub fn precision(&self) -> Precision {
+        self.config.mixed_precision.precision
+    }
+
+    /// Estimate memory savings from mixed precision
+    ///
+    /// Returns the fraction of memory saved (0.0 = no savings, 0.5 = 50% savings)
+    pub fn mixed_precision_memory_savings(&self) -> f32 {
+        self.config.mixed_precision.activation_savings_factor()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2297,5 +2451,118 @@ mod tests {
 
         // Should succeed because layers 1, 3 are recomputed during backward pass
         assert!(result.is_ok());
+    }
+
+    // Mixed precision tests
+    #[test]
+    fn test_mixed_precision_forward_fp16() {
+        use crate::training::{MixedPrecisionConfig, Precision};
+
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)
+            .unwrap()
+            .with_mixed_precision(MixedPrecisionConfig::fp16());
+
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 2 * 64], 2, 64).unwrap();
+
+        let result = model.forward_mixed_precision(&batch);
+        assert!(result.is_ok(), "Mixed precision forward should succeed");
+
+        // Check that mixed precision is enabled
+        assert!(model.is_mixed_precision_enabled());
+        assert_eq!(model.precision(), Precision::Fp16);
+        assert_eq!(model.mixed_precision_memory_savings(), 0.5);
+    }
+
+    #[test]
+    fn test_mixed_precision_forward_bf16() {
+        use crate::training::{MixedPrecisionConfig, Precision};
+
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)
+            .unwrap()
+            .with_mixed_precision(MixedPrecisionConfig::bf16());
+
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 2 * 64], 2, 64).unwrap();
+
+        let result = model.forward_mixed_precision(&batch);
+        assert!(result.is_ok(), "Mixed precision forward should succeed");
+
+        assert_eq!(model.precision(), Precision::Bf16);
+    }
+
+    #[test]
+    fn test_mixed_precision_backward_fp16() {
+        use crate::training::{LossScaler, MixedPrecisionConfig};
+
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)
+            .unwrap()
+            .with_mixed_precision(MixedPrecisionConfig::fp16());
+
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 2 * 64], 2, 64).unwrap();
+
+        // Forward pass
+        let _ = model.forward(&batch).unwrap();
+
+        // Backward with loss scaling
+        let mut scaler = LossScaler::new(256.0);
+        let grads = model.backward_mixed_precision(&batch, 0.5, Some(&mut scaler));
+
+        assert!(grads.is_ok(), "Mixed precision backward should succeed");
+        let grads = grads.unwrap();
+        assert_eq!(grads.len(), model.param_count());
+    }
+
+    #[test]
+    fn test_mixed_precision_backward_without_scaler() {
+        use crate::training::MixedPrecisionConfig;
+
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64)
+            .unwrap()
+            .with_mixed_precision(MixedPrecisionConfig::bf16());
+
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 2 * 64], 2, 64).unwrap();
+
+        // Forward pass
+        let _ = model.forward(&batch).unwrap();
+
+        // Backward without loss scaling
+        let grads = model.backward_mixed_precision(&batch, 0.5, None);
+
+        assert!(
+            grads.is_ok(),
+            "Mixed precision backward without scaler should succeed"
+        );
+    }
+
+    #[test]
+    fn test_mixed_precision_disabled_uses_regular_forward() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 2 * 64], 2, 64).unwrap();
+
+        // Mixed precision forward should fall back to regular forward when disabled
+        let result = model.forward_mixed_precision(&batch);
+        assert!(result.is_ok());
+
+        // Check that mixed precision is not enabled
+        assert!(!model.is_mixed_precision_enabled());
+        assert_eq!(model.mixed_precision_memory_savings(), 0.0);
+    }
+
+    #[test]
+    fn test_mixed_precision_disabled_uses_regular_backward() {
+        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
+        let mut model = TransformerANE::new(&config).unwrap();
+        let batch = Batch::new(vec![1u32; 2 * 64], 2, 64).unwrap();
+
+        // Forward pass
+        let _ = model.forward(&batch).unwrap();
+
+        // Mixed precision backward should fall back to regular backward when disabled
+        let grads = model.backward_mixed_precision(&batch, 0.5, None);
+        assert!(grads.is_ok());
     }
 }

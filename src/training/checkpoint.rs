@@ -113,25 +113,21 @@ impl Checkpoint {
             })?;
         }
 
-        let file = File::create(path).map_err(|e| {
-            crate::Error::Io(format!("Failed to create checkpoint file: {}", e))
-        })?;
+        let file = File::create(path)
+            .map_err(|e| crate::Error::Io(format!("Failed to create checkpoint file: {}", e)))?;
         let writer = BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, self).map_err(|e| {
-            crate::Error::Other(format!("Failed to serialize checkpoint: {}", e))
-        })?;
+        serde_json::to_writer_pretty(writer, self)
+            .map_err(|e| crate::Error::Other(format!("Failed to serialize checkpoint: {}", e)))?;
         Ok(())
     }
 
     /// Load checkpoint from file
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let file = File::open(path.as_ref()).map_err(|e| {
-            crate::Error::Io(format!("Failed to open checkpoint file: {}", e))
-        })?;
+        let file = File::open(path.as_ref())
+            .map_err(|e| crate::Error::Io(format!("Failed to open checkpoint file: {}", e)))?;
         let reader = BufReader::new(file);
-        let checkpoint: Checkpoint = serde_json::from_reader(reader).map_err(|e| {
-            crate::Error::Other(format!("Failed to deserialize checkpoint: {}", e))
-        })?;
+        let checkpoint: Checkpoint = serde_json::from_reader(reader)
+            .map_err(|e| crate::Error::Other(format!("Failed to deserialize checkpoint: {}", e)))?;
         Ok(checkpoint)
     }
 
@@ -205,8 +201,8 @@ mod tests {
             beta2: 0.999,
         };
 
-        let checkpoint = Checkpoint::new(weights, 10, 1.0, 0.01, config)
-            .with_optimizer_state(opt_state);
+        let checkpoint =
+            Checkpoint::new(weights, 10, 1.0, 0.01, config).with_optimizer_state(opt_state);
 
         assert!(checkpoint.optimizer_state.is_some());
         let state = checkpoint.optimizer_state.as_ref().unwrap();

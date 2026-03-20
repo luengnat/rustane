@@ -11,11 +11,10 @@
 //! ```
 
 use rustane::data::Batch;
-use rustane::TrainingModel;
 use rustane::training::{
-    Checkpoint, LossScalerState, ModelConfig, OptimizerState, TransformerANE,
-    TransformerConfig,
+    Checkpoint, LossScalerState, ModelConfig, OptimizerState, TransformerANE, TransformerConfig,
 };
+use rustane::TrainingModel;
 use std::fs;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -60,15 +59,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         steps_since_growth: 100,
     };
 
-    let checkpoint1 = Checkpoint::new(
-        weights1,
-        1,
-        step1_loss,
-        0.001,
-        model_config.clone(),
-    )
-    .with_optimizer_state(optimizer_state1)
-    .with_loss_scaler_state(loss_scaler_state1);
+    let checkpoint1 = Checkpoint::new(weights1, 1, step1_loss, 0.001, model_config.clone())
+        .with_optimizer_state(optimizer_state1)
+        .with_loss_scaler_state(loss_scaler_state1);
 
     // Save checkpoint
     let checkpoint_dir = "checkpoints";
@@ -96,7 +89,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("--- Saved Checkpoints ---");
     let entries: Vec<_> = fs::read_dir(checkpoint_dir)?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map(|ext| ext == "json").unwrap_or(false))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "json")
+                .unwrap_or(false)
+        })
         .collect();
 
     for entry in &entries {
@@ -122,7 +120,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref scaler_state) = loaded_checkpoint.loss_scaler_state {
         println!("  Loss scaler state:");
         println!("    Scale: {:.2}", scaler_state.scale);
-        println!("    Steps since growth: {}", scaler_state.steps_since_growth);
+        println!(
+            "    Steps since growth: {}",
+            scaler_state.steps_since_growth
+        );
     }
     println!();
 
