@@ -10,6 +10,7 @@ pub mod loss;
 pub mod loss_scale;
 pub mod model;
 pub mod scheduler;
+pub mod trainer;
 
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
@@ -18,3 +19,4 @@ pub use model::Model;
 pub use scheduler::{
     ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler,
 };
+pub use trainer::{StepMetrics, TrainerError};
