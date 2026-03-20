@@ -164,7 +164,7 @@ impl Batch {
     /// - batch_size is recalculated for each chunk based on actual token count
     ///
     /// # Errors
-    /// Returns an error if max_chunk_tokens is 0
+    /// Returns an error if seq_len is 0 or max_chunk_tokens is 0
     ///
     /// # Example
     /// ```
@@ -174,7 +174,12 @@ impl Batch {
     /// let chunk1 = chunks.next().unwrap().unwrap();
     /// assert_eq!(chunk1.shape(), (1, 25)); // 25 tokens / 25 seq_len = batch_size 1
     /// ```
-    pub fn chunks(self, max_chunk_tokens: usize) -> Result<ChunkIterator> {
+    pub fn chunks(&self, max_chunk_tokens: usize) -> Result<ChunkIterator> {
+        if self.seq_len == 0 {
+            return Err(crate::Error::InvalidParameter(
+                "seq_len must be > 0".to_string(),
+            ));
+        }
         if max_chunk_tokens == 0 {
             return Err(crate::Error::InvalidParameter(
                 "max_chunk_tokens must be > 0".to_string(),
@@ -203,7 +208,7 @@ impl Batch {
     /// - batch_size is recalculated for each chunk based on actual token count
     ///
     /// # Errors
-    /// Returns an error if max_chunk_tokens is 0
+    /// Returns an error if seq_len is 0 or max_chunk_tokens is 0
     ///
     /// # Example
     /// ```
@@ -213,6 +218,11 @@ impl Batch {
     /// assert_eq!(chunks.len(), 4); // 4 chunks of 25 tokens each
     /// ```
     pub fn into_chunks(self, max_chunk_tokens: usize) -> Result<Vec<Batch>> {
+        if self.seq_len == 0 {
+            return Err(crate::Error::InvalidParameter(
+                "seq_len must be > 0".to_string(),
+            ));
+        }
         if max_chunk_tokens == 0 {
             return Err(crate::Error::InvalidParameter(
                 "max_chunk_tokens must be > 0".to_string(),
@@ -251,14 +261,15 @@ impl Batch {
 }
 
 /// An iterator over chunks of a batch
-pub struct ChunkIterator {
-    original_batch: Batch,
+#[derive(Debug)]
+pub struct ChunkIterator<'a> {
+    original_batch: &'a Batch,
     chunk_sizes: Vec<usize>,
     current_chunk_idx: usize,
     current_pos: usize,
 }
 
-impl Iterator for ChunkIterator {
+impl<'a> Iterator for ChunkIterator<'a> {
     type Item = Result<Batch>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -594,5 +605,45 @@ mod tests {
             assert_eq!(chunk.batch_size(), 1);
             assert_eq!(chunk.seq_len(), 25);
         }
+    }
+
+    #[test]
+    fn test_chunks_guard_seq_len_zero() {
+        // CRITICAL: Guard against division by zero in chunks()
+        let batch = Batch {
+            tokens: vec![1, 2, 3],
+            batch_size: 1,
+            seq_len: 0,  // Invalid, should trigger guard
+        };
+        let result = batch.chunks(10);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("seq_len must be > 0"));
+    }
+
+    #[test]
+    fn test_into_chunks_guard_seq_len_zero() {
+        // CRITICAL: Guard against division by zero in into_chunks()
+        let batch = Batch {
+            tokens: vec![1, 2, 3],
+            batch_size: 1,
+            seq_len: 0,  // Invalid, should trigger guard
+        };
+        let result = batch.into_chunks(10);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("seq_len must be > 0"));
+    }
+
+    #[test]
+    fn test_chunks_borrows_self() {
+        // HIGH: chunks() should borrow &self, not consume self
+        let batch = Batch::new(vec![1u32; 100], 4, 25).unwrap();
+        
+        // Should be able to call chunks() multiple times on the same batch
+        let _chunks1 = batch.chunks(25).unwrap();
+        let _chunks2 = batch.chunks(50).unwrap();  // Would fail if chunks() took self
+        
+        // Batch is still available after both calls
+        assert_eq!(batch.batch_size(), 4);
+        assert_eq!(batch.seq_len(), 25);
     }
 }
