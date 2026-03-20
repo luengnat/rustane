@@ -38,6 +38,37 @@
 use crate::Result;
 use std::collections::VecDeque;
 
+/// Compute token-aligned chunk sizes respecting seq_len boundaries
+///
+/// # Arguments
+/// - `total_tokens`: Total number of tokens in batch
+/// - `seq_len`: Sequence length (chunk boundaries must be multiples of this)
+/// - `max_chunk_tokens`: Desired maximum chunk size
+///
+/// # Returns
+/// Vector of chunk sizes that:
+/// - All are multiples of seq_len (except possibly handling edge cases)
+/// - Sum to total_tokens
+/// - Are at most max_chunk_tokens (rounded down to nearest seq_len multiple)
+fn compute_chunk_sizes(total_tokens: usize, seq_len: usize, max_chunk_tokens: usize) -> Vec<usize> {
+    if seq_len == 0 {
+        return vec![total_tokens];
+    }
+
+    // Ensure chunk size is multiple of seq_len
+    let usable_chunk = ((max_chunk_tokens / seq_len).max(1)) * seq_len;
+    let mut chunks = Vec::new();
+    let mut remaining = total_tokens;
+
+    while remaining > 0 {
+        let chunk = remaining.min(usable_chunk);
+        chunks.push(chunk);
+        remaining -= chunk;
+    }
+
+    chunks
+}
+
 pub use self::dataset::{Dataset, SequentialDataset};
 pub use self::sampler::{RandomSampler, Sampler, SequentialSampler};
 pub use self::collate::{Collator, PadCollator, TruncateCollator};
@@ -117,6 +148,61 @@ impl Batch {
             return None;
         }
         Some(self.tokens[batch_idx * self.seq_len + seq_idx])
+    }
+
+    /// Split batch into token-aligned chunks for gradient accumulation
+    ///
+    /// # Arguments
+    /// - `max_chunk_tokens`: Maximum number of tokens per chunk
+    ///
+    /// # Behavior
+    /// - Chunks respect seq_len boundaries (no sequences are split)
+    /// - All chunks except possibly the last will be exactly sized to multiples of seq_len
+    /// - Total tokens across chunks equals original batch size
+    ///
+    /// # Errors
+    /// Returns an error if max_chunk_tokens is 0
+    ///
+    /// # Example
+    /// ```
+    /// # use rustane::data::Batch;
+    /// let batch = Batch::new(vec![1u32; 100], 4, 25).unwrap();
+    /// let chunks = batch.into_chunks(25).unwrap();
+    /// assert_eq!(chunks.len(), 4); // 4 chunks of 25 tokens each
+    /// ```
+    pub fn into_chunks(self, max_chunk_tokens: usize) -> Result<Vec<Batch>> {
+        if max_chunk_tokens == 0 {
+            return Err(crate::Error::InvalidParameter(
+                "max_chunk_tokens must be > 0".to_string(),
+            ));
+        }
+
+        let total_tokens = self.tokens.len();
+        if total_tokens <= max_chunk_tokens {
+            return Ok(vec![self]);
+        }
+
+        let chunk_sizes = compute_chunk_sizes(total_tokens, self.seq_len, max_chunk_tokens);
+        let mut chunks = Vec::new();
+        let mut pos = 0;
+
+        for chunk_size in chunk_sizes {
+            let end = (pos + chunk_size).min(total_tokens);
+            let chunk_tokens = self.tokens[pos..end].to_vec();
+
+            chunks.push(Batch {
+                tokens: chunk_tokens,
+                batch_size: self.batch_size,
+                seq_len: self.seq_len,
+            });
+
+            pos = end;
+            if pos >= total_tokens {
+                break;
+            }
+        }
+
+        Ok(chunks)
     }
 }
 
@@ -342,5 +428,31 @@ mod tests {
         let sampler = SequentialSampler::new(1);
         let result = DataLoader::new(dataset, sampler, 0);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_batch_into_chunks_basic() {
+        let batch = Batch::new(vec![1u32; 100], 4, 25).unwrap();
+        let chunks = batch.into_chunks(25).unwrap();
+        assert_eq!(chunks.len(), 4);
+        assert_eq!(chunks[0].tokens.len(), 25);
+    }
+
+    #[test]
+    fn test_batch_into_chunks_respects_seq_len() {
+        let batch = Batch::new(vec![1u32; 128], 4, 32).unwrap();
+        let chunks = batch.into_chunks(64).unwrap();
+        for chunk in &chunks {
+            assert_eq!(chunk.tokens.len() % 32, 0);
+        }
+    }
+
+    #[test]
+    fn test_batch_chunks_sum_to_original() {
+        let batch = Batch::new(vec![1u32; 100], 4, 25).unwrap();
+        let original_len = batch.tokens.len();
+        let chunks = batch.into_chunks(25).unwrap();
+        let total: usize = chunks.iter().map(|c| c.tokens.len()).sum();
+        assert_eq!(total, original_len);
     }
 }
