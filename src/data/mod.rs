@@ -73,7 +73,7 @@ pub use self::dataset::{Dataset, SequentialDataset};
 pub use self::sampler::{RandomSampler, Sampler, SequentialSampler};
 pub use self::collate::{Collator, PadCollator, TruncateCollator};
 pub use self::filesystem::{JsonlDataset, TextDataset};
-pub use self::sharded_loader::{ShardConfig, ShardMetadata, ShardBatch, ShardedDataLoader, ShardIterator};
+pub use self::sharded_loader::{ShardConfig, ShardMetadata, ShardBatch, ShardedDataLoader};
 
 // Batch and ChunkIterator are defined in this module
 
