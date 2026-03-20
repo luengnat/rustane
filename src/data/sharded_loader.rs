@@ -4,34 +4,117 @@
 //! sharded files, enabling distributed training across multiple data sources.
 
 use std::path::PathBuf;
-use super::{DataLoader, Dataset, Sampler, SequentialDataset, SequentialSampler};
+use super::{DataLoader, Dataset, Sampler};
+use crate::Result;
 
 /// Configuration for loading data from multiple shards
 ///
 /// Specifies the pattern for shard files, vocabulary size, and optional
 /// pre-computed metadata about each shard.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShardConfig {
-    /// Glob pattern to match shard files (e.g., "data/shards/shard_*.jsonl")
-    pub shard_pattern: String,
-    /// Vocabulary size (max token ID + 1)
-    pub vocab_size: u32,
-    /// Optional pre-computed metadata for each shard
-    pub shard_metadata: Option<Vec<ShardMetadata>>,
+    shard_pattern: String,
+    vocab_size: u32,
+    shard_metadata: Option<Vec<ShardMetadata>>,
+}
+
+impl ShardConfig {
+    /// Create a new ShardConfig with validation
+    ///
+    /// # Arguments
+    /// - `shard_pattern`: Glob pattern to match shard files (e.g., "data/shards/shard_*.jsonl")
+    /// - `vocab_size`: Vocabulary size (max token ID + 1), must be > 0
+    ///
+    /// # Errors
+    /// Returns error if shard_pattern is empty or vocab_size is 0
+    pub fn new(shard_pattern: String, vocab_size: u32) -> Result<Self> {
+        if shard_pattern.is_empty() {
+            return Err(crate::Error::InvalidParameter(
+                "shard_pattern cannot be empty".to_string(),
+            ));
+        }
+        if vocab_size == 0 {
+            return Err(crate::Error::InvalidParameter(
+                "vocab_size must be greater than 0".to_string(),
+            ));
+        }
+        Ok(ShardConfig {
+            shard_pattern,
+            vocab_size,
+            shard_metadata: None,
+        })
+    }
+
+    /// Get the shard pattern
+    pub fn shard_pattern(&self) -> &str {
+        &self.shard_pattern
+    }
+
+    /// Get the vocabulary size
+    pub fn vocab_size(&self) -> u32 {
+        self.vocab_size
+    }
+
+    /// Get the shard metadata if available
+    pub fn shard_metadata(&self) -> Option<&[ShardMetadata]> {
+        self.shard_metadata.as_deref()
+    }
+
+    /// Set shard metadata
+    pub fn with_metadata(mut self, metadata: Vec<ShardMetadata>) -> Self {
+        self.shard_metadata = Some(metadata);
+        self
+    }
 }
 
 /// Metadata about a single data shard
 ///
 /// Contains information about where a shard is located and how many
 /// tokens it contains, useful for load balancing across shards.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShardMetadata {
-    /// Index of this shard (0-based)
-    pub shard_idx: usize,
-    /// Total number of tokens in this shard
-    pub token_count: usize,
-    /// Path to the shard file
-    pub path: String,
+    shard_idx: usize,
+    token_count: usize,
+    path: PathBuf,
+}
+
+impl ShardMetadata {
+    /// Create new shard metadata with validation
+    ///
+    /// # Arguments
+    /// - `shard_idx`: Index of this shard (0-based)
+    /// - `token_count`: Total number of tokens in this shard, must be > 0
+    /// - `path`: Path to the shard file
+    ///
+    /// # Errors
+    /// Returns error if token_count is 0
+    pub fn new(shard_idx: usize, token_count: usize, path: PathBuf) -> Result<Self> {
+        if token_count == 0 {
+            return Err(crate::Error::InvalidParameter(
+                "token_count must be greater than 0".to_string(),
+            ));
+        }
+        Ok(ShardMetadata {
+            shard_idx,
+            token_count,
+            path,
+        })
+    }
+
+    /// Get the shard index
+    pub fn shard_idx(&self) -> usize {
+        self.shard_idx
+    }
+
+    /// Get the token count
+    pub fn token_count(&self) -> usize {
+        self.token_count
+    }
+
+    /// Get the path to the shard file
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
 }
 
 /// A batch from a single shard
@@ -39,78 +122,270 @@ pub struct ShardMetadata {
 /// Represents one shard's data ready for loading as batches.
 #[derive(Debug)]
 pub struct ShardBatch<D: Dataset, S: Sampler> {
-    /// Index of the shard this batch comes from
-    pub shard_idx: usize,
-    /// Path to the shard file
-    pub shard_path: PathBuf,
-    /// DataLoader for this shard
-    pub loader: DataLoader<D, S>,
-    /// Total tokens available in this shard
-    pub token_count: usize,
+    shard_idx: usize,
+    shard_path: PathBuf,
+    loader: DataLoader<D, S>,
+    token_count: usize,
+}
+
+impl<D: Dataset, S: Sampler> ShardBatch<D, S> {
+    /// Create a new ShardBatch
+    pub fn new(
+        shard_idx: usize,
+        shard_path: PathBuf,
+        loader: DataLoader<D, S>,
+        token_count: usize,
+    ) -> Self {
+        ShardBatch {
+            shard_idx,
+            shard_path,
+            loader,
+            token_count,
+        }
+    }
+
+    /// Get the shard index
+    pub fn shard_idx(&self) -> usize {
+        self.shard_idx
+    }
+
+    /// Get the shard path
+    pub fn shard_path(&self) -> &PathBuf {
+        &self.shard_path
+    }
+
+    /// Get the token count
+    pub fn token_count(&self) -> usize {
+        self.token_count
+    }
+
+    /// Consume self and return the DataLoader
+    pub fn into_loader(self) -> DataLoader<D, S> {
+        self.loader
+    }
+
+    /// Consume self and return all components
+    pub fn into_parts(self) -> (usize, PathBuf, DataLoader<D, S>, usize) {
+        (self.shard_idx, self.shard_path, self.loader, self.token_count)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::{SequentialDataset, SequentialSampler};
 
     /// Test basic ShardConfig creation
     #[test]
     fn test_shard_config_creation() {
-        let config = ShardConfig {
-            shard_pattern: "data/shards/shard_*.jsonl".to_string(),
-            vocab_size: 50000,
-            shard_metadata: None,
-        };
+        let config = ShardConfig::new(
+            "data/shards/shard_*.jsonl".to_string(),
+            50000,
+        ).unwrap();
 
-        assert_eq!(config.vocab_size, 50000);
-        assert_eq!(
-            config.shard_pattern,
-            "data/shards/shard_*.jsonl".to_string()
-        );
-        assert!(config.shard_metadata.is_none());
+        assert_eq!(config.vocab_size(), 50000);
+        assert_eq!(config.shard_pattern(), "data/shards/shard_*.jsonl");
+        assert!(config.shard_metadata().is_none());
+    }
+
+    /// Test ShardConfig with empty pattern validation
+    #[test]
+    fn test_shard_config_empty_pattern() {
+        let result = ShardConfig::new("".to_string(), 50000);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::Error::InvalidParameter(msg) => {
+                assert!(msg.contains("shard_pattern cannot be empty"));
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    /// Test ShardConfig with zero vocab_size validation
+    #[test]
+    fn test_shard_config_zero_vocab_size() {
+        let result = ShardConfig::new("data/shards/shard_*.jsonl".to_string(), 0);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::Error::InvalidParameter(msg) => {
+                assert!(msg.contains("vocab_size must be greater than 0"));
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    /// Test ShardConfig accessors return correct values
+    #[test]
+    fn test_shard_config_accessors() {
+        let config = ShardConfig::new(
+            "data/shards/shard_*.jsonl".to_string(),
+            25000,
+        ).unwrap();
+
+        assert_eq!(config.shard_pattern(), "data/shards/shard_*.jsonl");
+        assert_eq!(config.vocab_size(), 25000);
+        assert!(config.shard_metadata().is_none());
+    }
+
+    /// Test ShardConfig with metadata
+    #[test]
+    fn test_shard_config_with_metadata() {
+        let metadata = vec![
+            ShardMetadata::new(0, 1_000_000, PathBuf::from("shard_0.jsonl")).unwrap(),
+            ShardMetadata::new(1, 2_000_000, PathBuf::from("shard_1.jsonl")).unwrap(),
+        ];
+
+        let config = ShardConfig::new("data/shards/shard_*.jsonl".to_string(), 50000)
+            .unwrap()
+            .with_metadata(metadata.clone());
+
+        assert!(config.shard_metadata().is_some());
+        assert_eq!(config.shard_metadata().unwrap().len(), 2);
     }
 
     /// Test ShardMetadata creation
     #[test]
     fn test_shard_metadata_creation() {
-        let metadata = ShardMetadata {
-            shard_idx: 5,
-            token_count: 1_000_000,
-            path: "data/shards/shard_5.jsonl".to_string(),
-        };
+        let metadata = ShardMetadata::new(
+            5,
+            1_000_000,
+            PathBuf::from("data/shards/shard_5.jsonl"),
+        ).unwrap();
 
-        assert_eq!(metadata.shard_idx, 5);
-        assert_eq!(metadata.token_count, 1_000_000);
-        assert_eq!(metadata.path, "data/shards/shard_5.jsonl");
+        assert_eq!(metadata.shard_idx(), 5);
+        assert_eq!(metadata.token_count(), 1_000_000);
+        assert_eq!(metadata.path(), &PathBuf::from("data/shards/shard_5.jsonl"));
     }
 
-    /// Test ShardBatch creation with metadata
+    /// Test ShardMetadata with zero token_count validation
+    #[test]
+    fn test_shard_metadata_zero_token_count() {
+        let result = ShardMetadata::new(
+            0,
+            0,
+            PathBuf::from("data/shards/shard_0.jsonl"),
+        );
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::Error::InvalidParameter(msg) => {
+                assert!(msg.contains("token_count must be greater than 0"));
+            }
+            _ => panic!("Expected InvalidParameter error"),
+        }
+    }
+
+    /// Test ShardMetadata accessors
+    #[test]
+    fn test_shard_metadata_accessors() {
+        let metadata = ShardMetadata::new(
+            3,
+            500_000,
+            PathBuf::from("data/shards/shard_3.jsonl"),
+        ).unwrap();
+
+        assert_eq!(metadata.shard_idx(), 3);
+        assert_eq!(metadata.token_count(), 500_000);
+        assert_eq!(
+            metadata.path(),
+            &PathBuf::from("data/shards/shard_3.jsonl")
+        );
+    }
+
+    /// Test ShardMetadata equality
+    #[test]
+    fn test_shard_metadata_equality() {
+        let metadata1 = ShardMetadata::new(
+            1,
+            1_000_000,
+            PathBuf::from("data/shards/shard_1.jsonl"),
+        ).unwrap();
+
+        let metadata2 = ShardMetadata::new(
+            1,
+            1_000_000,
+            PathBuf::from("data/shards/shard_1.jsonl"),
+        ).unwrap();
+
+        assert_eq!(metadata1, metadata2);
+    }
+
+    /// Test ShardConfig equality
+    #[test]
+    fn test_shard_config_equality() {
+        let config1 = ShardConfig::new(
+            "data/shards/shard_*.jsonl".to_string(),
+            50000,
+        ).unwrap();
+
+        let config2 = ShardConfig::new(
+            "data/shards/shard_*.jsonl".to_string(),
+            50000,
+        ).unwrap();
+
+        assert_eq!(config1, config2);
+    }
+
+    /// Test ShardBatch creation
     #[test]
     fn test_shard_batch_creation() {
-        let metadata = ShardMetadata {
-            shard_idx: 0,
-            token_count: 500_000,
-            path: "data/shards/shard_0.jsonl".to_string(),
-        };
-
         // Create a minimal dataset and sampler for the loader
         let samples = vec![vec![0, 1, 2], vec![3, 4, 5]];
         let dataset = SequentialDataset::new(samples);
         let sampler = SequentialSampler::new(dataset.len());
         let loader = DataLoader::new(dataset, sampler, 2).unwrap();
 
-        let shard_batch = ShardBatch {
-            shard_idx: metadata.shard_idx,
-            shard_path: PathBuf::from(&metadata.path),
+        let shard_batch = ShardBatch::new(
+            0,
+            PathBuf::from("data/shards/shard_0.jsonl"),
             loader,
-            token_count: metadata.token_count,
-        };
-
-        assert_eq!(shard_batch.shard_idx, 0);
-        assert_eq!(shard_batch.token_count, 500_000);
-        assert_eq!(
-            shard_batch.shard_path,
-            PathBuf::from("data/shards/shard_0.jsonl")
+            500_000,
         );
+
+        assert_eq!(shard_batch.shard_idx(), 0);
+        assert_eq!(shard_batch.token_count(), 500_000);
+        assert_eq!(
+            shard_batch.shard_path(),
+            &PathBuf::from("data/shards/shard_0.jsonl")
+        );
+    }
+
+    /// Test ShardBatch into_loader consumes self
+    #[test]
+    fn test_shard_batch_into_loader() {
+        let samples = vec![vec![0, 1, 2], vec![3, 4, 5]];
+        let dataset = SequentialDataset::new(samples);
+        let sampler = SequentialSampler::new(dataset.len());
+        let loader = DataLoader::new(dataset, sampler, 2).unwrap();
+
+        let shard_batch = ShardBatch::new(
+            0,
+            PathBuf::from("data/shards/shard_0.jsonl"),
+            loader,
+            500_000,
+        );
+
+        let _recovered_loader = shard_batch.into_loader();
+        // If we got here without compile error, the method works
+    }
+
+    /// Test ShardBatch into_parts consumes self
+    #[test]
+    fn test_shard_batch_into_parts() {
+        let samples = vec![vec![0, 1, 2], vec![3, 4, 5]];
+        let dataset = SequentialDataset::new(samples);
+        let sampler = SequentialSampler::new(dataset.len());
+        let loader = DataLoader::new(dataset, sampler, 2).unwrap();
+
+        let shard_batch = ShardBatch::new(
+            0,
+            PathBuf::from("data/shards/shard_0.jsonl"),
+            loader,
+            500_000,
+        );
+
+        let (shard_idx, shard_path, _loader, token_count) = shard_batch.into_parts();
+        assert_eq!(shard_idx, 0);
+        assert_eq!(shard_path, PathBuf::from("data/shards/shard_0.jsonl"));
+        assert_eq!(token_count, 500_000);
     }
 }
