@@ -14,6 +14,7 @@ pub mod normalization;
 pub mod sequential;
 pub mod swiglu;
 pub mod traits;
+pub mod transformer_backward;
 
 pub use activations::{ReLU, SiLU, GELU};
 pub use attention::{
@@ -28,3 +29,7 @@ pub use normalization::{LayerNorm, LayerNormBuilder, RMSNorm, RMSNormBuilder};
 pub use sequential::{Sequential, SequentialBuilder, SharedLayer};
 pub use swiglu::{SiLU as SwiGLUSiLU, SwiGLU, SwiGLUBuilder};
 pub use traits::{BiasLayer, Layer, LayerBuilder, Shape, WeightsLayer};
+pub use transformer_backward::{
+    rmsnorm_backward, cross_entropy_backward, attention_backward, ffn_backward,
+    AttentionConfig, FFNConfig,
+};
