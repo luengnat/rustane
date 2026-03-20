@@ -1,0 +1,30 @@
+# Cargo configuration for Rustane
+# This file configures build and test behavior for the project
+
+[build]
+# Use fewer codegen units to reduce memory during compilation
+# Trade-off: slower compilation, but uses less RAM
+codegen-units = 16
+
+[target.x86_64-apple-darwin]
+# Rust flags for macOS x86_64
+rustflags = []
+
+[target.aarch64-apple-darwin]
+# Rust flags for Apple Silicon (ARM64)
+rustflags = []
+
+[env]
+# Default test thread limit to prevent OOM
+# Override with: TEST_THREADS=4 cargo test
+TEST_THREADS = "2"
+
+# Test configuration - these settings apply when running `cargo test`
+[term]
+verbose = false
+color = "auto"
+
+# Note: To limit test threads, use:
+#   cargo test -- --test-threads=2
+# Or use the memory-efficient script:
+#   ./scripts/test.sh

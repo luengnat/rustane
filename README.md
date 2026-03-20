@@ -254,26 +254,45 @@ Rustane's comprehensive test suite (500+ tests) requires significant memory duri
 - **Test execution**: 4GB+ RAM recommended
 - **Full test suite**: May require limiting concurrent threads
 
-**Reducing memory usage:**
+**IMPORTANT: Memory Issue with Direct `cargo test`**
+
+Running `cargo test` directly can consume **45GB+ RAM** because:
+- All 243+ tests run in parallel by default
+- Each test allocates large vectors (e.g., `vec![1.0f32; 65536]`)
+- Integration tests hold ANE resources concurrently
+
+**SOLUTION: Always use the memory-efficient test script**
 
 ```bash
-# Run tests with limited concurrency (recommended)
-cargo test --lib -- --test-threads=2
+# ✅ RECOMMENDED: Use the test script (limits to 2 threads, groups tests)
+./scripts/test.sh                  # Library tests only (fastest, lowest memory)
+./scripts/test.sh all              # All tests (lib + integration)
+./scripts/test.sh integration      # Integration tests only
+./scripts/test.sh <pattern>        # Custom test pattern
 
+# ⚠️ AVOID: Direct cargo test (can OOM your system)
+cargo test                        # BAD: Uses 45GB+ RAM
+
+# ✅ If you must use cargo test directly, always limit threads:
+cargo test -- --test-threads=2    # Better: Limits concurrency
+TEST_THREADS=4 cargo test         # Override default (2 threads)
+```
+
+**Additional memory reduction:**
+
+```bash
 # Run specific test groups
-cargo test tensor_sharding --lib
-cargo test transformer --lib
+cargo test tensor_sharding --lib -- --test-threads=2
+cargo test transformer --lib -- --test-threads=2
 
 # Build with optimizations (reduces runtime memory)
-cargo test --release --lib
+cargo test --release --lib -- --test-threads=2
 
 # Clean build artifacts to free memory
 cargo clean
 ```
 
-The `Cargo.toml` is configured with memory-efficient defaults:
-- `debug = 1` - Reduced debug info
-- `opt-level = 1` - Basic optimizations for lower runtime memory
+**Configuration**: The project includes `.cargo/config.toml` with memory-efficient settings.
 
 ### Runtime Memory
 
