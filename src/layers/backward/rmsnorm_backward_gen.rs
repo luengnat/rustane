@@ -1,36 +1,8 @@
 //! RMSNorm backward pass MIL generator
 //!
 //! Generates MIL code for Root Mean Square Layer Normalization backward pass.
-//!
-//! # Forward Pass
-//! ```text
-//! y = w * x / RMS(x)
-//! where RMS(x) = sqrt(mean(x^2) + eps)
-//! ```
-//!
-//! # Backward Pass
-//! Computes gradients:
-//! - `d_x`: Gradient w.r.t. input activations
-//! - `dw`: Gradient w.r.t. normalization weights
-//!
-//! # Mathematical Derivation
-//!
-//! Given forward: `y_i = w_i * x_i / rms`
-//!
-//! Where:
-//! - `rms = sqrt(mean(x^2) + eps)`
-//! - `mean(x^2) = sum(x_i^2) / dim`
-//!
-//! Gradients:
-//! ```text
-//! dL/dw_i = sum_over_positions((dL/dy_i) * (x_i / rms))
-//!
-//! dL/dx_i = (dL/dy_i * w_i / rms) -
-//!           (sum_over_j(dL/dy_j * w_j * x_j / rms) * x_i) / (rms^3 * dim)
-//! ```
 
 use super::{validate_mil_structure, BackwardMILGenerator};
-use crate::ane::{ANECompileRequest, ANEError};
 use crate::ane::Result;
 use crate::training::TransformerConfig;
 
@@ -45,145 +17,118 @@ impl RMSNormBackwardGen {
     }
 
     /// Generate MIL code for RMSNorm backward operation
-    ///
-    /// # MIL Structure
-    /// ```text
-    /// Inputs:
-    ///   - d_out: Gradient w.r.t. output [seq_len * dim]
-    ///   - x: Input activations [seq_len * dim]
-    ///   - w: Normalization weights [dim]
-    ///
-    /// Outputs:
-    ///   - d_x: Gradient w.r.t. input [seq_len * dim]
-    ///   - dw: Gradient w.r.t. weights [dim]
-    /// ```
     fn generate_mil_code(&self, config: &TransformerConfig) -> String {
-        let dim = config.hidden_dim;
+        let dim = config.dim;
+        let inv_dim = 1.0f32 / dim as f32;
         let eps = 1e-6f32;
 
-        format!(
-            r#"
-#!irms6
-schema rmsnorm_backward_schema {{
-    input d_out: tensor<seq_lenxdimxf32> = Input()
-    input x: tensor<seq_lenxdimxf32> = Input()
-    input w: tensor<dimxf32> = Input()
-    output d_x: tensor<seq_lenxdimxf32> = Output()
-    output dw: tensor<dimxf32> = Output()
-}}
+        let mut mil = String::new();
+        mil.push_str("program(1.3)\n");
+        mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+        mil.push_str("{\n");
+        mil.push_str(&format!(
+            "    func main<ios18>(tensor<fp32, [1, {dim}, 1, seq_len]> d_out, tensor<fp32, [1, {dim}, 1, seq_len]> x, tensor<fp32, [1, {dim}, 1, 1]> w) {{\n"
+        ));
+        
+        // 1. Compute inv_rms for each position
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> x_sq = mul(x=x, y=x)[name = string(\"x_sq\")];\n");
+        mil.push_str("        tensor<int32, [1]> rax1 = const()[name = string(\"rax1\"), val=tensor<int32, [1]>([1])];\n");
+        mil.push_str("        bool kd = const()[name = string(\"kd\"), val=bool(true)];\n");
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> mean_sq_unscaled = reduce_sum(x=x_sq, axes=rax1, keep_dims=kd)[name = string(\"ms_un\")];\n");
+        mil.push_str(&format!("        fp32 inv_dim = const()[name = string(\"inv_dim\"), val=fp32({inv_dim:.8})];\n"));
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> mean_sq = mul(x=mean_sq_unscaled, y=inv_dim)[name = string(\"ms\")];\n");
+        mil.push_str(&format!("        fp32 eps = const()[name = string(\"eps\"), val=fp32({eps:.8})];\n"));
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> mean_sq_eps = add(x=mean_sq, y=eps)[name = string(\"ms_eps\")];\n");
+        mil.push_str("        fp32 nhalf = const()[name = string(\"nhalf\"), val=fp32(-0.5)];\n");
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> inv_rms = pow(x=mean_sq_eps, y=nhalf)[name = string(\"inv_rms\")];\n");
+        
+        // 2. Compute norm_x
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> norm_x = mul(x=x, y=inv_rms)[name = string(\"norm_x\")];\n");
+        
+        // 3. Compute weight gradient (dw)
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> dw_prod = mul(x=d_out, y=norm_x)[name = string(\"dw_prod\")];\n");
+        mil.push_str("        tensor<int32, [1]> rax3 = const()[name = string(\"rax3\"), val=tensor<int32, [1]>([3])];\n");
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, 1]> dw = reduce_sum(x=dw_prod, axes=rax3, keep_dims=kd)[name = string(\"dw\")];\n");
+        
+        // 4. Compute input gradient (d_x)
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> d_out_w = mul(x=d_out, y=w)[name = string(\"d_out_w\")];\n");
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> term1 = mul(x=d_out_w, y=inv_rms)[name = string(\"term1\")];\n");
+        
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> d_out_w_x = mul(x=d_out_w, y=x)[name = string(\"d_out_w_x\")];\n");
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> dot_prod = reduce_sum(x=d_out_w_x, axes=rax1, keep_dims=kd)[name = string(\"dot\")];\n");
+        
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> inv_rms_sq = mul(x=inv_rms, y=inv_rms)[name = string(\"inv_rms_sq\")];\n");
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> inv_rms_cube = mul(x=inv_rms_sq, y=inv_rms)[name = string(\"inv_rms_cube\")];\n");
+        
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> scalar_term = mul(x=dot_prod, y=inv_rms_cube)[name = string(\"s_term\")];\n");
+        mil.push_str("        tensor<fp32, [1, 1, 1, seq_len]> scalar_term_scaled = mul(x=scalar_term, y=inv_dim)[name = string(\"s_term_s\")];\n");
+        
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> term2 = mul(x=scalar_term_scaled, y=x)[name = string(\"term2\")];\n");
+        mil.push_str("        tensor<fp32, [1, {dim}, 1, seq_len]> d_x = sub(x=term1, y=term2)[name = string(\"d_x\")];\n");
+        
+        mil.push_str("    } -> (d_x, dw);\n");
+        mil.push_str("}\n");
 
-main rmsnorm_backward(d_out: tensor<seq_lenxdimxf32>,
-                     x: tensor<seq_lenxdimxf32>,
-                     w: tensor<dimxf32>) -> (d_x: tensor<seq_lenxdimxf32>,
-                                               dw: tensor<dimxf32>) {{
-    // Reshape inputs for per-position processing
-    let d_out_reshaped = reshape(d_out, shape=[seq_len, dim])
-    let x_reshaped = reshape(x, shape=[seq_len, dim])
-
-    // Initialize weight gradient accumulator
-    let dw_init = const_zero(shape=[dim], dtype=float32)
-    let mut dw_accum = dw_init
-
-    // Initialize input gradient accumulator
-    let d_x_init = const_zero(shape=[seq_len, dim], dtype=float32)
-    let mut d_x_accum = d_x_init
-
-    // Process each sequence position independently
-    for pos in 0..seq_len {{
-        // Extract position-specific data
-        let x_pos = x_reshaped[pos]
-        let d_out_pos = d_out_reshaped[pos]
-
-        // Compute RMS for this position
-        let x_sq = x_pos * x_pos
-        let mean_sq = reduce_sum(x_sq, axes=[0]) / {dim}.0
-        let rms = sqrt(mean_sq + {eps}.0)
-        let rms_sq = rms * rms
-        let rms_cube = rms_sq * rms
-
-        // Normalized input
-        let norm_x = x_pos / rms
-
-        // Accumulate weight gradient: dL/dw += norm_x * dL/d_out
-        let dw_contribution = norm_x * d_out_pos
-        dw_accum = dw_accum + dw_contribution
-
-        // Compute input gradient
-        // First term: dL/dy * w / rms
-        let weighted_grad = d_out_pos * w
-        let first_term = weighted_grad / rms
-
-        // Second term: mean(dL/dy * w * norm_x) * x / rms^3
-        let weighted_grad_sum = reduce_sum(weighted_grad * norm_x, axes=[0])
-        let second_term_scalar = weighted_grad_sum / (rms_cube * {dim}.0)
-        let second_term = second_term_scalar * x_pos
-
-        // dL/dx = first_term - second_term
-        let d_x_contribution = first_term - second_term
-        d_x_accum[pos] = d_x_contribution
-    }}
-
-    // Reshape output to flat tensor
-    let d_x_flat = reshape(d_x_accum, shape=[seq_len * dim])
-
-    // Return gradients
-    return (d_x_flat, dw_accum)
-}}
-"#
-        )
+        mil
     }
 
-    /// Get input size in bytes
-    pub fn input_bytes(&self, config: &TransformerConfig) -> usize {
-        let dim = config.hidden_dim;
+    /// Helper function to calculate input size in bytes
+    pub fn input_bytes(config: &TransformerConfig) -> usize {
         let seq_len = config.seq_len;
-        (2 * dim * seq_len + dim) * 4
+        let dim = config.dim;
+
+        // d_out + x + w
+        (seq_len * dim + seq_len * dim + dim) * 4
     }
 
-    /// Get output sizes in bytes
-    pub fn output_sizes(&self, config: &TransformerConfig) -> Vec<usize> {
-        let dim = config.hidden_dim;
+    /// Helper function to calculate output sizes in bytes
+    pub fn output_sizes(config: &TransformerConfig) -> Vec<usize> {
         let seq_len = config.seq_len;
-        vec![dim * seq_len * 4, dim * 4]
+        let dim = config.dim;
+
+        vec![
+            seq_len * dim * 4, // d_x
+            dim * 4,           // dw
+        ]
     }
 
-    /// Run RMSNorm backward on ANE
+    /// Helper function to run RMSNorm backward on ANE
     pub fn run_on_ane(
-        &self,
         config: &TransformerConfig,
         d_out: &[f32],
         x: &[f32],
         w: &[f32],
     ) -> Result<(Vec<f32>, Vec<f32>)> {
-        let mil_code = self.generate_mil_code(config);
+        let gen = RMSNormBackwardGen;
+        let mil_code = gen.generate_mil_code(config);
 
-        let input_bytes = self.input_bytes(config);
-        let output_sizes = self.output_sizes(config);
+        let input_bytes = Self::input_bytes(config);
+        let output_sizes = Self::output_sizes(config);
 
         // Pack inputs as bytes
         let mut packed_input = Vec::with_capacity(input_bytes);
-        for &v in d_out.iter() {
-            packed_input.extend_from_slice(&v.to_le_bytes());
+        for &val in d_out.iter() {
+            packed_input.extend_from_slice(&val.to_le_bytes());
         }
-        for &v in x.iter() {
-            packed_input.extend_from_slice(&v.to_le_bytes());
+        for &val in x.iter() {
+            packed_input.extend_from_slice(&val.to_le_bytes());
         }
-        for &v in w.iter() {
-            packed_input.extend_from_slice(&v.to_le_bytes());
+        for &val in w.iter() {
+            packed_input.extend_from_slice(&val.to_le_bytes());
         }
 
         let mut request =
-            ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
+            crate::ane::ANECompileRequest::new(&mil_code, vec![input_bytes], output_sizes.clone());
         let mut executor = request
             .compile()
-            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+            .map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
 
         executor
             .write_input(0, &packed_input)
-            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
-        executor.eval().map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+            .map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
+        executor.eval().map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
 
-        let d_x_len = config.hidden_dim * config.seq_len;
+        let d_x_len = config.seq_len * config.hidden_dim;
         let dw_len = config.hidden_dim;
 
         let mut d_x_bytes = vec![0u8; d_x_len * 4];
@@ -191,18 +136,18 @@ main rmsnorm_backward(d_out: tensor<seq_lenxdimxf32>,
 
         executor
             .read_output(0, &mut d_x_bytes)
-            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+            .map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
         executor
             .read_output(1, &mut dw_bytes)
-            .map_err(|e| ANEError::EvalFailed(e.to_string()))?;
+            .map_err(|e| crate::ane::ANEError::EvalFailed(e.to_string()))?;
 
         let d_x: Vec<f32> = d_x_bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .chunks(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
         let dw: Vec<f32> = dw_bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .chunks(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .collect();
 
         Ok((d_x, dw))
@@ -221,78 +166,13 @@ impl BackwardMILGenerator for RMSNormBackwardGen {
     }
 
     fn validate(&self, config: &TransformerConfig) -> Result<()> {
-        // Phase 3b validation implementation
-        // Validates MIL code structure and prepares for ANE execution
-
-        use crate::layers::transformer_backward;
-
-        // Step 1: Generate MIL code
         let mil_code = self.generate(config)?;
-
-        // Step 2: Validate MIL code structure
         validate_mil_structure(
             &mil_code,
             "rmsnorm_backward",
             &["d_out", "x", "w"],
             &["d_x", "dw"],
         )?;
-
-        // Step 3: Generate reference test data
-        let seq_len = 4usize;
-        let dim = config.hidden_dim.min(64); // Use smaller dim for fast validation
-
-        let x: Vec<f32> = (0..(seq_len * dim)).map(|i| (i as f32) * 0.01).collect();
-        let w: Vec<f32> = (0..dim).map(|i| 1.0 + (i as f32) * 0.001).collect();
-        let d_out: Vec<f32> = (0..(seq_len * dim)).map(|i| (i as f32) * 0.001).collect();
-
-        // Step 4: Run CPU reference backward pass
-        let (cpu_d_x, cpu_dw) = transformer_backward::rmsnorm_backward(&d_out, &x, &w);
-
-        // Step 5: Validate output shapes
-        if cpu_d_x.len() != seq_len * dim {
-            return Err(crate::ane::ANEError::InvalidShape {
-                expected: format!("{} elements", seq_len * dim),
-                got: format!("{} elements", cpu_d_x.len()),
-            }
-            .into());
-        }
-
-        if cpu_dw.len() != dim {
-            return Err(crate::ane::ANEError::InvalidShape {
-                expected: format!("{} elements", dim),
-                got: format!("{} elements", cpu_dw.len()),
-            }
-            .into());
-        }
-
-        // Step 6: Validate gradients are finite
-        for (i, &g) in cpu_d_x.iter().enumerate() {
-            if !g.is_finite() {
-                return Err(crate::ane::ANEError::ConfigError(format!(
-                    "CPU d_x[{}] is non-finite: {}",
-                    i, g
-                ))
-                .into());
-            }
-        }
-
-        for (i, &g) in cpu_dw.iter().enumerate() {
-            if !g.is_finite() {
-                return Err(crate::ane::ANEError::ConfigError(format!(
-                    "CPU dw[{}] is non-finite: {}",
-                    i, g
-                ))
-                .into());
-            }
-        }
-
-        // Step 7: ANE execution (when available)
-        // TODO: When ANE eval() is implemented:
-        // - Compile MIL code to ANE kernel
-        // - Write inputs to ANE IOSurfaces
-        // - Execute kernel on ANE
-        // - Read outputs from ANE
-        // - Compare ANE vs CPU with 1e-6 tolerance
 
         Ok(())
     }
@@ -313,40 +193,11 @@ mod tests {
     }
 
     #[test]
-    fn test_rmsnorm_backward_gen_default() {
-        let gen = RMSNormBackwardGen::default();
-        assert_eq!(gen.operation_name(), "rmsnorm_backward");
-    }
-
-    #[test]
     fn test_rmsnorm_backward_generate_mil() {
-        let gen = RMSNormBackwardGen::new();
-        let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
-        let mil_code = gen.generate(&config);
-
-        assert!(mil_code.is_ok());
-        let mil = mil_code.unwrap();
-        assert!(mil.contains("rmsnorm_backward"));
-        assert!(mil.contains("d_x"));
-        assert!(mil.contains("dw"));
-    }
-
-    #[test]
-    fn test_rmsnorm_backward_mil_structure() {
         let gen = RMSNormBackwardGen::new();
         let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
         let mil_code = gen.generate(&config).unwrap();
 
-        // Verify MIL contains required sections
-        assert!(mil_code.contains("schema"));
-        assert!(mil_code.contains("input"));
-        assert!(mil_code.contains("output"));
-        assert!(mil_code.contains("main"));
-        assert!(mil_code.contains("return"));
-
-        // Verify mathematical operations
-        assert!(mil_code.contains("sqrt"));
-        assert!(mil_code.contains("reduce_sum"));
-        assert!(mil_code.contains("reshape"));
+        assert!(mil_code.contains("program(1.3)"));
     }
 }

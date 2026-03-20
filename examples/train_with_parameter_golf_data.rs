@@ -15,8 +15,8 @@ use glob::glob;
 use rustane::data::{Batch, Dataset, DataLoader, SequentialSampler};
 use rustane::error::Result;
 use rustane::training::{
-    ConstantScheduler, CpuTrainingBackend, CrossEntropyLoss, LossFn, Model, TrainingBackend,
-    WarmupCosineScheduler, WarmupLinearScheduler,
+    ANEGradientAccumulator, ConstantScheduler, CpuTrainingBackend, CrossEntropyLoss, LossFn,
+    Model, TrainingBackend, WarmupCosineScheduler, WarmupLinearScheduler,
 };
 use rustane::training::{TransformerANE, TransformerConfig};
 use sentencepiece_model::SentencePieceModel;
@@ -232,6 +232,11 @@ fn main() -> Result<()> {
         lr_scale_min,
     );
     let loss_fn = CrossEntropyLoss::new();
+    let mut ane_accumulator = if ane_forward_head {
+        Some(ANEGradientAccumulator::from_config(&config)?)
+    } else {
+        None
+    };
 
     println!("Step | Train Loss | Grad Norm  | LR Scale | Validation");
     println!("-----|------------|------------|----------|----------------");
@@ -266,7 +271,13 @@ fn main() -> Result<()> {
             let chunk = chunk_result;
             let logits = model.forward(&chunk)?;
             let loss = loss_fn.compute(&logits, &chunk)?;
-            let grads = model.backward_with_batch(&chunk, loss)?;
+            let grads = if let Some(accumulator) = ane_accumulator.as_mut() {
+                accumulator.reset()?;
+                model.backward_on_ane(&chunk, loss, accumulator)?;
+                accumulator.get_accumulated()?
+            } else {
+                model.backward_with_batch(&chunk, loss)?
+            };
             if grads.len() != model.param_count() {
                 return Err(rustane::Error::Other(format!(
                     "gradient count {} != param count {}",

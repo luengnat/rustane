@@ -184,9 +184,57 @@ impl KernelCache {
         Ok(&mut self.entries.get_mut(&key).unwrap().executor)
     }
 
+
+    /// Compile a multi-weight kernel if not cached, or return cached executor.
+    ///
+    /// Like `get_or_compile` but uses `compile_multi` for kernels that reference
+    /// multiple named weight files (e.g. `@model_path/weights/rms_w.bin` in MIL).
+    pub fn get_or_compile_multi(
+        &mut self,
+        mil_text: &str,
+        weight_names: &[&str],
+        weight_datas: &[&[u8]],
+        weight_lens: &[usize],
+        input_sizes: &[usize],
+        output_sizes: &[usize],
+    ) -> crate::Result<&mut ANEExecutor> {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        let mut hasher = DefaultHasher::new();
+        mil_text.hash(&mut hasher);
+        for wd in weight_datas {
+            wd.hash(&mut hasher);
+        }
+        let key = hasher.finish();
+
+        if self.entries.contains_key(&key) {
+            self.entries.get_mut(&key).unwrap().hits += 1;
+            self.lru.retain(|&k| k != key);
+            self.lru.push_back(key);
+            return Ok(&mut self.entries.get_mut(&key).unwrap().executor);
+        }
+
+        if self.entries.len() >= self.max_entries {
+            self.evict_lru();
+        }
+
+        let mut compiler = ANECompiler::new();
+        let executor = compiler.compile_multi(
+            mil_text,
+            weight_names,
+            weight_datas,
+            weight_lens,
+            input_sizes,
+            output_sizes,
+        )?;
+
+        self.entries.insert(key, CacheEntry { _compiler: compiler, executor, hits: 1 });
+        self.lru.push_back(key);
+        Ok(&mut self.entries.get_mut(&key).unwrap().executor)
+    }
+
     /// Evict the least-recently-used entry
-    fn evict_lru(&mut self) {
-        if let Some(old_key) = self.lru.pop_front() {
+    fn evict_lru(&mut self) {        if let Some(old_key) = self.lru.pop_front() {
             self.entries.remove(&old_key);
         }
     }
