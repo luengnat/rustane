@@ -13,6 +13,7 @@ pub mod model;
 pub mod scheduler;
 pub mod trainer;
 pub mod transformer_config;
+pub mod transformer_model;
 
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
@@ -21,3 +22,4 @@ pub use model::Model;
 pub use scheduler::{ConstantScheduler, LRScheduler, WarmupCosineScheduler, WarmupLinearScheduler};
 pub use trainer::{Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError};
 pub use transformer_config::TransformerConfig;
+pub use transformer_model::TransformerANE;
