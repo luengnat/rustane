@@ -60,7 +60,7 @@ pub use mil::{rmsnorm_mil, total_leaked_bytes, LinearLayer, MILBuilder, WeightBl
 pub use platform::ANEAvailability;
 pub use training::{
     ConstantScheduler, CrossEntropyLoss, GradAccumulator, LRScheduler, LossFn, LossScaler,
-    Model as TrainingModel, StepMetrics, Trainer, TrainerBuilder, TrainerError,
+    Model as TrainingModel, Optimizer, StepMetrics, Trainer, TrainerBuilder, TrainerError,
     WarmupCosineScheduler, WarmupLinearScheduler,
 };
 pub use wrapper::{ANECompiler, ANEExecutor, ANERuntime, ANETensor, KernelCache};
