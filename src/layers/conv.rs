@@ -39,6 +39,7 @@ impl Conv2d {
     /// let layer = Conv2d::new(3, 64, (7, 7))
     ///     .stride((2, 2))
     ///     .build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn new(
         in_channels: usize,

@@ -19,6 +19,7 @@ use crate::{Error, Result};
 /// let norm = LayerNormBuilder::new(768)
 ///     .with_epsilon(1e-5)
 ///     .build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct LayerNorm {
     name: String,
@@ -176,6 +177,7 @@ impl Layer for LayerNorm {
 /// let norm = RMSNormBuilder::new(768)
 ///     .with_epsilon(1e-6)
 ///     .build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct RMSNorm {
     name: String,

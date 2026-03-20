@@ -34,6 +34,7 @@ use crate::{Error, Result};
 /// let swiglu = SwiGLUBuilder::new(768)
 ///     .with_multiplier(4)  // 4x expansion like LLaMA
 ///     .build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub struct SwiGLU {
     name: String,
