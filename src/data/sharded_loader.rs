@@ -4,6 +4,7 @@
 //! sharded files, enabling distributed training across multiple data sources.
 
 use std::path::PathBuf;
+use glob::glob;
 use super::{DataLoader, Dataset, Sampler};
 use crate::Result;
 
@@ -167,6 +168,104 @@ impl<D: Dataset, S: Sampler> ShardBatch<D, S> {
     /// Consume self and return all components
     pub fn into_parts(self) -> (usize, PathBuf, DataLoader<D, S>, usize) {
         (self.shard_idx, self.shard_path, self.loader, self.token_count)
+    }
+}
+
+/// Loads tokenized data from multiple shard files on disk
+///
+/// Discovers shard files matching a glob pattern and provides iteration
+/// over them. Each shard can be loaded into its own DataLoader for processing.
+#[derive(Debug)]
+pub struct ShardedDataLoader {
+    /// List of shard file paths discovered via glob pattern
+    shard_files: Vec<PathBuf>,
+    /// Configuration
+    config: ShardConfig,
+}
+
+impl ShardedDataLoader {
+    /// Create new sharded loader from config
+    ///
+    /// # Arguments
+    /// - `config`: ShardConfig with shard pattern and vocab size
+    ///
+    /// # Errors
+    /// Returns error if glob pattern is invalid or no shards found
+    pub fn new(config: &ShardConfig) -> Result<Self> {
+        let mut shard_files = Vec::new();
+
+        match glob(config.shard_pattern()) {
+            Ok(paths) => {
+                for entry in paths {
+                    match entry {
+                        Ok(path) => shard_files.push(path),
+                        Err(e) => {
+                            return Err(crate::Error::Other(
+                                format!("error reading shard path: {}", e)
+                            ))
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                return Err(crate::Error::Other(
+                    format!("invalid glob pattern: {}", e)
+                ))
+            }
+        }
+
+        shard_files.sort();
+
+        if shard_files.is_empty() {
+            return Err(crate::Error::Other(
+                format!("no shard files found matching pattern: {}", config.shard_pattern())
+            ));
+        }
+
+        Ok(ShardedDataLoader {
+            shard_files,
+            config: config.clone(),
+        })
+    }
+
+    /// Get total number of discovered shards
+    pub fn shard_count(&self) -> usize {
+        self.shard_files.len()
+    }
+
+    /// Create iterator over all shards
+    ///
+    /// # Returns
+    /// Iterator that yields (shard_idx, shard_path) tuples for each shard file
+    pub fn iter_shards(&mut self) -> ShardIterator<'_> {
+        ShardIterator {
+            parent: self,
+            current_idx: 0,
+        }
+    }
+}
+
+/// Iterator over shards
+///
+/// Yields (shard_idx, shard_path) tuples for each discovered shard.
+pub struct ShardIterator<'a> {
+    parent: &'a mut ShardedDataLoader,
+    current_idx: usize,
+}
+
+impl<'a> Iterator for ShardIterator<'a> {
+    type Item = Result<(usize, PathBuf)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_idx >= self.parent.shard_files.len() {
+            return None;
+        }
+
+        let shard_path = self.parent.shard_files[self.current_idx].clone();
+        let shard_idx = self.current_idx;
+        self.current_idx += 1;
+
+        Some(Ok((shard_idx, shard_path)))
     }
 }
 
@@ -387,5 +486,47 @@ mod tests {
         assert_eq!(shard_idx, 0);
         assert_eq!(shard_path, PathBuf::from("data/shards/shard_0.jsonl"));
         assert_eq!(token_count, 500_000);
+    }
+
+    /// Test ShardedDataLoader creation with non-existent pattern
+    #[test]
+    fn test_sharded_loader_creation_no_shards() {
+        let config = ShardConfig::new("nonexistent/*.bin".to_string(), 50257).unwrap();
+        let result = ShardedDataLoader::new(&config);
+        assert!(result.is_err());
+    }
+
+    /// Test ShardedDataLoader shard count
+    #[test]
+    fn test_sharded_loader_shard_count() {
+        // When no shards found, should return error (empty glob)
+        let config = ShardConfig::new("nonexistent/*.bin".to_string(), 50257).unwrap();
+        let result = ShardedDataLoader::new(&config);
+        assert!(result.is_err());
+    }
+
+    /// Test ShardedDataLoader iterator interface
+    #[test]
+    fn test_sharded_loader_iter_shards() {
+        // This test verifies the iterator interface exists and basic structure works
+        // We'll use synthetic data with glob pattern matching this file itself
+        let config = ShardConfig::new(
+            "src/data/sharded_loader.rs".to_string(),
+            50257,
+        ).unwrap();
+        
+        let mut loader = ShardedDataLoader::new(&config).unwrap();
+        assert_eq!(loader.shard_count(), 1);
+
+        let mut shard_iter = loader.iter_shards();
+        let first_shard = shard_iter.next();
+        assert!(first_shard.is_some());
+
+        let (shard_idx, shard_path) = first_shard.unwrap().unwrap();
+        assert_eq!(shard_idx, 0);
+        assert!(shard_path.to_string_lossy().contains("sharded_loader.rs"));
+
+        // No more shards
+        assert!(shard_iter.next().is_none());
     }
 }
