@@ -16,10 +16,16 @@ use crate::Error;
 /// An ANEKernel manages the lifecycle of a compiled ANE model including
 /// its input and output IOSurfaces. It provides methods to write input data,
 /// evaluate the kernel, and read output data.
+///
+/// **Note**: This is a test-only wrapper for demonstration purposes.
+/// Production code should use `ANEExecutor` which has full objc2 bindings
+/// and working evaluation. See `src/wrapper/executor.rs` for the complete
+/// implementation.
 #[derive(Debug)]
 pub struct ANEKernel {
     /// Compiled ANE model (opaque handle)
-    /// TODO: objc2 reference to _ANEInMemoryModel
+    /// In production: Would be objc2 reference to _ANEInMemoryModel
+    /// Current: Test-only placeholder, ANEExecutor has the actual implementation
     _model: Option<()>,
 
     /// Input IOSurfaces
@@ -112,9 +118,11 @@ impl ANEKernel {
     /// # Ok::<_, rustane::Error>(())
     /// ```
     pub fn eval(&mut self) -> Result<()> {
-        // TODO: Implement ANE evaluation via objc2 bindings
+        // Note: This is a test-only wrapper. For actual ANE evaluation,
+        // use ANEExecutor which has full objc2 bindings implementation.
+        // See src/wrapper/executor.rs for the working evaluation code.
         Err(Error::NotImplemented(
-            "ANE kernel evaluation not yet implemented".to_string(),
+            "ANEKernel is a test-only wrapper. Use ANEExecutor for production.".to_string(),
         ))
     }
 
