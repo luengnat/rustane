@@ -69,6 +69,11 @@ fn main() -> Result<()> {
         .and_then(|s| s.parse::<f32>().ok())
         .unwrap_or(0.04);
     let matrix_opt = std::env::var("MATRIX_OPT").unwrap_or_else(|_| "adam".to_string());
+    let ane_forward_head = std::env::var("ANE_FORWARD_HEAD")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|v| v != 0)
+        .unwrap_or(cfg!(target_vendor = "apple"));
     let muon_momentum = std::env::var("MUON_MOMENTUM")
         .ok()
         .and_then(|s| s.parse::<f32>().ok())
@@ -182,6 +187,7 @@ fn main() -> Result<()> {
     println!("  Head LR:         {}", head_lr);
     println!("  Matrix LR:       {}", matrix_lr);
     println!("  Matrix opt:      {}", matrix_opt);
+    println!("  ANE head:        {}", ane_forward_head);
     println!("  Muon momentum:   {}", muon_momentum);
     println!("  Muon steps:      {}", muon_backend_steps);
     println!("  Muon nesterov:   {}", muon_nesterov);
@@ -206,6 +212,7 @@ fn main() -> Result<()> {
         .with_tie_embeddings(tie_embeddings)
         .with_logit_softcap(logit_softcap);
     let mut model = TransformerANE::new(&config)?;
+    model.enable_ane_head(ane_forward_head);
     let mut backend = CpuTrainingBackend::new(
         &model,
         embed_lr,

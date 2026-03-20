@@ -14,10 +14,15 @@
 //! learn from data.
 
 use std::ops::Range;
+#[cfg(target_vendor = "apple")]
+use std::panic::AssertUnwindSafe;
+use std::sync::OnceLock;
 
 use rand::random;
 
 use crate::data::Batch;
+#[cfg(target_vendor = "apple")]
+use crate::mil::linear_matmul_compile_request;
 use crate::error::Result;
 use crate::layers::transformer_backward::rmsnorm_backward;
 use crate::training::{Model, TransformerConfig};
@@ -126,6 +131,7 @@ pub struct TransformerANE {
     last_logits: Vec<f32>,
     last_batch_size: usize,
     last_seq_len: usize,
+    use_ane_head: bool,
 }
 
 impl TransformerANE {
@@ -194,12 +200,18 @@ impl TransformerANE {
             last_logits: vec![],
             last_batch_size: 0,
             last_seq_len: 0,
+            use_ane_head: false,
         })
     }
 
     /// Return the model configuration.
     pub fn config(&self) -> &TransformerConfig {
         &self.config
+    }
+
+    /// Enable or disable ANE-backed final projection during forward passes.
+    pub fn enable_ane_head(&mut self, enabled: bool) {
+        self.use_ane_head = enabled;
     }
 
     /// Return contiguous parameter groups for optimizer splitting.
@@ -434,12 +446,42 @@ impl TransformerANE {
 
         let final_in = x;
         let final_norm = rmsnorm_forward(&final_in, self.final_norm(), dim);
-        let logits_proj = linear_forward(
-            &final_norm[..(seq_len - 1) * dim],
-            dim,
-            self.classifier(),
-            vocab_size,
-        );
+        let logits_proj = if self.use_ane_head {
+            #[cfg(target_vendor = "apple")]
+            {
+                let previous_hook = std::panic::take_hook();
+                std::panic::set_hook(Box::new(|_| {}));
+                let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    self.forward_logits_with_ane(&final_norm[..(seq_len - 1) * dim], seq_len - 1)
+                }));
+                std::panic::set_hook(previous_hook);
+                match ane_result {
+                    Ok(Ok(logits)) => logits,
+                    _ => linear_forward(
+                        &final_norm[..(seq_len - 1) * dim],
+                        dim,
+                        self.classifier(),
+                        vocab_size,
+                    ),
+                }
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                linear_forward(
+                    &final_norm[..(seq_len - 1) * dim],
+                    dim,
+                    self.classifier(),
+                    vocab_size,
+                )
+            }
+        } else {
+            linear_forward(
+                &final_norm[..(seq_len - 1) * dim],
+                dim,
+                self.classifier(),
+                vocab_size,
+            )
+        };
         let logits = apply_logit_softcap(&logits_proj, self.config.logit_softcap);
 
         sample_cache.final_in = final_in;
@@ -554,6 +596,41 @@ impl TransformerANE {
 
     fn param_count(&self) -> usize {
         self.config.param_count()
+    }
+}
+
+impl TransformerANE {
+    #[cfg(target_vendor = "apple")]
+    fn forward_logits_with_ane(&self, final_norm: &[f32], positions: usize) -> Result<Vec<f32>> {
+        use crate::ane::WeightBlob;
+        static ANE_HEAD_LOGGED: OnceLock<()> = OnceLock::new();
+
+        let dim = self.config.dim;
+        let vocab_size = self.config.vocab_size;
+        let weights = self.classifier();
+        let weight_blob = WeightBlob::from_f32(weights, vocab_size, dim)?;
+        let request = linear_matmul_compile_request(positions, dim, vocab_size, &weight_blob);
+        let mut executor = request.compile()?;
+
+        let input = transpose_row_major(final_norm, positions, dim);
+        let input_tensor = ANETensor::from_fp32(input, vec![1, dim, positions])?;
+        ANE_HEAD_LOGGED.get_or_init(|| {
+            eprintln!("ANE head projection enabled for transformer logits");
+        });
+        executor.write_input(0, input_tensor.as_bytes())?;
+        executor.eval()?;
+
+        let mut output_bytes = vec![0u8; vocab_size * positions * 4];
+        executor.read_output(0, &mut output_bytes)?;
+        let output = bytes_to_f32_vec(&output_bytes);
+        Ok(transpose_row_major(&output, vocab_size, positions))
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    fn forward_logits_with_ane(&self, _final_norm: &[f32], _positions: usize) -> Result<Vec<f32>> {
+        Err(crate::Error::Other(
+            "ANE head projection is only available on Apple platforms".to_string(),
+        ))
     }
 }
 
@@ -900,6 +977,23 @@ fn apply_logit_softcap_backward(d_logits: &[f32], softcap: f32, logits: &[f32]) 
 
 fn add_residual(lhs: &[f32], rhs: &[f32]) -> Vec<f32> {
     lhs.iter().zip(rhs.iter()).map(|(a, b)| a + b).collect()
+}
+
+fn transpose_row_major(matrix: &[f32], rows: usize, cols: usize) -> Vec<f32> {
+    let mut out = vec![0.0f32; matrix.len()];
+    for r in 0..rows {
+        for c in 0..cols {
+            out[c * rows + r] = matrix[r * cols + c];
+        }
+    }
+    out
+}
+
+fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
 }
 
 fn add_slice(dst: &mut [f32], offset: usize, src: &[f32]) {

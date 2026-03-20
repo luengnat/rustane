@@ -156,6 +156,51 @@ impl IOSurface {
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
+
+    /// Clear the IOSurface to zeros
+    pub fn clear(&self) {
+        // Note: This requires &self but modifies internal state.
+        // In production with real IOSurface, this would use IOSurfaceLock
+        unsafe {
+            std::ptr::write_bytes(self.buffer.as_ptr() as *mut u8, 0, self._capacity);
+        }
+    }
+
+    /// Read data as f32 slice
+    ///
+    /// # Arguments
+    ///
+    /// * `output` - Buffer to fill with f32 values
+    pub fn read_f32(&self, output: &mut [f32]) {
+        let num_floats = self._capacity / 4;
+        assert!(output.len() >= num_floats, "Output buffer too small");
+        
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.buffer.as_ptr() as *const f32,
+                output.as_mut_ptr(),
+                num_floats,
+            );
+        }
+    }
+
+    /// Write data from f32 slice
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - f32 values to write
+    pub fn write_f32(&self, data: &[f32]) {
+        let num_bytes = data.len() * 4;
+        assert!(num_bytes <= self._capacity, "Data too large for IOSurface");
+        
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                self.buffer.as_ptr() as *mut f32,
+                data.len(),
+            );
+        }
+    }
 }
 
 impl Drop for IOSurface {

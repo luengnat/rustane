@@ -258,6 +258,8 @@ pub mod backend;
 pub mod transformer_config;
 pub mod transformer_model;
 pub mod ane_backward_executor;
+pub mod ane_backward_kernel;
+pub mod ane_gradient_buffer;
 
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};
@@ -269,3 +271,5 @@ pub use trainer::{AdamOptimizer, Optimizer, StepMetrics, Trainer, TrainerBuilder
 pub use transformer_config::TransformerConfig;
 pub use transformer_model::{ParameterGroup, ParameterGroupKind, TransformerANE};
 pub use ane_backward_executor::{ANEGradientAccumulator, ANEBackwardModel};
+pub use ane_backward_kernel::{ANEBackwardKernel, ANEBackwardKernelCache};
+pub use ane_gradient_buffer::ANEGradientBuffer;
