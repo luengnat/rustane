@@ -27,7 +27,7 @@ fn create_synthetic_dataset(num_samples: usize, seq_len: usize, _vocab_size: u32
     let mut samples = Vec::new();
     for i in 0..num_samples {
         let sample: Vec<u32> = (0..seq_len as u32)
-            .map(|j| (i as u32 + j) % 1000)
+            .map(|j| i as u32 + j % 1000)
             .collect();
         samples.push(sample);
     }
@@ -297,7 +297,7 @@ fn test_sharded_training_with_multiple_steps() -> Result<()> {
         let chunk_count = chunks.len();
         let chunk_results: Vec<Result<Batch>> = chunks.into_iter().map(Ok).collect();
 
-        let metrics = trainer.train_accumulated_steps(chunk_results.into_iter(), chunk_count)?;
+        let metrics = trainer.train_accumulated_steps(chunk_results.into_iter(), chunk_count as usize)?;
         metrics_history.push(metrics);
     }
 
