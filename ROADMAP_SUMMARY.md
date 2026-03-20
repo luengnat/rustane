@@ -223,8 +223,15 @@ TOTAL: XX.XX ms
 
 ## 📋 Future Directions
 
-- [ ] Support for larger models (7B+)
-- [ ] Flash attention implementation
-- [ ] Optimizer implementations (AdamW, Lion)
-- [ ] Learning rate schedulers
-- [ ] WandB/MLflow integration
+### Already Implemented (But Not Previously Listed)
+- [x] **Learning Rate Schedulers** - ConstantScheduler, WarmupLinearScheduler, WarmupCosineScheduler
+- [x] **Adam Optimizer** - Full Adam implementation with hyperparameters
+
+### Potential Future Enhancements
+- [ ] Support for larger models (7B+) - requires model architecture work
+- [ ] Flash attention implementation - memory-efficient attention for long sequences
+- [ ] Additional optimizers (AdamW, Lion) - AdamW decoupled weight decay, Lion adaptive
+- [ ] WandB/MLflow integration - experiment tracking and logging
+- [ ] Gradient accumulation improvements - async gradient sync
+- [ ] Model parallelism - sharding large models across devices
+- [ ] Sequence parallelism - for training very long sequences
