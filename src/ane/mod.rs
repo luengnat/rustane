@@ -14,11 +14,14 @@ pub(crate) mod sys;
 pub mod io_surface;
 /// Weight blob builders for ANE-compatible formats.
 pub mod weight_blob;
+/// ANE kernel wrapper for managing compiled models and I/O operations.
+pub mod kernel;
 
 pub use error::ANEError;
 pub use io_surface::IOSurface;
 pub use runtime::ANECompileRequest;
 pub use weight_blob::WeightBlob;
+pub use kernel::ANEKernel;
 
 /// Result type for ANE operations
 pub type Result<T> = std::result::Result<T, ANEError>;
