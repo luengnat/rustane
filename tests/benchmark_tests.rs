@@ -103,6 +103,7 @@ mod benchmarks {
     }
 
     #[test]
+    #[ignore = "Requires specific ANE hardware support - ANE compilation returns null kernel on some hardware"]
     fn benchmark_rmsnorm_backward_ms() {
         let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
         let gen = RMSNormBackwardGen::new();

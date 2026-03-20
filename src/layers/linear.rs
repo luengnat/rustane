@@ -12,6 +12,7 @@ use crate::{Error, Result};
 /// let layer = Linear::new(256, 512)
 ///     .with_bias(false)
 ///     .build()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone, Debug)]
 pub struct Linear {
@@ -191,6 +192,7 @@ impl LinearBuilder {
     /// let layer = Linear::new(256, 512)
     ///     .with_bias(false)
     ///     .build()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn build(self) -> Result<Linear> {
         // Validate dimensions
