@@ -303,7 +303,8 @@ impl ErrorReporter {
 
     /// Print summary report
     pub fn print_summary(&mut self) {
-        let _ = writeln!(self.output, "{}", self.log.format_summary());
+        let summary = self.log.format_summary();
+        let _ = writeln!(self.output, "{}", summary);
     }
 
     /// Check if any critical errors were logged
