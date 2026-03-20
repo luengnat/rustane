@@ -53,8 +53,8 @@ fn main() -> Result<()> {
 
         let mut model = SimpleModel::new(32);
         let mut trainer = TrainerBuilder::new(&mut model)
-            .with_optimizer(SimpleOptimizer::new(0.1))
-            .with_scheduler(ConstantScheduler::new(0.1))
+            .with_optimizer(SimpleOptimizer::new(0.5))
+            .with_scheduler(ConstantScheduler::new(0.5))
             .with_loss_fn(CrossEntropyLoss::new())
             .build()?;
 
@@ -134,8 +134,8 @@ fn main() -> Result<()> {
 
     let mut model = SimpleModel::new(32);
     let mut trainer = TrainerBuilder::new(&mut model)
-        .with_optimizer(SimpleOptimizer::new(0.1))
-        .with_scheduler(ConstantScheduler::new(0.1))
+        .with_optimizer(SimpleOptimizer::new(0.5))
+        .with_scheduler(ConstantScheduler::new(0.5))
         .with_loss_fn(CrossEntropyLoss::new())
         .build()?;
 
@@ -595,8 +595,8 @@ impl Model for SimpleModel {
             }
         }
 
-        // Scale gradients for stable training
-        let grads = grad_sum.iter().map(|&g| g * 0.1).collect();
+        // Scale gradients for stable training (larger scale = faster learning)
+        let grads = grad_sum.iter().map(|&g| g * 1.0).collect();
 
         Ok(grads)
     }
