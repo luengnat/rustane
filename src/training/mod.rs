@@ -255,7 +255,6 @@ pub mod ane_persistent_buffer;
 pub mod backend;
 pub mod benchmark;
 pub mod checkpoint;
-pub mod distributed;
 pub mod grad_accum;
 pub mod loss;
 pub mod loss_scale;
@@ -272,9 +271,6 @@ pub use backend::{CpuTrainingBackend, TrainingBackend};
 pub use benchmark::BackwardBenchmark;
 pub use checkpoint::{
     checkpoint_filename, Checkpoint, LossScalerState, ModelConfig, OptimizerState,
-};
-pub use distributed::{
-    AllReduce, DistributedOptimizerState, DistributedSynchronizer, ReduceMode,
 };
 pub use grad_accum::GradAccumulator;
 pub use loss::{CrossEntropyLoss, LossFn, MSELoss};

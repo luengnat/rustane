@@ -516,7 +516,9 @@ mod tests {
         let other_grads = vec![3.0f32, 4.0, 5.0];
 
         let all_reduce = AllReduce::new(2);
-        all_reduce.all_reduce_in_place(&mut my_grads, &[other_grads]).unwrap();
+        all_reduce
+            .all_reduce_in_place(&mut my_grads, &[other_grads])
+            .unwrap();
 
         assert_eq!(my_grads, vec![2.0, 3.0, 4.0]); // Average
     }

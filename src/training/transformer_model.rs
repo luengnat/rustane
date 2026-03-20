@@ -1547,25 +1547,23 @@ impl TransformerANE {
         let sample = &self.cached.samples[0];
         let w = self.final_norm();
         let dim = config.dim;
+        #[allow(unused_variables)]
+        let hidden_dim = config.hidden_dim;
 
         // 1. Final RMSNorm backward on ANE
         let rmsnorm_start = Instant::now();
         let d_out = vec![0.01f32; sample.final_in.len()];
         let gen = RMSNormBackwardGen::new();
         let mil = gen.generate(&config)?;
-        eprintln!("[DEBUG] RMSNorm MIL generated, len={}", mil.len());
-        eprintln!("[DEBUG] MIL code: {}", &mil[..mil.len().min(500)]);
         let mut input = d_out;
         input.extend_from_slice(&sample.final_in);
         input.extend_from_slice(w);
-        eprintln!("[DEBUG] Input size: {} floats", input.len());
         let req = ANECompileRequest::new(
             &mil,
             vec![input.len() * 4],
             vec![sample.final_in.len() * 4, dim * 4],
         );
 
-        eprintln!("[DEBUG] Compiling RMSNorm backward on ANE...");
         match req.compile() {
             Ok(mut ex) => {
                 let slice = unsafe {
@@ -1594,6 +1592,7 @@ impl TransformerANE {
         for layer_idx in (0..config.n_layers).rev() {
             let layer_start = Instant::now();
             let layer_layout = &layout.layers[layer_idx];
+            let hidden_dim = config.hidden_dim;
             let mut layer_timing = LayerTimingStats {
                 layer_idx,
                 ..Default::default()
@@ -1604,23 +1603,117 @@ impl TransformerANE {
             let rms_ffn_w: Vec<f32> = self.trainable_params[layer_layout.rms_ffn.clone()].to_vec();
 
             // Now borrow layer_cache for read-only access
-            let _layer_cache = &sample.layers[layer_idx];
+            let layer_cache = &sample.layers[layer_idx];
 
             // 2a. FFN backward on ANE - Execute W1, W2, W3 gradients
             let ffn_start = Instant::now();
             let ffn_gen = FFNBackwardGen::new();
-            if let Ok(_ffn_mil) = ffn_gen.generate(&config) {
-                // FFN MIL generated - ready for ANE execution
-                // Phase 4: Full ANE execution with gradient chaining
+            if let Ok(ffn_mil) = ffn_gen.generate(&config) {
+                // Prepare FFN backward inputs from cached activations
+                let d_current_slice = vec![0.01f32; layer_cache.ffn_hidden.len()];
+                let mut ffn_input = d_current_slice.clone();
+                ffn_input.extend_from_slice(&layer_cache.x_ffn_norm);
+                ffn_input.extend_from_slice(&layer_cache.h1);
+                ffn_input.extend_from_slice(&layer_cache.silu);
+                ffn_input.extend_from_slice(&layer_cache.h3);
+                ffn_input.extend_from_slice(&layer_cache.ffn_hidden);
+
+                let ffn_req = ANECompileRequest::new(
+                    &ffn_mil,
+                    vec![ffn_input.len() * 4],
+                    vec![dim * hidden_dim * 4 * 3], // d_w1, d_w3, d_w2
+                );
+
+                if let Ok(mut ex) = ffn_req.compile() {
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(
+                            ffn_input.as_ptr() as *const u8,
+                            ffn_input.len() * 4,
+                        )
+                    };
+                    if ex.write_input(0, slice).is_ok() && ex.eval().is_ok() {
+                        // Read gradient outputs and accumulate
+                        let mut grad_bytes = vec![0u8; dim * hidden_dim * 4 * 3];
+                        if ex.read_output(0, &mut grad_bytes).is_ok() {
+                            let grads_flat: Vec<f32> = grad_bytes
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            // Split into d_w1, d_w3, d_w2 and accumulate
+                            let w1_size = dim * hidden_dim;
+                            let w3_size = dim * hidden_dim;
+                            if grads_flat.len() >= w1_size + w3_size + w1_size * hidden_dim / dim {
+                                for (i, g) in grads_flat[..w1_size].iter().enumerate() {
+                                    grads[layer_layout.w1.start + i] += g;
+                                }
+                                for (i, g) in
+                                    grads_flat[w1_size..w1_size + w3_size].iter().enumerate()
+                                {
+                                    grads[layer_layout.w3.start + i] += g;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             layer_timing.ffn_backward_ms = ffn_start.elapsed().as_secs_f64() * 1000.0;
 
             // 2b. Attention backward on ANE - Execute WQ, WK, WV, WO gradients
             let attn_start = Instant::now();
             let attn_gen = AttentionBackwardGen::new();
-            if let Ok(_attn_mil) = attn_gen.generate(&config) {
-                // Attention MIL generated - ready for ANE execution
-                // Phase 4: Full ANE execution with gradient chaining
+            if let Ok(attn_mil) = attn_gen.generate(&config) {
+                // Prepare Attention backward inputs from cached activations
+                let d_current_slice = vec![0.01f32; layer_cache.attn_out.len()];
+                let mut attn_input = d_current_slice.clone();
+                attn_input.extend_from_slice(&layer_cache.x_attn_norm);
+                attn_input.extend_from_slice(&layer_cache.q);
+                attn_input.extend_from_slice(&layer_cache.k);
+                attn_input.extend_from_slice(&layer_cache.v);
+                attn_input.extend_from_slice(&layer_cache.attn_probs);
+                attn_input.extend_from_slice(&layer_cache.attn_out);
+
+                let attn_req = ANECompileRequest::new(
+                    &attn_mil,
+                    vec![attn_input.len() * 4],
+                    vec![dim * dim * 4 * 4], // d_wq, d_wk, d_wv, d_wo
+                );
+
+                if let Ok(mut ex) = attn_req.compile() {
+                    let slice = unsafe {
+                        std::slice::from_raw_parts(
+                            attn_input.as_ptr() as *const u8,
+                            attn_input.len() * 4,
+                        )
+                    };
+                    if ex.write_input(0, slice).is_ok() && ex.eval().is_ok() {
+                        // Read gradient outputs and accumulate
+                        let mut grad_bytes = vec![0u8; dim * dim * 4 * 4];
+                        if ex.read_output(0, &mut grad_bytes).is_ok() {
+                            let grads_flat: Vec<f32> = grad_bytes
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            // Split into d_wq, d_wk, d_wv, d_wo and accumulate
+                            let w_size = dim * dim;
+                            if grads_flat.len() >= w_size * 4 {
+                                for (i, g) in grads_flat[..w_size].iter().enumerate() {
+                                    grads[layer_layout.wq.start + i] += g;
+                                }
+                                for (i, g) in grads_flat[w_size..w_size * 2].iter().enumerate() {
+                                    grads[layer_layout.wk.start + i] += g;
+                                }
+                                for (i, g) in grads_flat[w_size * 2..w_size * 3].iter().enumerate()
+                                {
+                                    grads[layer_layout.wv.start + i] += g;
+                                }
+                                for (i, g) in grads_flat[w_size * 3..w_size * 4].iter().enumerate()
+                                {
+                                    grads[layer_layout.wo.start + i] += g;
+                                }
+                            }
+                        }
+                    }
+                }
             }
             layer_timing.attention_backward_ms = attn_start.elapsed().as_secs_f64() * 1000.0;
 
