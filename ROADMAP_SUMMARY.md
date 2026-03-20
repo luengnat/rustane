@@ -145,11 +145,15 @@ TOTAL: XX.XX ms
 - [x] DataType enum updated with BF16
 - [ ] Full FP16/BF16 forward/backward pass integration (TODO)
 
-### 📋 Task 3: Distributed Training (Multi-ANE)
-- [ ] Multi-ANE device detection
-- [ ] Tensor sharding across ANEs
-- [ ] Gradient synchronization
-- [ ] Distributed optimizer state
+### ✅ Task 3: Distributed Training (Multi-ANE)
+- [x] Multi-ANE device detection (detect_ane_devices)
+- [x] ANEDeviceInfo with device capabilities
+- [x] MultiANEConfig for distributed training setup
+- [x] Batch distribution validation (per_device_batch_size)
+- [x] Distributed training example (distributed_training.rs)
+- [ ] Tensor sharding across ANEs (TODO - requires sharding MIL generation)
+- [ ] Gradient synchronization (TODO - requires all-reduce implementation)
+- [ ] Distributed optimizer state (TODO)
 
 ### ✅ Task 4: Model Export/Import (Checkpointing)
 - [x] Model state serialization (Checkpoint struct)

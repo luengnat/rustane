@@ -197,6 +197,8 @@ pub mod fallback;
 pub mod io_surface;
 /// ANE kernel wrapper for managing compiled models and I/O operations.
 pub mod kernel;
+/// Multi-ANE distributed training support
+pub mod multi_ane;
 /// Automatic retry with adaptive batch size reduction
 pub mod retry_policy;
 /// Low-level runtime and compile/load/eval support for the private ANE APIs.
@@ -211,6 +213,10 @@ pub use error_logging::{ErrorLog, ErrorLogEntry, ErrorReporter, ErrorSeverity};
 pub use fallback::{FallbackExecutor, FallbackResult, FallbackStats, FallbackStrategy};
 pub use io_surface::IOSurface;
 pub use kernel::ANEKernel;
+pub use multi_ane::{
+    detect_ane_devices, get_optimal_device_count, per_device_batch_size, validate_device_count,
+    ANEDeviceInfo, MultiANEConfig,
+};
 pub use retry_policy::{
     execute_with_retry, RetryConfig, RetryPolicy, RetryResult, RetryableOperation,
 };
