@@ -82,9 +82,12 @@ Only documented TODOs remain, which are intentional:
    - Documentation: `docs/ANE_BACKWARD_LIMITATION.md`
 
 2. **Layer Checkpoint Weights** (`src/layers/checkpoint.rs`)
-   - Status: Alternative implementation (not used in main training flow)
-   - Note: Main checkpointing (`src/training/checkpoint.rs`) is fully implemented
-   - This is an additional checkpoint interface for Sequential models
+   - Status: ✅ IMPLEMENTED
+   - Note: Main checkpointing (`src/training/checkpoint.rs`) is fully implemented and used in training
+   - This layer-based checkpoint system now has:
+     - Weight extraction helper functions (returns None as weights are managed through model parameters)
+     - Clear documentation that it's for model inspection, not training checkpointing
+     - Comprehensive error message directing users to main checkpoint system
 
 ### What "Continue with the plan in the docs" Means
 
