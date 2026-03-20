@@ -89,6 +89,10 @@ impl Layer for Linear {
         };
         weights + bias
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl WeightsLayer for Linear {

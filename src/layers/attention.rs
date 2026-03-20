@@ -187,6 +187,10 @@ impl Layer for MultiHeadAttention {
             + self.v_proj.num_parameters()
             + self.out_proj.num_parameters()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl MultiHeadAttention {
@@ -381,6 +385,10 @@ impl Layer for SelfAttention {
 
     fn num_parameters(&self) -> usize {
         self.inner.num_parameters()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

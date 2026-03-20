@@ -64,6 +64,10 @@ impl Layer for ReLU {
     fn num_parameters(&self) -> usize {
         0
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// SiLU (Swish) activation function
@@ -127,6 +131,10 @@ impl Layer for SiLU {
     fn num_parameters(&self) -> usize {
         0
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// GELU activation function
@@ -189,6 +197,10 @@ impl Layer for GELU {
 
     fn num_parameters(&self) -> usize {
         0
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

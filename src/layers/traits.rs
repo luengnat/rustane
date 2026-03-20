@@ -66,6 +66,9 @@ pub trait Layer {
 
     /// Get the number of parameters
     fn num_parameters(&self) -> usize;
+
+    /// Return as Any for downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Layer builder trait
@@ -143,6 +146,10 @@ mod tests {
 
         fn num_parameters(&self) -> usize {
             0
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
         }
     }
 

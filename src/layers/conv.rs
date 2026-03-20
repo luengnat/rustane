@@ -89,6 +89,10 @@ impl Layer for Conv2d {
         let bias = if self.has_bias { self.out_channels } else { 0 };
         weights + bias
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl WeightsLayer for Conv2d {

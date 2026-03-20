@@ -226,6 +226,10 @@ impl Layer for SharedLayer {
     fn num_parameters(&self) -> usize {
         self.inner.num_parameters()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 impl Model for Sequential {

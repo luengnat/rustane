@@ -226,6 +226,10 @@ impl Layer for SwiGLU {
     fn num_parameters(&self) -> usize {
         self.w_gate.len() + self.w_up.len() + self.w_down.len()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ============================================================================

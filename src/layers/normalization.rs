@@ -151,6 +151,10 @@ impl Layer for LayerNorm {
     fn num_parameters(&self) -> usize {
         self.gamma.len() + self.beta.len()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 // ============================================================================
@@ -285,6 +289,10 @@ impl Layer for RMSNorm {
 
     fn num_parameters(&self) -> usize {
         self.gamma.len()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
