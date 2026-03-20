@@ -34,6 +34,7 @@ use crate::ane::Result;
 use super::BackwardMILGenerator;
 
 /// MIL generator for RMSNorm backward pass
+#[derive(Debug)]
 pub struct RMSNormBackwardGen;
 
 impl RMSNormBackwardGen {
@@ -141,7 +142,7 @@ impl BackwardMILGenerator for RMSNormBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
         // TODO: Implement validation in Phase 3b
         // For now, return Ok to allow compilation to proceed
         // Validation will:

@@ -94,4 +94,4 @@ pub use ffn_backward_gen::FFNBackwardGen;
 pub use loss_backward_gen::LossBackwardGen;
 
 // Re-export validation
-pub use validation::{BackwardValidationSuite, ValidationReport, ValidationConfig};
+pub use validation::{BackwardValidationSuite, ValidationReport};

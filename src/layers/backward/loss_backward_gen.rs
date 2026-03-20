@@ -37,6 +37,7 @@ use crate::ane::Result;
 use super::BackwardMILGenerator;
 
 /// MIL generator for cross-entropy loss backward pass
+#[derive(Debug)]
 pub struct LossBackwardGen;
 
 impl LossBackwardGen {
@@ -66,8 +67,8 @@ impl LossBackwardGen {
     /// softmax = exp_logits / sum(exp_logits)
     /// ```
     fn generate_mil_code(&self, config: &TransformerConfig) -> String {
-        let batch_size = 1; // Will be dynamic
-        let seq_len = config.seq_len;
+        let _batch_size = 1; // Will be dynamic
+        let _seq_len = config.seq_len;
         let vocab_size = config.vocab_size;
 
         format!(r#"
@@ -131,7 +132,7 @@ impl BackwardMILGenerator for LossBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
         // TODO: Implement validation in Phase 3b
         Ok(())
     }

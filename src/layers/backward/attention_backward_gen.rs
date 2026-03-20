@@ -47,6 +47,7 @@ use crate::ane::Result;
 use super::BackwardMILGenerator;
 
 /// MIL generator for multi-head attention backward pass
+#[derive(Debug)]
 pub struct AttentionBackwardGen;
 
 impl AttentionBackwardGen {
@@ -73,12 +74,12 @@ impl AttentionBackwardGen {
     ///   - d_W_Q, d_W_K, d_W_V, d_W_O: Gradients w.r.t. weights
     /// ```
     fn generate_mil_code(&self, config: &TransformerConfig) -> String {
-        let batch_size = 1; // Will be dynamic
-        let seq_len = config.seq_len;
+        let _batch_size = 1; // Will be dynamic
+        let _seq_len = config.seq_len;
         let hidden_dim = config.dim;
         let num_heads = config.n_heads;
         let d_k = config.head_dim;
-        let scale = (1.0 / (d_k as f32).sqrt());
+        let scale = 1.0 / (d_k as f32).sqrt();
 
         format!(r#"
 #!irms6
@@ -218,7 +219,7 @@ impl BackwardMILGenerator for AttentionBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
         // TODO: Implement validation in Phase 3b
         // For now, return Ok to allow compilation to proceed
         Ok(())

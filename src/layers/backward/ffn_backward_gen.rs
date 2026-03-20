@@ -49,6 +49,7 @@ use crate::ane::Result;
 use super::BackwardMILGenerator;
 
 /// MIL generator for feed-forward network backward pass
+#[derive(Debug)]
 pub struct FFNBackwardGen;
 
 impl FFNBackwardGen {
@@ -74,8 +75,8 @@ impl FFNBackwardGen {
     ///   - d_W_gate, d_W_up, d_W_down: Gradients w.r.t. weights
     /// ```
     fn generate_mil_code(&self, config: &TransformerConfig) -> String {
-        let batch_size = 1; // Will be dynamic
-        let seq_len = config.seq_len;
+        let _batch_size = 1; // Will be dynamic
+        let _seq_len = config.seq_len;
         let hidden_dim = config.dim;
         let ffn_hidden_dim = config.hidden_dim;
 
@@ -182,7 +183,7 @@ impl BackwardMILGenerator for FFNBackwardGen {
         Ok(self.generate_mil_code(config))
     }
 
-    fn validate(&self, config: &TransformerConfig) -> Result<()> {
+    fn validate(&self, _config: &TransformerConfig) -> Result<()> {
         // TODO: Implement validation in Phase 3b
         Ok(())
     }
