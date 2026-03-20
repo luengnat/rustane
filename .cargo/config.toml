@@ -6,6 +6,16 @@
 # Trade-off: slower compilation, but uses less RAM
 codegen-units = 16
 
+[env]
+# Default test thread limit to prevent OOM
+# Override with: TEST_THREADS=4 cargo test
+TEST_THREADS = "1"
+
+# Terminal output settings
+[term]
+verbose = false
+color = "auto"
+
 [target.x86_64-apple-darwin]
 # Rust flags for macOS x86_64
 rustflags = []
@@ -14,17 +24,19 @@ rustflags = []
 # Rust flags for Apple Silicon (ARM64)
 rustflags = []
 
-[env]
-# Default test thread limit to prevent OOM
-# Override with: TEST_THREADS=4 cargo test
-TEST_THREADS = "2"
-
-# Test configuration - these settings apply when running `cargo test`
-[term]
-verbose = false
-color = "auto"
-
-# Note: To limit test threads, use:
-#   cargo test -- --test-threads=2
-# Or use the memory-efficient script:
-#   ./scripts/test.sh
+# ============================================================================
+# TEST PARALLELISM DISABLED
+# ============================================================================
+#
+# Due to memory constraints (45GB+ with parallel tests), we run tests with
+# TEST_THREADS=1 by default. This prevents OOM crashes.
+#
+# To override:
+#   TEST_THREADS=4 cargo test
+#
+# RECOMMENDED: Use the memory-efficient test script instead:
+#   ./scripts/test.sh              # Library tests (4-8GB RAM)
+#   ./scripts/test.sh all          # All tests (8-12GB RAM)
+#   ./scripts/test.sh integration  # Integration tests only
+#
+# ============================================================================
