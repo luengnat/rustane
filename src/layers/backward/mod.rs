@@ -37,6 +37,7 @@ pub mod rmsnorm_backward_gen;
 pub mod attention_backward_gen;
 pub mod ffn_backward_gen;
 pub mod loss_backward_gen;
+pub mod validation;
 
 use crate::training::TransformerConfig;
 use crate::ane::Result;
@@ -91,3 +92,6 @@ pub use rmsnorm_backward_gen::RMSNormBackwardGen;
 pub use attention_backward_gen::AttentionBackwardGen;
 pub use ffn_backward_gen::FFNBackwardGen;
 pub use loss_backward_gen::LossBackwardGen;
+
+// Re-export validation
+pub use validation::{BackwardValidationSuite, ValidationReport, ValidationConfig};
