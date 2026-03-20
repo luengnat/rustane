@@ -6,7 +6,8 @@
 
 pub mod error;
 pub(crate) mod blobs;
-pub(crate) mod runtime;
+pub mod runtime;
 pub(crate) mod sys;
 
 pub use error::ANEError;
+pub use runtime::ANECompileRequest;
