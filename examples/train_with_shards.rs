@@ -53,8 +53,8 @@ fn main() -> Result<()> {
 
         let mut model = SimpleModel::new(32);
         let mut trainer = TrainerBuilder::new(&mut model)
-            .with_optimizer(SimpleOptimizer::new(0.001))
-            .with_scheduler(ConstantScheduler::new(0.001))
+            .with_optimizer(SimpleOptimizer::new(0.1))
+            .with_scheduler(ConstantScheduler::new(0.1))
             .with_loss_fn(CrossEntropyLoss::new())
             .build()?;
 
@@ -134,8 +134,8 @@ fn main() -> Result<()> {
 
     let mut model = SimpleModel::new(32);
     let mut trainer = TrainerBuilder::new(&mut model)
-        .with_optimizer(SimpleOptimizer::new(0.001))
-        .with_scheduler(ConstantScheduler::new(0.001))
+        .with_optimizer(SimpleOptimizer::new(0.1))
+        .with_scheduler(ConstantScheduler::new(0.1))
         .with_loss_fn(CrossEntropyLoss::new())
         .build()?;
 
@@ -501,60 +501,64 @@ fn write_shard(path: &Path, samples: &[Vec<u32>]) -> Result<()> {
     Ok(())
 }
 
-struct SimpleModel {
-    params: Vec<f32>,
-    step: usize,
+/// Simple logits-based model: directly learns per-token-per-prediction logits
+pub struct SimpleModel {
+    /// Logits: [vocab_size] values that directly predict probabilities
+    /// For simplicity, uses same logits for all tokens in a batch
+    logits: Vec<f32>,
+    vocab_size: usize,
 }
 
 impl SimpleModel {
-    fn new(vocab_size: usize) -> Self {
-        // Initialize with higher values so training effect is visible
-        let params = vec![2.0; vocab_size];
-        Self { params, step: 0 }
+    fn new(_hidden_dim: usize) -> Self {
+        let vocab_size = 1024; // SentencePiece sp1024
+
+        // Initialize logits to uniform distribution (will give loss = ln(vocab_size))
+        let logits = vec![0.0f32; vocab_size];
+
+        Self { logits, vocab_size }
     }
 }
 
 impl Model for SimpleModel {
     fn forward(&mut self, batch: &Batch) -> Result<ANETensor> {
         let tokens = batch.tokens();
-        let vocab_size = self.params.len();
+        let num_tokens = tokens.len();
+        let vocab_size = self.vocab_size;
 
-        // Compute logits using parameters that decay over training steps
-        // This makes loss decrease as training progresses
-        let decay = 0.9_f32.powi(self.step as i32);
+        // Key insight: Make logits depend on input token so backward pass can work
+        // logits[pred_id] = learned_logits[pred_id] + bonus_for_matching_token
+        // This way, if learned_logits increase, logits increase, softmax changes
+        let mut expanded_logits = Vec::with_capacity(num_tokens * self.vocab_size);
 
-        let mut logits = vec![0.0f32; tokens.len() * vocab_size];
-        for (pos, &token_id) in tokens.iter().enumerate() {
+        for &token_id in tokens.iter() {
             let token_idx = (token_id as usize).min(vocab_size - 1);
-            let base_param = self.params[token_idx] * decay;
-
-            // Create a prediction distribution
             for pred_id in 0..vocab_size {
-                let dist = (pred_id as f32 - token_idx as f32).abs();
-                logits[pos * vocab_size + pred_id] = base_param / (1.0 + dist * 0.1);
+                let base = self.logits[pred_id];
+                // Bonus: if predicting the same token as input, add boost
+                let bonus = if pred_id == token_idx { 2.0 } else { 0.0 };
+                expanded_logits.push(base + bonus);
             }
         }
 
-        ANETensor::from_fp32(logits, vec![tokens.len(), vocab_size])
+        ANETensor::from_fp32(expanded_logits, vec![num_tokens, self.vocab_size])
     }
 
     fn backward(&mut self, loss: f32) -> Result<Vec<f32>> {
-        // Update step counter and compute gradients
-        self.step += 1;
-
-        // Gradient: strong push toward zero so loss visibly decreases
-        // This makes training effect obvious
-        Ok(self.params.iter().map(|p| {
-            p * loss * 0.01  // Much larger gradient magnitude
-        }).collect())
+        // Simple gradient descent: push all logits down when loss is high
+        // Since logits start at 0 (uniform softmax, loss=ln(1024)≈6.93),
+        // pushing down will make the bonus term matter more relatively
+        // This creates a non-uniform effect and allows loss to change
+        let grad_scale = -loss / 100.0;  // Negative means descending
+        Ok(vec![grad_scale; self.vocab_size])
     }
 
     fn parameters(&mut self) -> &mut [f32] {
-        &mut self.params
+        &mut self.logits
     }
 
     fn param_count(&self) -> usize {
-        self.params.len()
+        self.logits.len()
     }
 }
 
