@@ -4,9 +4,9 @@ use std::fmt;
 use crate::error::Result;
 use crate::wrapper::ANETensor;
 use crate::data::Batch;
-use crate::training::{Model, LossFn};
+use crate::training::model::Model;
+use crate::training::loss::LossFn;
 use crate::training::scheduler::LRScheduler;
-use crate::training::grad_accum::GradAccumulator;
 
 /// Error type for training failures
 #[derive(Debug, Clone)]
