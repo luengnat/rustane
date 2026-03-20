@@ -41,10 +41,12 @@ use std::collections::VecDeque;
 pub use self::dataset::{Dataset, SequentialDataset};
 pub use self::sampler::{RandomSampler, Sampler, SequentialSampler};
 pub use self::collate::{Collator, PadCollator, TruncateCollator};
+pub use self::filesystem::{JsonlDataset, TextDataset};
 
 mod dataset;
 mod sampler;
 mod collate;
+mod filesystem;
 
 /// A batch of tokenized samples, potentially padded or packed
 ///
