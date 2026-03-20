@@ -1,0 +1,83 @@
+# Pre-commit hooks for Rustane
+# See https://pre-commit.com for more information
+
+repos:
+  # Rust formatting with rustfmt
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: Rust Format
+        entry: cargo fmt --
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+  # Rust linting with clippy
+  - repo: local
+    hooks:
+      - id: clippy
+        name: Rust Lint
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+  # Run tests before committing
+  - repo: local
+    hooks:
+      - id: cargo-test
+        name: Cargo Test
+        entry: cargo test --lib
+        language: system
+        pass_filenames: false
+        types: [rust]
+        # Only run tests on staged files to avoid long waits
+        files: ^src/
+
+  # Check for common issues
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim Trailing Whitespace
+        description: Trim trailing whitespace from source files
+        types: [text]
+        exclude: ^(examples/|tests/|docs/)
+
+      - id: end-of-file-fixer
+        name: Fix End of Files
+        description: Ensure files end with a newline
+        types: [text]
+
+      - id: check-yaml
+        name: Check YAML
+        types: [yaml]
+
+      - id: check-toml
+        name: Check TOML
+        types: [toml]
+
+      - id: check-added-large-files
+        name: Check for Large Files
+        args: ['--maxkb=1000']
+        exclude: ^(examples/|tests/|target/)
+
+  # Check documentation
+  - repo: local
+    hooks:
+      - id: doc-tests
+        name: Documentation Tests
+        entry: cargo test --doc
+        language: system
+        pass_filenames: false
+        types: [rust]
+        files: ^src/
+
+# Exclude certain files from pre-commit
+exclude: |
+  ^examples/.*\.rs$
+  ^target/
+  ^\.cargo/
+  ^\.github/
+  ^ROADMAP_SUMMARY\.md$
+  ^CHANGELOG\.md$

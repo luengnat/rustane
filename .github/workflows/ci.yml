@@ -1,14 +1,28 @@
 name: CI
 
+# Run CI on push to main and on pull requests
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
+  # Main test job - runs on macOS (required for ANE)
   test:
+    name: Test
     runs-on: macos-15
 
     steps:
@@ -22,10 +36,28 @@ jobs:
           ref: main
           path: ANE
 
-      - name: Install Rust
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build ANE bridge
         working-directory: ANE/bridge
@@ -39,14 +71,80 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Run library and integration tests
-        run: cargo test --locked --lib --tests
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run library tests
+        run: cargo test --lib --verbose
+
+      - name: Run integration tests
+        run: cargo test --tests --verbose
+
+      - name: Run documentation tests
+        run: cargo test --doc
+
+      - name: Check examples compile
+        run: cargo check --examples
 
       - name: Run simple inference example
         run: cargo run --example simple_inference --quiet
 
-      - name: Run packed matmul benchmark
-        run: cargo run --example ane_dynamic_matmul_benchmark --quiet
+      - name: Run error handling example
+        run: cargo run --example error_handling_recovery --quiet
 
-      - name: Run tiled rectangular benchmark
-        run: cargo run --example ane_tiled_rectangular_matmul_benchmark --quiet
+  # Security audit
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Run cargo audit
+        uses: rustsec/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Check documentation
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ubuntu-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ubuntu-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ubuntu-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build documentation
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
