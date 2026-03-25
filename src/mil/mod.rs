@@ -19,7 +19,8 @@ pub use cpu_fallback::{
 };
 pub use programs::{
     bwd_ffn_compile_request, bwd_ffn_mil, bwd_qkv_compile_request, bwd_qkv_mil,
-    conv1x1_compile_request, conv1x1_mil, linear_matmul_compile_request, rmsnorm_compile_request,
-    rmsnorm_mil, LinearLayer,
+    bwd_sdpa_bwd1_compile_request, bwd_sdpa_bwd1_mil, bwd_sdpa_bwd2_compile_request,
+    bwd_sdpa_bwd2_mil, conv1x1_compile_request, conv1x1_mil, linear_matmul_compile_request,
+    rmsnorm_compile_request, rmsnorm_mil, LinearLayer,
 };
 pub use util::{generate_rope_blobs, generate_rope_tables, total_leaked_bytes, WeightBlob};

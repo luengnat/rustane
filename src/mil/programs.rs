@@ -694,6 +694,344 @@ pub fn bwd_qkv_compile_request(
     .with_weight_blob("@model_path/weights/wvt.bin", wvt)
 }
 
+/// SDPA backward part 1 + Wo^T (program 1.3 format)
+///
+/// Ported from `gen_sdpa_bwd1()` in stories_mil.h. Recomputes attention probs
+/// from saved Q, K, V, then computes dV and partial dP (attention score gradient).
+///
+/// ANE adaptation: `concat` output → multi-output (dpf, dvf, pf) alphabetical
+///
+/// Input shape: `[1, 4*DIM, 1, SEQ]` fp16 (packed: qf, kf, vf, dx2f)
+/// Output shapes: `[1, DIM, 1, SEQ]` (dvf), `[1, SCORE_CH, 1, SEQ]` (dpf, pf) fp16
+/// where SCORE_CH = HEADS * SEQ
+pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
+    let sc = 1.0 / (head_dim as f32).sqrt();
+    let score_ch = heads * seq_len;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        4 * dim,
+        seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    // Slice params
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz = const()[name=string(\"sz\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name=string(\"b0\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
+    // Extract qf, kf, vf, dx2f
+    for (i, name) in ["qf", "kf", "vf", "df"].iter().enumerate() {
+        mil.push_str(&format!(
+            "        tensor<int32, [4]> b{i} = const()[name=string(\"b{i}\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+            i * dim
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},1,{}]> {name} = slice_by_size(x=x,begin=b{i},size=sz)[name=string(\"s{i}\")];\n",
+            dim, seq_len
+        ));
+    }
+    // Wot and df = conv(Wot, dx2f)
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> Wot = const()[name=string(\"Wot\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/wot.bin\"), offset=uint64(64)))];\n",
+        dim, dim, dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> da = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wot,x=df)[name=string(\"cwo\")];\n",
+        dim, seq_len
+    ));
+    // Reshape to [HEADS, HD, SEQ], transpose to [HEADS, SEQ, HD]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> rsh = const()[name=string(\"rsh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name=string(\"pm\"), val=tensor<int32, [4]>([0,1,3,2])];\n");
+    for name in ["qf", "kf", "vf"] {
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}r = reshape(shape=rsh,x={name})[name=string(\"r{n}\")];\n",
+            heads, head_dim, seq_len, n = name
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n} = transpose(perm=pm,x={n}r)[name=string(\"t{n}\")];\n",
+            heads, seq_len, head_dim, n = name
+        ));
+    }
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dr = reshape(shape=rsh,x=da)[name=string(\"rda\")];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> datt = transpose(perm=pm,x=dr)[name=string(\"td\")];\n",
+        heads, seq_len, head_dim
+    ));
+    // Recompute forward attention: scores = Q @ K^T * scale, probs = softmax(scores + mask)
+    mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
+    mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc1 = matmul(transpose_x=bF,transpose_y=bT,x=qf,y=kf)[name=string(\"mm1\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        fp16 scv = const()[name=string(\"scv\"), val=fp16({:.6})];\n",
+        sc
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc2 = mul(x=sc1,y=scv)[name=string(\"scl\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Causal mask
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,{},{}]> cm = const()[name=string(\"cm\"), val=tensor<fp16, [1,1,{},{}]>(BLOBFILE(path=string(\"@model_path/weights/mask.bin\"), offset=uint64(64)))];\n",
+        seq_len, seq_len, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ms = add(x=sc2,y=cm)[name=string(\"msk\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str("        int32 sax = const()[name=string(\"sax\"), val=int32(-1)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> probs = softmax(axis=sax,x=ms)[name=string(\"sm\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // dV = probs^T @ dAttn, dP = dAttn @ V
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dv4 = matmul(transpose_x=bT,transpose_y=bF,x=probs,y=datt)[name=string(\"dv\")];\n",
+        heads, seq_len, head_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dp4 = matmul(transpose_x=bF,transpose_y=bT,x=datt,y=vf)[name=string(\"dp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Reshape dV back to [1, DIM, 1, SEQ]
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dvt = transpose(perm=pm,x=dv4)[name=string(\"dvt\")];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> dvs = const()[name=string(\"dvs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dvf = reshape(shape=dvs,x=dvt)[name=string(\"dvf\")];\n",
+        dim, seq_len
+    ));
+    // Reshape probs, dp to [1, SCORE_CH, 1, SEQ]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> scs = const()[name=string(\"scs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> pf = reshape(shape=scs,x=probs)[name=string(\"pf\")];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dpf = reshape(shape=scs,x=dp4)[name=string(\"dpf\")];\n",
+        score_ch, seq_len
+    ));
+    // Multi-output (alphabetical): dpf, dvf, pf
+    mil.push_str("    } -> (dpf, dvf, pf);\n}\n");
+    mil
+}
+
+/// Build a compile request for bwd_sdpa_bwd1_mil.
+pub fn bwd_sdpa_bwd1_compile_request(
+    seq_len: usize,
+    dim: usize,
+    heads: usize,
+    head_dim: usize,
+    wot: &ANEWeightBlob,
+    mask: &ANEWeightBlob,
+) -> ANECompileRequest {
+    let score_ch = heads * seq_len;
+    ANECompileRequest::new(
+        bwd_sdpa_bwd1_mil(seq_len, dim, heads, head_dim),
+        vec![4 * dim * seq_len * 2],
+        vec![
+            score_ch * seq_len * 2, // dpf
+            dim * seq_len * 2,      // dvf
+            score_ch * seq_len * 2, // pf
+        ],
+    )
+    .with_weight_blob("@model_path/weights/wot.bin", wot)
+    .with_weight_blob("@model_path/weights/mask.bin", mask)
+}
+
+/// SDPA backward part 2 (program 1.3 format)
+///
+/// Ported from `gen_sdpa_bwd2()` in stories_mil.h. Computes dQ and dK from
+/// attention probs, dp (score gradient), and saved Q, K.
+///
+/// ANE adaptations: `sub` → add+mul decomposition, `concat` → multi-output
+///
+/// Input shape: `[1, 2*SCORE_CH + 2*DIM, 1, SEQ]` fp16
+/// Output shapes: `[1, DIM, 1, SEQ]` (dkf, dqf) fp16
+pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
+    let sc = 1.0 / (head_dim as f32).sqrt();
+    let score_ch = heads * seq_len;
+    let in_ch = 2 * score_ch + 2 * dim;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        in_ch, seq_len
+    ));
+    // Slice params for SCORE_CH-sized and DIM-sized chunks
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz_sc = const()[name=string(\"szsc\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name=string(\"b0\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> pf = slice_by_size(x=x,begin=b0,size=sz_sc)[name=string(\"s0\")];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b1 = const()[name=string(\"b1\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        score_ch
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dpf = slice_by_size(x=x,begin=b1,size=sz_sc)[name=string(\"s1\")];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz_d = const()[name=string(\"szd\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b2 = const()[name=string(\"b2\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        2 * score_ch
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> qf = slice_by_size(x=x,begin=b2,size=sz_d)[name=string(\"s2\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b3 = const()[name=string(\"b3\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        2 * score_ch + dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> kf = slice_by_size(x=x,begin=b3,size=sz_d)[name=string(\"s3\")];\n",
+        dim, seq_len
+    ));
+    // Reshape probs, dp to [HEADS, SEQ, SEQ]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> ssh = const()[name=string(\"ssh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> probs = reshape(shape=ssh,x=pf)[name=string(\"rp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dp = reshape(shape=ssh,x=dpf)[name=string(\"rdp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Reshape qf, kf to [HEADS, HD, SEQ], transpose to [HEADS, SEQ, HD]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> rsh = const()[name=string(\"rsh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name=string(\"pm\"), val=tensor<int32, [4]>([0,1,3,2])];\n");
+    for name in ["qf", "kf"] {
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}r = reshape(shape=rsh,x={name})[name=string(\"rq{n}\")];\n",
+            heads, head_dim, seq_len, n = &name[0..1]
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {name} = transpose(perm=pm,x={n}r)[name=string(\"tq{n}\")];\n",
+            heads, seq_len, head_dim, n = &name[0..1]
+        ));
+    }
+    // Softmax backward: pdp = probs * dp, spdp = reduce_sum(pdp, -1), dps = dp - spdp
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> pdp = mul(x=probs,y=dp)[name=string(\"pdp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str("        tensor<int32, [1]> rax = const()[name=string(\"rax\"), val=tensor<int32, [1]>([-1])];\n");
+    mil.push_str("        bool kd = const()[name=string(\"kd\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},1]> spdp = reduce_sum(x=pdp,axes=rax,keep_dims=kd)[name=string(\"rs\")];\n",
+        heads, seq_len
+    ));
+    // sub decomposition: dps = dp - spdp → add(dp, mul(spdp, -1))
+    mil.push_str("        fp16 nm1 = const()[name=string(\"nm1\"), val=fp16(-1.0)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sneg = mul(x=spdp,y=nm1)[name=string(\"sneg\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dps = add(x=dp,y=sneg)[name=string(\"dps\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // ds = probs * dps * scale
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ds0 = mul(x=probs,y=dps)[name=string(\"ds0\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        fp16 scv = const()[name=string(\"scv\"), val=fp16({:.6})];\n",
+        sc
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ds = mul(x=ds0,y=scv)[name=string(\"ds\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // dQ = ds @ K, dK = ds^T @ Q
+    mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
+    mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dq4 = matmul(transpose_x=bF,transpose_y=bF,x=ds,y=kf)[name=string(\"dq\")];\n",
+        heads, seq_len, head_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dk4 = matmul(transpose_x=bT,transpose_y=bF,x=ds,y=qf)[name=string(\"dk\")];\n",
+        heads, seq_len, head_dim
+    ));
+    // Transpose back, reshape to [1, DIM, 1, SEQ]
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dqt = transpose(perm=pm,x=dq4)[name=string(\"dqt\")];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dkt = transpose(perm=pm,x=dk4)[name=string(\"dkt\")];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> fs = const()[name=string(\"fs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dqf = reshape(shape=fs,x=dqt)[name=string(\"dqf\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dkf = reshape(shape=fs,x=dkt)[name=string(\"dkf\")];\n",
+        dim, seq_len
+    ));
+    // Multi-output (alphabetical): dkf, dqf
+    mil.push_str("    } -> (dkf, dqf);\n}\n");
+    mil
+}
+
+/// Build a compile request for bwd_sdpa_bwd2_mil.
+pub fn bwd_sdpa_bwd2_compile_request(
+    seq_len: usize,
+    dim: usize,
+    heads: usize,
+    head_dim: usize,
+) -> ANECompileRequest {
+    ANECompileRequest::new(
+        bwd_sdpa_bwd2_mil(seq_len, dim, heads, head_dim),
+        vec![(2 * heads * seq_len + 2 * dim) * seq_len * 2],
+        vec![dim * seq_len * 2, dim * seq_len * 2],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
