@@ -9,26 +9,167 @@ This document catalogs Apple Neural Engine hardware and software constraints dis
 
 ## Empirical Test Results (2026-03-25)
 
-Full test suite run on Apple M4, macOS. 30 tests, subprocess isolation per test.
+**Four test rounds executed:** Phase 2 (30 tests), Phase 3 ops (35 tests), Phase 3 decompositions (13 tests), cumulative **78 tests**.
 
 ### Summary
 
 | Result | Count | Tests |
 |--------|-------|-------|
-| ✅ PASS | 10 | sigmoid, min_surface_ok, blobfile_offset_64, multi_output_uniform, multi_output_alpha, conv_4k/16k/32k_channels, multi_input_add |
-| ✗ Compile error | 11 | concat, gelu, conv_bias, layer_norm, softmax, reduce_sum, fused_ffn_taps (concat), qkv_fused (concat), blobfile_offset_128, matmul_64x64, matmul_128x384 |
-| ✗ Inference error | 3 | min_surface_tiny (seq=1), min_surface_small (seq=8), multi_output_nonuniform |
-| ⚠️ NaN/Inf (data corruption) | 6 | conv_64x64 (seq=32), conv_128x384 (seq=32), fused_ffn_small (seq=32), fused_ffn_medium (seq=32), dual_conv_basic (seq=32), multi_output_reverse (non-alpha) |
+| ✅ PASS | 18 | sigmoid, min_surface_ok, blobfile_offset_64, multi_output_uniform, multi_output_alpha, conv_4k/16k/32k_channels, multi_input_add, transpose, reshape, slice_by_size, **neg_via_mul**, **sub_via_mul_add**, **sq_via_mul**, **sum_via_conv**, **rmsnorm_approx**, **conv_1x2**, **multi_output_conv** |
+| ✗ Compile error | 22 | concat, gelu, conv_bias, layer_norm, softmax, reduce_sum, mb_softmax, mb_concat, mb_layer_norm, mb_reduce_sum, mb_transpose, mb_reshape, mb_slice_by_size, sub, clamp, exp, log, abs, tanh, relu, leaky_relu, matmul, linear, **conv_2x1**, **depthwise_conv** |
+| ✗ Inference error | 6 | min_surface_tiny (seq=1), min_surface_small (seq=8), multi_output_nonuniform, seq=20, seq=24, seq=28 |
+| ⚠️ NaN/Inf (corruption) | 9 | seq=32, seq=48, seq=64, seq=128, seq=256, seq=512, pow(-0.5), pow(2.0), sum_via_conv(large) |
+
+### Critical Discovery: ANE Has Extremely Limited Op Support
+
+**Only 9 MIL ops work on this hardware:**
+1. `conv` (1x1 and 1x2 kernels only, no bias)
+2. `sigmoid`
+3. `mul`
+4. `add`
+5. `cast` (fp16↔fp32)
+6. `const`
+7. `transpose`
+8. `reshape`
+9. `slice_by_size`
+
+**Additional ANE capabilities discovered via decomposition tests:**
+- **Sum reduction** via conv1x1 with all-ones weights (64→1 channel) ✅
+- **Negation** via mul(x, -1.0) ✅
+- **Subtraction** via add(x, mul(y, -1)) ✅
+- **Squaring** via mul(x, x) ✅
+- **Temporal convolution** via 1x2 kernel ✅
+- **RMSNorm first stage**: mul(x,x) → conv(all-ones) → sum(x²) ✅
+
+**Rejected ops (29 tested, 0 work):**
+- `matmul`, `linear` — Matrix multiplication (blocks attention)
+- `concat` — Concatenation (blocks taps output, ANEMLL trick)
+- `layer_norm` — Layer normalization (blocks RMSNorm)
+- `softmax` — Softmax (blocks attention)
+- `reduce_sum` — Reduction (blocks manual RMSNorm)
+- `pow` — Power (compiles but produces nan/inf for ALL exponents, even positive)
+- `sub` — Subtraction
+- `clamp`, `exp`, `log`, `abs`, `tanh`, `relu`, `leaky_relu` — All rejected
+- All `mb.*` prefixed variants — None work (mb.matmul, mb.softmax, etc.)
+- `conv` with bias — Rejected
+- `conv` with 2x1 kernel — CompilationFailure
+- `conv` with 3x1 kernel — Panics (WeightBlob dimension mismatch)
+- `conv` with depthwise (groups != 1) — InvalidMILProgram
+
+### Sequence Length Constraint
+
+**seq=16 is the ONLY safe sequence length.** seq=20 and seq=24 fail with Program Inference error. seq≥32 produces silent nan/inf data corruption. This is a severe constraint for training.
+
+### Implications for Training Architecture
+
+With only conv(1x1, 1x2), sigmoid, mul, add, cast, const, transpose, reshape, slice_by_size available:
+
+- ✅ **Linear projections**: conv1x1 works (this is matmul)
+- ✅ **SiLU activation**: sigmoid(x) * x via mul
+- ✅ **Reshape/transpose**: For attention head reshaping
+- ✅ **Negation**: mul(x, -1.0) — since sub is rejected
+- ✅ **Subtraction**: add(a, mul(b, -1.0))
+- ✅ **Squaring**: mul(x, x)
+- ✅ **Sum reduction**: conv1x1 with all-ones weights (C→1)
+- ✅ **Temporal mixing**: conv with 1x2 kernel (adjacent position mixing)
+- ✅ **RMSNorm first stage**: mul(x,x) → conv(all-ones) → sum(x²)
+- ❌ **Attention**: No softmax, no matmul — **attention is blocked**
+- ❌ **RMSNorm completion**: Can compute sum(x²) but no 1/sqrt() or division
+- ❌ **Gradient taps**: No concat — **cannot save intermediate activations**
+- ❌ **Loss computation**: No softmax, no log, no cross-entropy on ANE
+- ❌ **Depthwise conv**: groups != 1 rejected
+- ❌ **2x1 conv**: CompilationFailure
+
+**The ANE on this hardware can do: input → conv → sigmoid(x)*x → mul → add → conv(1x2) → output.**
+This is a feedforward network with SiLU activation, residual connections, and local temporal mixing. No normalization, no attention, no loss, no non-1x1-spatial convolutions.
+
+### Conv-Based Decomposition Results
+
+| Decomposition | Works? | Method | Notes |
+|---------------|--------|--------|-------|
+| `reduce_sum` | ✅ | conv1x1(all-ones, C→1) | Sum of all channels; fp16 overflow with large inputs |
+| `sub` | ✅ | add(x, mul(y, -1)) | Full replacement for rejected sub |
+| `neg` | ✅ | mul(x, -1) | Negation |
+| `x²` | ✅ | mul(x, x) | fp16 overflow with large inputs |
+| `pow(x, 2)` | ❌ | pow(x, 2.0) | ANE pow is broken for ALL exponents |
+| `softmax` | ❌ | N/A | Requires exp (rejected) |
+| `layer_norm` | ❌ | N/A | Requires reduce_sum + division |
+| `RMSNorm` | ⚠️ Partial | mul(x,x) → conv(sum) → sum(x²) | Can compute sum-of-squares, but no 1/sqrt() |
+| `matmul` | ✅ | conv1x1 | Already proven; same operation |
+| `concat` | ✅ | Multi-output programs | Works with alphabetical ordering |
+| `depthwise conv` | ❌ | groups=dim | InvalidMILProgram |
+| `conv 2x1` | ❌ | 2x1 kernel | CompilationFailure |
+| `conv 1x2` | ✅ | 1x2 kernel | Temporal convolution works |
+
+### ANE Ops Confirmed Working (Full Table)
+
+| Op | Test | Compile | Eval | Notes |
+|----|------|---------|------|-------|
+| `cast` | (all tests) | ✅ | fp32↔fp16 |
+| `const` | (all tests) | ✅ | Scalars, tensors, BLOBFILE |
+| `conv` (1x1, no bias) | min_surface_ok | ✅ | 4K-32K channels |
+| `sigmoid` | sigmoid_basic | ✅ | 0.2ms eval |
+| `mul` | multi_input_add | ✅ | Element-wise |
+| `add` | multi_input_add | ✅ | Element-wise |
+| `transpose` | op_transpose | ✅ | Perm [0,3,2,1] |
+| `reshape` | op_reshape | ✅ | [1,64,1,16] → [1,4,16,16] |
+| `slice_by_size` | op_slice_by_size | ✅ | Slice with begin/size |
+| `conv` (1x2 kernel) | decomp_conv_1x2 | ✅ | Temporal convolution |
+| `neg` (via mul) | decomp_neg_via_mul | ✅ | mul(x, -1) |
+| `sub` (via mul+add) | decomp_sub_via_mul_add | ✅ | add(x, mul(y, -1)) |
+| `x²` (via mul) | decomp_sq_small | ✅ | mul(x, x), fp16-safe range |
+| `reduce_sum` (via conv) | decomp_sum_small | ✅ | conv1x1(all-ones, C→1) |
+| `rmsnorm stage 1` | decomp_rmsnorm_small | ✅ | mul(x,x) → conv(sum) → sum(x²) |
+| `multi-output conv` | decomp_multi_output_as_concat | ✅ | Replaces concat |
+
+### ANE Ops Confirmed Failing (Full Table)
+
+| Op | Test | Error Type | Notes |
+|----|------|------------|-------|
+| `concat` | concat_basic | InvalidMILProgram | No `mb.concat` variant works |
+| `gelu` | gelu_basic | InvalidMILProgram | |
+| `matmul` | matmul_64x64 | InvalidMILProgram | No `mb.matmul` works either |
+| `linear` | matmul_128x384 | InvalidMILProgram | |
+| `conv` (bias) | conv_bias_basic | InvalidMILProgram | |
+| `layer_norm` | layer_norm_basic | InvalidMILProgram | No `mb.layer_norm` works |
+| `softmax` | softmax_basic | InvalidMILProgram | No `mb.softmax` works |
+| `reduce_sum` | rmsnorm_manual_basic | InvalidMILProgram | No `mb.reduce_sum` works |
+| `pow` | op_pow | nan/inf | Compiles! But negative exp → nan/inf |
+| `sub` | op_sub | InvalidMILProgram | |
+| `clamp` | op_clamp | InvalidMILProgram | |
+| `exp` | op_exp | InvalidMILProgram | |
+| `log` | op_log | InvalidMILProgram | |
+| `abs` | op_abs | InvalidMILProgram | |
+| `tanh` | op_tanh | InvalidMILProgram | |
+| `relu` | op_relu | InvalidMILProgram | |
+| `leaky_relu` | op_leaky_relu | InvalidMILProgram | |
+| `mb.matmul` | mb_matmul | WeightBlobError | Panics (test bug, but op itself likely rejected) |
+| `mb.softmax` | mb_softmax | compile failed | |
+| `mb.concat` | mb_concat | compile failed | |
+| `mb.layer_norm` | mb_layer_norm | compile failed | |
+| `mb.reduce_sum` | mb_reduce_sum | compile failed | |
+| `mb.transpose` | mb_transpose | compile failed | |
+| `mb.reshape` | mb_reshape | compile failed | |
+| `mb.slice_by_size` | mb_slice_by_size | compile failed | |
+| `conv` (3x1 kernel) | op_conv3x1 | WeightBlobError | Panics (dimension mismatch, likely op rejected) |
+| `conv` (2x1 kernel) | decomp_conv_2x1 | CompilationFailure | Spatial conv rejected |
+| `conv` (depthwise) | decomp_depthwise_conv | InvalidMILProgram | groups != 1 rejected |
+| `pow` (pos exp) | decomp_pow2_via_mul | nan/inf | pow(x, 2.0) broken for all exponents |
 
 ### Key Discoveries Beyond Orion
 
 1. **`layer_norm` is rejected** — Orion doesn't mention this! This blocks the ANEMLL RMSNorm trick (`concat([x, -x]) → layer_norm → slice`). The reference code (`stories_mil.h`) uses `layer_norm` in working programs — possible firmware version difference.
 2. **`softmax` is rejected** — Orion doesn't mention this. All softmax ops fail with `InvalidMILProgram`. The reference code uses manual attention (matmul + scale + mask + softmax), which suggests softmax may need special handling or a different MIL op name.
-3. **`reduce_sum` is rejected** — Used in manual RMSNorm. Fails with `InvalidMILProgram`.
-4. **seq=32 produces nan/inf** — seq=16 works fine for all passing tests. seq=32 causes data corruption (not compile/eval failure). The reference code uses various seq lengths — need to investigate the exact boundary.
+3. **`reduce_sum` is rejected** — Used in manual RMSNorm. Fails with `InvalidMILProgram`. **BUT: can be decomposed via conv1x1 with all-ones weights.**
+4. **seq=32 produces nan/inf** — seq=16 works fine for all passing tests. seq=32 causes data corruption (not compile/eval failure).
 5. **No channel limit found** — 4K, 16K, and 32K output channels all work fine for conv.
 6. **Multi-input works** — Two IOSurface inputs to one program works correctly.
 7. **BLOBFILE offset=128 fails** — Confirmed offset must be 64.
+8. **`pow` is fundamentally broken** — Even pow(x, 2.0) with positive exponent produces nan/inf. Not just negative exponents.
+9. **`sub` can be replaced** — add(x, mul(y, -1)) works as a full substitute for the rejected sub op.
+10. **Conv 1x2 works but 2x1 doesn't** — Temporal convolution (1x2 kernel) is accepted, but spatial (2x1 kernel) gets CompilationFailure. Conv 3x1 also fails.
+11. **Depthwise conv rejected** — groups != 1 produces InvalidMILProgram.
+12. **RMSNorm is partially decomposable** — mul(x,x) → conv(sum) → sum(x²) works, but the final 1/sqrt() normalization step cannot be done on ANE.
 
 ### Orion Constraint Verification
 
@@ -55,55 +196,7 @@ Full test suite run on Apple M4, macOS. 30 tests, subprocess isolation per test.
 | 19 | Dispatch overhead | Yes | ~0.2ms per eval (faster than expected) | ⚠️ Lower |
 | 20 | SRAM cliff | Yes | Not benchmarked | — |
 
-### ANE Ops Confirmed Working
-
-| Op | Test | Notes |
-|----|------|-------|
-| `cast` (fp32→fp16, fp16→fp32) | All tests | Required for fp32 I/O pattern |
-| `conv` (1x1, no bias) | min_surface_ok, conv_4k/16k/32k | Core operation, works at all channel counts |
-| `sigmoid` | sigmoid_basic | Used in SiLU activation |
-| `mul` | multi_input_add | Element-wise multiply |
-| `add` | multi_input_add | Element-wise add |
-| `const` (scalar, tensor) | All tests | Constants including BLOBFILE weights |
-
-### ANE Ops Confirmed Failing
-
-| Op | Test | Error |
-|----|------|-------|
-| `concat` | concat_basic | `InvalidMILProgram` |
-| `gelu` | gelu_basic | `InvalidMILProgram` |
-| `conv` (with bias) | conv_bias_basic | `InvalidMILProgram` |
-| `layer_norm` | layer_norm_basic | `InvalidMILProgram` |
-| `softmax` | softmax_basic | `InvalidMILProgram` |
-| `reduce_sum` | rmsnorm_manual_basic | `InvalidMILProgram` |
-| `matmul` | matmul_64x64 | `InvalidMILProgram` |
-| `linear` | matmul_128x384 | `InvalidMILProgram` |
-
-### Critical Implications for stories_mil.h Port
-
-The reference code (`stories_mil.h`) uses ops that **fail on our hardware**:
-- `layer_norm` — used in SDPA forward RMSNorm and ANEMLL trick
-- `reduce_sum` — used in manual RMSNorm
-- `concat` — used for taps output and ANEMLL trick
-- `softmax` — used in attention
-- `matmul` — used in attention QK^T and AV
-
-**This means we cannot directly port stories_mil.h.** We need to find ANE-compatible alternatives or decompose these ops. This is a significant architectural finding that changes the roadmap.
-
----
-
-## Overview
-
-| Category | Count | Severity |
-|----------|-------|----------|
-| Compile/eval failures | 10 | Hard error |
-| Silent wrong data | 7 | Silent corruption |
-| Compiler-level | 3 | Hard error |
-| **Total** | **20** | |
-
----
-
-## Compile/Eval Failures (Hard Errors)
+### Orion Constraint Verification
 
 These constraints cause compilation or execution to fail with an error message.
 
