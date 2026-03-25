@@ -4,22 +4,22 @@
 
 See: .planning/PROJECT.md (updated 2026-03-26)
 
-**Core value:** Fused ANE programs that train transformers faster than CPU — not individual op benchmarks, but end-to-end training throughput improvement.
-**Current focus:** Phase 4 — Backward Pass Correctness
+**Core value:** Fused ANE programs that train transformers faster than CPU
+**Current focus:** Phase 5 — Delta Compilation
 
 ## Current Position
 
 **Milestone:** M2: Fused Training
-**Phase:** 4 of 7 (Backward Pass Correctness)
-**Plan:** 0 of ? in current phase
-**Status:** Ready to plan
-**Last activity:** 2026-03-26 — M2 roadmap created
+**Phase:** 4 of 7 (Backward Pass Correctness) — COMPLETE
+**Plan:** 4 of 4 — COMPLETE
+**Status:** All backward MIL generators ported and verified. Ready for delta compilation.
+**Last activity:** 2026-03-26 — Phase 4 complete, all backward generators implemented
 
 ## Progress
 
 ```
 [██████████] 100% — M1: ANE Foundation (COMPLETE)
-[░░░░░░░░░░]   0% — M2: Fused Training — Phase 4 ready to plan
+[██████░░░░]  57% — M2: Fused Training — Phase 4 complete, 3 phases remaining
 ```
 
 ## Accumulated Context from M1
@@ -35,6 +35,10 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | matmul works between activations, not with BLOBFILE weights | Reference code uses conv1x1 for weight mult, matmul for QK^T/AV | Phase 3 |
 | concat is the only truly rejected op | values=(...) syntax still fails | Phase 3 |
 | Inference errors are size-related, not op-related | Reference uses DIM=768 SEQ=256, we test dim=64 seq=16 | Phase 3 |
+| Multi-output return replaces concat for backward programs | ANE returns multiple named outputs in alphabetical order | Phase 4 |
+| Sub decomposition: add(x, mul(y, const(-1.0))) | Consistent pattern for replacing rejected sub op | Phase 4 |
+| Packed single-input + slice_by_size for backward programs | ANE only supports single input; activations packed and unpacked | Phase 4 |
+| SDPA backward split into two MIL programs | bwd1 (dV + probs) feeds bwd2 (dQ + dK) | Phase 4 |
 
 ### Validated Capabilities
 
@@ -43,15 +47,42 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 - Full SDPA MIL pipeline compiles on ANE
 - RMSNorm MIL generator works on ANE
 - conv1x1 for weight multiplication, matmul for QK^T and AV
+- bwd_ffn_mil() — SwiGLU FFN backward with sigmoid gating and SiLU derivative
+- bwd_qkv_mil() — QKV projection backward (3 transposed convolutions)
+- bwd_sdpa_bwd1_mil() + bwd_sdpa_bwd2_mil() — Full SDPA backward (dV, dQ, dK)
 
 ### Carried Blockers
 
 - **HIGH**: Inference errors on newly-compiled ops — need larger tensor sizes (DIM≥768, SEQ≥256)
-- **HIGH**: concat is truly rejected — blocks gradient taps output; backward generators must work without concat
 - **LOW**: seq=16 is the only safe sequence length — backward pass must validate at realistic sizes first
+
+## Performance Metrics
+
+| Phase | Plan | Duration | Tasks | Files |
+|-------|------|----------|-------|-------|
+| 1 | 01-01 | 5min | 4 | 2 |
+| 2 | 02-01 | 15min | 4 | 1 |
+| 3 | 03-01 | 90min | 7 | 2 |
+| 3.5 | (investigation) | 30min | 7 | 1 |
+| 4 | 01-04 | 5min | 3 | 4 |
+| 4 | 02-04 | — | 2 | 1 |
+| 4 | 03-04 | — | 2 | 2 |
+| 4 | 04-04 | — | 1 | 1 |
+
+## Session History
+
+| Date | Activity | Stopped At |
+|------|----------|------------|
+| 2026-03-25 | Project initialized, roadmap created | Ready for Phase 1 execution |
+| 2026-03-25 | Phase 1 complete: fixed MIL_HEADER, smoke tests pass | Ready for Phase 2 execution |
+| 2026-03-25 | Phase 2 complete: 30 tests run, critical finding — 8 ANE ops rejected | Phase 3 needs plan revision |
+| 2026-03-25 | Phase 3 complete: 78 tests, 9 ops + 7 decompositions | Breakthrough investigation |
+| 2026-03-25 | BREAKTHROUGH: MIL syntax fixes unlock reduce_sum, softmax, pow, full SDPA | Need larger tensors for eval |
+| 2026-03-26 | M2 milestone started, roadmap created (4 phases) | Phase 4 planning |
+| 2026-03-26 | Phase 4 complete: all backward MIL generators ported from stories_mil.h | Ready for Phase 5 delta compilation |
 
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: M2 roadmap created, ready to plan Phase 4
+Stopped at: Phase 4 complete, all backward generators implemented
 Resume file: None
