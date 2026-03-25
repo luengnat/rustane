@@ -88,7 +88,8 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 06-01: TBD (depends on Phase 5 completion)
+- [ ] 06-01: ANE forward + CPU gradient training loop (TRL-01, TRL-02)
+- [ ] 06-02: ANE vs CPU throughput benchmark (TRL-03, PERF-01, PERF-02)
 
 #### Phase 7: Performance Benchmarking
 **Goal**: Document final ANE training performance and tuning parameters for the parameter-golf model
@@ -115,5 +116,5 @@ Phases execute in numeric order: 4 → 5 → 6 → 7
 | 3. Fused MIL Generators | M1 | 2/2 | Complete | 2026-03-26 |
 | 4. Backward Pass | M2 | 4/4 | Complete | 2026-03-26 |
 | 5. Delta Compilation | M2 | 3/3 | Complete | 2026-03-26 |
-| 6. Training Loop | M2 | 0/? | Not started | - |
+| 6. Training Loop | M2 | 0/2 | Not started | - |
 | 7. Benchmarking | M2 | 0/? | Not started | - |
