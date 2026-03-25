@@ -102,7 +102,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 07-01: TBD (depends on Phase 6 completion)
+- [ ] 07-01: Multi-config benchmark (DIM/SEQ sweep including target 768/256)
 
 ## Progress
 
@@ -117,4 +117,4 @@ Phases execute in numeric order: 4 → 5 → 6 → 7
 | 4. Backward Pass | M2 | 4/4 | Complete | 2026-03-26 |
 | 5. Delta Compilation | M2 | 3/3 | Complete | 2026-03-26 |
 | 6. Training Loop | M2 | 0/2 | Not started | - |
-| 7. Benchmarking | M2 | 0/? | Not started | - |
+| 7. Benchmarking | M2 | 0/1 | Not started | - |
