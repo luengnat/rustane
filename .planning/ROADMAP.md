@@ -52,10 +52,13 @@ Plans:
   3. `bwd_sdpa_mil()` produces correct dK, dV, dQ gradients verified against numerical check
   4. All backward generators compile using only ANE-verified ops (no concat) with decomposition strategies applied where needed
   5. Gradient taps saved from forward pass are correctly wired as inputs to backward MIL programs
-**Plans**: TBD
+**Plans**: 4 plans
 
 Plans:
-- [ ] 04-01: TBD
+- [ ] 04-01: Port FFN backward from stories_mil.h, ANE-compatible (sub→decomp, concat→multi-output)
+- [ ] 04-02: Port QKV backward from stories_mil.h (simplest: 3 conv + 2 add)
+- [ ] 04-03: Port SDPA backward parts 1+2 from stories_mil.h (softmax backward, matmul gradients)
+- [ ] 04-04: Numerical gradient verification for bwd_ffn and bwd_qkv
 
 #### Phase 5: Delta Compilation
 **Goal**: Weight updates via delta compilation (patch + reload) work reliably within the ANE compile budget
