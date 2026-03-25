@@ -206,6 +206,8 @@ pub mod fallback;
 pub mod io_surface;
 /// ANE kernel wrapper for managing compiled models and I/O operations.
 pub mod kernel;
+/// Kernel cache for compiled ANE programs
+// pub mod kernel_cache; // TODO: uncomment when kernel_cache.rs compiles
 /// Memory pool for efficient IOSurface allocation
 // pub mod memory_pool; // TODO: uncomment when memory_pool.rs compiles
 /// MIL code generator for ANE operations
@@ -238,6 +240,7 @@ pub use error_logging::{ErrorLog, ErrorLogEntry, ErrorReporter, ErrorSeverity};
 pub use fallback::{FallbackExecutor, FallbackResult, FallbackStats, FallbackStrategy};
 pub use io_surface::IOSurface;
 pub use kernel::ANEKernel;
+// pub use kernel_cache::{CacheConfig, CacheEntryMetadata, CacheStats, KernelCache};
 // pub use memory_pool::{
 //     MemoryPool, PoolConfig, PoolStats, PooledBuffer, SharedMemoryPool, SizeClassStats,
 // };
