@@ -55,10 +55,10 @@ Plans:
 **Plans**: 4 plans
 
 Plans:
-- [ ] 04-01: Port FFN backward from stories_mil.h, ANE-compatible (sub→decomp, concat→multi-output)
-- [ ] 04-02: Port QKV backward from stories_mil.h (simplest: 3 conv + 2 add)
-- [ ] 04-03: Port SDPA backward parts 1+2 from stories_mil.h (softmax backward, matmul gradients)
-- [ ] 04-04: Numerical gradient verification for bwd_ffn and bwd_qkv
+- [x] 04-01: Port FFN backward from stories_mil.h, ANE-compatible (sub→decomp, concat→multi-output)
+- [x] 04-02: Port QKV backward from stories_mil.h (simplest: 3 conv + 2 add)
+- [x] 04-03: Port SDPA backward parts 1+2 from stories_mil.h (softmax backward, matmul gradients)
+- [x] 04-04: Numerical gradient verification for bwd_ffn and bwd_qkv
 
 #### Phase 5: Delta Compilation
 **Goal**: Weight updates via delta compilation (patch + reload) work reliably within the ANE compile budget
@@ -72,7 +72,9 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 05-01: TBD
+- [ ] 05-01: Multi-layer delta compilation test with timing (DLT-01, DLT-03)
+- [ ] 05-02: DeltaCompiler abstraction with compile budget tracking (DLT-02)
+- [ ] 05-03: State survival verification across reload cycles (DLT-04)
 
 #### Phase 6: Training Loop Integration
 **Goal**: End-to-end training loop runs on synthetic data with ANE-accelerated forward and backward passes
@@ -86,7 +88,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 06-01: TBD
+- [ ] 06-01: TBD (depends on Phase 5 completion)
 
 #### Phase 7: Performance Benchmarking
 **Goal**: Document final ANE training performance and tuning parameters for the parameter-golf model
@@ -99,7 +101,7 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 07-01: TBD
+- [ ] 07-01: TBD (depends on Phase 6 completion)
 
 ## Progress
 
@@ -111,7 +113,7 @@ Phases execute in numeric order: 4 → 5 → 6 → 7
 | 1. Fix & Smoke Test | M1 | 1/1 | Complete | 2026-03-26 |
 | 2. Constraint Testing | M1 | 1/1 | Complete | 2026-03-26 |
 | 3. Fused MIL Generators | M1 | 2/2 | Complete | 2026-03-26 |
-| 4. Backward Pass | M2 | 0/? | Not started | - |
-| 5. Delta Compilation | M2 | 0/? | Not started | - |
+| 4. Backward Pass | M2 | 4/4 | Complete | 2026-03-26 |
+| 5. Delta Compilation | M2 | 0/3 | Not started | - |
 | 6. Training Loop | M2 | 0/? | Not started | - |
 | 7. Benchmarking | M2 | 0/? | Not started | - |
