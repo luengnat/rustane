@@ -80,6 +80,20 @@ fn main() {
         "seq_128" => test_seq_boundary(128),
         "seq_256" => test_seq_boundary(256),
         "seq_512" => test_seq_boundary(512),
+        // Phase 3: conv-based decompositions
+        "decomp_sum_via_conv" => test_decomp_sum_via_conv(),
+        "decomp_neg_via_mul" => test_decomp_neg_via_mul(),
+        "decomp_sub_via_mul_add" => test_decomp_sub_via_mul_add(),
+        "decomp_sq_via_mul" => test_decomp_sq_via_mul(),
+        "decomp_pow2_via_mul" => test_decomp_pow2_via_mul(),
+        "decomp_conv_2x1" => test_decomp_conv_2x1(),
+        "decomp_conv_1x2" => test_decomp_conv_1x2(),
+        "decomp_multi_output_as_concat" => test_decomp_multi_output_as_concat(),
+        "decomp_depthwise_conv" => test_decomp_depthwise_conv(),
+        "decomp_rmsnorm_approx" => test_decomp_rmsnorm_small(),
+        "decomp_sq_small" => test_decomp_sq_small(),
+        "decomp_sum_small" => test_decomp_sum_small(),
+        "decomp_rmsnorm_small" => test_decomp_rmsnorm_small(),
         _ => {
             eprintln!("Unknown test: {}", test_name);
             std::process::exit(1);
@@ -1596,4 +1610,307 @@ fn test_seq_boundary(seq: usize) {
         "OK seq={} {}bytes compile={:.0}ms eval={:.1}ms",
         seq, input_sz, c, e
     );
+}
+
+// ============================================================
+// Phase 3: conv-based decompositions for rejected ops
+// ============================================================
+
+/// Test 1: reduce_sum via conv1x1 with all-ones weights.
+/// If in_dim channels all have weight=1.0, the output is the sum of all channels.
+/// Output shape: [1, 1, 1, seq] — reduces in_dim to 1 channel.
+fn test_decomp_sum_via_conv() {
+    let dim = 64;
+    let seq = 16;
+    let mil = conv1x1_mil(seq, dim, 1, "W", "");
+    // All-ones weights: sum of all channels
+    let w: Vec<f32> = (0..dim).map(|_| 1.0).collect();
+    let blob = make_blob(&w, 1, dim);
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/W.bin", &blob)],
+        &[dim * seq * 4],
+        &[1 * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 2: Negation via mul(x, -1) — since sub is rejected.
+/// Tests if we can do 0 - x by multiplying by -1.
+fn test_decomp_neg_via_mul() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 neg_one = const()[name = string(\"neg1\"), val = fp16(-1.0)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> neg16 = mul(x = x16, y = neg_one)[name = string(\"neg\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = neg16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 3: Subtraction via mul+add: a - b = a + mul(b, -1).
+/// Since sub is rejected, test if add + mul(-1) can replace it.
+fn test_decomp_sub_via_mul_add() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> a16 = cast(dtype = to_fp16, x = a)[name = string(\"cast_a\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> b16 = cast(dtype = to_fp16, x = b)[name = string(\"cast_b\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 neg_one = const()[name = string(\"neg1\"), val = fp16(-1.0)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> neg_b = mul(x = b16, y = neg_one)[name = string(\"neg_b\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = add(x = a16, y = neg_b)[name = string(\"sub\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(
+        &format!("tensor<fp32, [1, {dim}, 1, {seq}]> a, tensor<fp32, [1, {dim}, 1, {seq}]> b"),
+        &body,
+        "y",
+    );
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[input.len(), input.len()],
+        &[dim * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 4: x^2 via mul(x, x) — since pow fails for negative exponents.
+/// Tests if squaring works via element-wise multiply.
+fn test_decomp_sq_via_mul() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> sq16 = mul(x = x16, y = x16)[name = string(\"sq\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = sq16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 5: pow(x, 2.0) — positive exponent (pow compiles but negative exp gives nan).
+/// Tests if pow works at all with positive exponent.
+fn test_decomp_pow2_via_mul() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 two = const()[name = string(\"two\"), val = fp16(2.0)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = pow(x = x16, y = two)[name = string(\"pw2\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 6: Conv with 2x1 kernel — local attention approximation.
+/// Can the ANE do convolutions with kernel > 1x1?
+fn test_decomp_conv_2x1() {
+    let dim = 64;
+    let seq = 16;
+    let out_dim = 32;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    // 2x1 kernel: [out_dim, in_dim, KH, KW] = [32, 64, 2, 1]
+    write!(body, "        tensor<fp16, [{out_dim}, {dim}, 2, 1]> W = const()[name = string(\"W\"), val = tensor<fp16, [{out_dim}, {dim}, 2, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n").unwrap();
+    body.push_str(CONV_PARAMS);
+    write!(body, "        tensor<fp16, [1, {out_dim}, 1, {seq}]> y16 = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W, x = x16)[name = string(\"conv\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {out_dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let w = make_weight_data(out_dim * dim * 2);
+    // WeightBlob: rows * cols must equal data length. Use 1 x total for simplicity.
+    let blob = make_blob(&w, 1, out_dim * dim * 2);
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/weight.bin", &blob)],
+        &[dim * seq * 4],
+        &[out_dim * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 7: Conv with 1x2 kernel — temporal convolution.
+fn test_decomp_conv_1x2() {
+    let dim = 64;
+    let seq = 16;
+    let out_dim = 32;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    // 1x2 kernel: [out_dim, in_dim, KH, KW] = [32, 64, 1, 2]
+    write!(body, "        tensor<fp16, [{out_dim}, {dim}, 1, 2]> W = const()[name = string(\"W\"), val = tensor<fp16, [{out_dim}, {dim}, 1, 2]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n").unwrap();
+    body.push_str(CONV_PARAMS);
+    write!(body, "        tensor<fp16, [1, {out_dim}, 1, {seq}]> y16 = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W, x = x16)[name = string(\"conv\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {out_dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let w = make_weight_data(out_dim * dim * 2);
+    let blob = make_blob(&w, 1, out_dim * dim * 2);
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/weight.bin", &blob)],
+        &[dim * seq * 4],
+        &[out_dim * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 8: Multi-output as concat replacement.
+/// Already proven to work in Phase 2 — verify it works with conv operations.
+fn test_decomp_multi_output_as_concat() {
+    let dim = 64;
+    let seq = 16;
+    let half = dim / 2;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [{half}, {dim}, 1, 1]> W1 = const()[name = string(\"W1\"), val = tensor<fp16, [{half}, {dim}, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/w1.bin\"), offset = uint64(64)))];\n").unwrap();
+    write!(body, "        tensor<fp16, [{half}, {dim}, 1, 1]> W2 = const()[name = string(\"W2\"), val = tensor<fp16, [{half}, {dim}, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/w2.bin\"), offset = uint64(64)))];\n").unwrap();
+    body.push_str(CONV_PARAMS);
+    write!(body, "        tensor<fp16, [1, {half}, 1, {seq}]> a = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W1, x = x16)[name = string(\"a_conv\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {half}, 1, {seq}]> b = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W2, x = x16)[name = string(\"b_conv\")];\n").unwrap();
+    // Note: outputs must be alphabetically ordered for correct binding
+    write!(body, "        tensor<fp32, [1, {half}, 1, {seq}]> a_out = cast(dtype = to_fp32, x = a)[name = string(\"cast_a\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {half}, 1, {seq}]> b_out = cast(dtype = to_fp32, x = b)[name = string(\"cast_b\")];\n").unwrap();
+    let mil = mil_fp32_program(
+        &format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"),
+        &body,
+        "a_out, b_out",
+    );
+    let w = make_weight_data(half * dim);
+    let b1 = make_blob(&w, half, dim);
+    let b2 = make_blob(&w, half, dim);
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[
+            ("@model_path/weights/w1.bin", &b1),
+            ("@model_path/weights/w2.bin", &b2),
+        ],
+        &[dim * seq * 4],
+        // Multi-output must use uniform sizes
+        &[half * seq * 4, half * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 9: Depthwise conv (groups = in_dim) — each channel processed independently.
+/// ANE may or may not support groups != 1.
+fn test_decomp_depthwise_conv() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    // Depthwise: 1 filter per channel, weight shape [dim, 1, 1, 1], groups=dim
+    write!(body, "        tensor<fp16, [{dim}, 1, 1, 1]> W = const()[name = string(\"W\"), val = tensor<fp16, [{dim}, 1, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n").unwrap();
+    body.push_str(CONV_PARAMS);
+    // Override groups for depthwise
+    write!(
+        body,
+        "        int32 gr = const()[name = string(\"gr\"), val = int32({dim})];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W, x = x16)[name = string(\"dw\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let w = make_weight_data(dim);
+    let blob = make_blob(&w, dim, 1);
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/weight.bin", &blob)],
+        &[dim * seq * 4],
+        &[dim * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Helper: small-value input bytes (values stay in fp16-safe range when squared).
+fn small_input_bytes(n: usize) -> Vec<u8> {
+    (0..n)
+        .map(|i| (((i % 100) as f32) * 0.01).to_le_bytes()) // 0.00 to 0.99
+        .flatten()
+        .collect()
+}
+
+/// Test 11: x^2 via mul(x, x) with small input values (fp16-safe).
+fn test_decomp_sq_small() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> sq16 = mul(x = x16, y = x16)[name = string(\"sq\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = sq16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = small_input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 12: reduce_sum via conv1x1 with all-ones weights, small input values.
+fn test_decomp_sum_small() {
+    let dim = 64;
+    let seq = 16;
+    let mil = conv1x1_mil(seq, dim, 1, "W", "");
+    let w: Vec<f32> = (0..dim).map(|_| 1.0).collect();
+    let blob = make_blob(&w, 1, dim);
+    let input = small_input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/W.bin", &blob)],
+        &[dim * seq * 4],
+        &[1 * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Test 13: RMSNorm approximation with small input values.
+/// mul(x,x) → conv(all-ones) → sum(x^2). Small values to avoid fp16 overflow.
+fn test_decomp_rmsnorm_small() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> sq = mul(x = x16, y = x16)[name = string(\"sq\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, 1]> W_sum = const()[name = string(\"Wsum\"), val = tensor<fp16, [1, {dim}, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/wsum.bin\"), offset = uint64(64)))];\n").unwrap();
+    body.push_str(CONV_PARAMS);
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> ssq = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W_sum, x = sq)[name = string(\"sum_sq\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, 1, 1, {seq}]> y = cast(dtype = to_fp32, x = ssq)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let w: Vec<f32> = (0..dim).map(|_| 1.0).collect();
+    let blob = make_blob(&w, 1, dim);
+    let input = small_input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/wsum.bin", &blob)],
+        &[dim * seq * 4],
+        &[1 * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
 }
