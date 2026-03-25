@@ -52,6 +52,12 @@
 //! - **Kernel** (`kernel.rs`): ANEKernel lifecycle management
 //! - **IOSurface** (`io_surface.rs`): RAII-safe memory management
 //! - **Weight Blobs** (`weight_blob.rs`): Weight format abstraction
+//! - **Profiler** (`profiler.rs`): Kernel timing and performance analysis
+//! - **Operator Fusion** (`operator_fusion.rs`): Fuse operations for performance
+//! - **Tiling** (`tiling.rs`): Split large operations into ANE-compatible chunks
+//! - **Program Cache** (`program_cache.rs`): Cache compiled kernels for reuse
+//! - **Training Architecture** (`training_architecture.rs`): ANE training with compile budget
+//! - **Trainer** (`trainer.rs`): Hybrid ANE+CPU training with caching
 //!
 //! # Error Handling & Recovery
 //!
@@ -192,7 +198,6 @@ pub(crate) mod blobs;
 pub mod error;
 /// Detailed error diagnostics and recovery analysis
 pub mod error_diagnostics;
-
 /// Error logging and reporting
 pub mod error_logging;
 /// Graceful degradation strategies
@@ -201,13 +206,29 @@ pub mod fallback;
 pub mod io_surface;
 /// ANE kernel wrapper for managing compiled models and I/O operations.
 pub mod kernel;
+/// Memory pool for efficient IOSurface allocation
+// pub mod memory_pool; // TODO: uncomment when memory_pool.rs compiles
+/// MIL code generator for ANE operations
+pub(crate) mod mil_generator;
 /// Multi-ANE distributed training support
 pub mod multi_ane;
+/// Operator fusion for performance optimization
+pub mod operator_fusion;
+/// ANE profiler for kernel timing and performance analysis
+pub mod profiler;
+/// ANE program cache for avoiding recompilation
+pub mod program_cache;
 /// Automatic retry with adaptive batch size reduction
 pub mod retry_policy;
 /// Low-level runtime and compile/load/eval support for the private ANE APIs.
 pub mod runtime;
 pub(crate) mod sys;
+/// Tiling for large operations
+pub mod tiling;
+/// ANE trainer
+pub mod trainer;
+/// ANE training architecture
+pub mod training_architecture;
 /// Weight blob builders for ANE-compatible formats.
 pub mod weight_blob;
 
@@ -217,9 +238,16 @@ pub use error_logging::{ErrorLog, ErrorLogEntry, ErrorReporter, ErrorSeverity};
 pub use fallback::{FallbackExecutor, FallbackResult, FallbackStats, FallbackStrategy};
 pub use io_surface::IOSurface;
 pub use kernel::ANEKernel;
+// pub use memory_pool::{
+//     MemoryPool, PoolConfig, PoolStats, PooledBuffer, SharedMemoryPool, SizeClassStats,
+// };
 pub use multi_ane::{
     detect_ane_devices, get_optimal_device_count, per_device_batch_size, validate_device_count,
     ANEDeviceInfo, MultiANEConfig,
+};
+pub use operator_fusion::{ActivationType, FusedKernelRegistry, FusedKernelType};
+pub use profiler::{
+    ANEProfiler, KernelStats, KernelTimer, KernelTiming, ProfilerMetrics, StepProfile,
 };
 pub use retry_policy::{
     execute_with_retry, RetryConfig, RetryPolicy, RetryResult, RetryableOperation,
