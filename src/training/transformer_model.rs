@@ -13,7 +13,7 @@
 //! gradients on CPU from cached activations so the training loop can actually
 //! learn from data.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 #[cfg(target_vendor = "apple")]
 use std::panic::AssertUnwindSafe;
@@ -32,7 +32,7 @@ use crate::layers::transformer_backward::rmsnorm_backward;
 use crate::mil::{linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil};
 use crate::training::{Model, Precision, TransformerConfig};
 use crate::utils::fp32_to_fp16;
-use crate::wrapper::{ANECompiler, ANETensor};
+use crate::wrapper::{ANECompiler, ANEExecutor, ANETensor};
 
 const EPS: f32 = 1e-6;
 #[cfg(target_vendor = "apple")]
@@ -296,7 +296,6 @@ struct SampleCache {
 }
 
 /// CPU-backed transformer used for real training runs.
-#[derive(Debug)]
 pub struct TransformerANE {
     config: TransformerConfig,
     trainable_params: Vec<f32>,
@@ -307,6 +306,21 @@ pub struct TransformerANE {
     last_batch_size: usize,
     last_seq_len: usize,
     use_ane_head: bool,
+    /// Compile cache for ANE matmul operations — avoids recompilation within a batch.
+    /// Keys are shape strings like "qkv_31_64_192", values are compiled executors.
+    /// Cleared at the start of each `forward()` call since weights change after optimizer step.
+    #[cfg(target_vendor = "apple")]
+    ane_cache: HashMap<String, ANEExecutor>,
+}
+
+impl std::fmt::Debug for TransformerANE {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransformerANE")
+            .field("config", &self.config)
+            .field("param_count", &self.config.param_count())
+            .field("use_ane_head", &self.use_ane_head)
+            .finish()
+    }
 }
 
 impl TransformerANE {
@@ -380,6 +394,8 @@ impl TransformerANE {
             last_batch_size: 0,
             last_seq_len: 0,
             use_ane_head: false,
+            #[cfg(target_vendor = "apple")]
+            ane_cache: HashMap::new(),
         })
     }
 
@@ -543,7 +559,7 @@ impl TransformerANE {
         Ok(())
     }
 
-    fn forward_sample(&self, tokens: &[u32]) -> Result<(Vec<f32>, SampleCache)> {
+    fn forward_sample(&mut self, tokens: &[u32]) -> Result<(Vec<f32>, SampleCache)> {
         let seq_len = tokens.len();
         let dim = self.config.dim;
         let vocab_size = self.config.vocab_size;
@@ -559,26 +575,55 @@ impl TransformerANE {
         };
 
         for layer_idx in 0..self.config.n_layers {
-            let layer = self.layer(layer_idx);
+            // Copy layer layout ranges upfront to avoid borrowing self across ANE calls.
+            // self.layer() borrows self.layout, which conflicts with &mut self in ANE methods.
+            let (
+                rms_att_range,
+                wq_range,
+                wk_range,
+                wv_range,
+                wo_range,
+                rms_ffn_range,
+                w1_range,
+                w3_range,
+                w2_range,
+            ) = {
+                let layer = self.layer(layer_idx);
+                (
+                    layer.rms_att.clone(),
+                    layer.wq.clone(),
+                    layer.wk.clone(),
+                    layer.wv.clone(),
+                    layer.wo.clone(),
+                    layer.rms_ffn.clone(),
+                    layer.w1.clone(),
+                    layer.w3.clone(),
+                    layer.w2.clone(),
+                )
+            };
             let x_attn_in = x.clone();
             let x_attn_norm = rmsnorm_forward(
                 &x_attn_in,
-                &self.trainable_params[layer.rms_att.clone()],
+                &self.trainable_params[rms_att_range.clone()],
                 dim,
             );
 
             let (q, k, v) = if self.use_ane_head {
                 #[cfg(target_vendor = "apple")]
                 {
+                    // Clone weights before mutable borrow of self in ANE methods
+                    let wq = self.trainable_params[wq_range.clone()].to_vec();
+                    let wk = self.trainable_params[wk_range.clone()].to_vec();
+                    let wv = self.trainable_params[wv_range.clone()].to_vec();
                     let previous_hook = std::panic::take_hook();
                     std::panic::set_hook(Box::new(|_| {}));
                     let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         self.forward_qkv_with_ane(
                             &x_attn_norm,
                             x_attn_norm.len() / dim,
-                            &self.trainable_params[layer.wq.clone()],
-                            &self.trainable_params[layer.wk.clone()],
-                            &self.trainable_params[layer.wv.clone()],
+                            &wq,
+                            &wk,
+                            &wv,
                         )
                     }));
                     std::panic::set_hook(previous_hook);
@@ -593,19 +638,19 @@ impl TransformerANE {
                                 linear_forward(
                                     &x_attn_norm,
                                     dim,
-                                    &self.trainable_params[layer.wq.clone()],
+                                    &self.trainable_params[wq_range.clone()],
                                     dim,
                                 ),
                                 linear_forward(
                                     &x_attn_norm,
                                     dim,
-                                    &self.trainable_params[layer.wk.clone()],
+                                    &self.trainable_params[wk_range.clone()],
                                     dim,
                                 ),
                                 linear_forward(
                                     &x_attn_norm,
                                     dim,
-                                    &self.trainable_params[layer.wv.clone()],
+                                    &self.trainable_params[wv_range.clone()],
                                     dim,
                                 ),
                             )
@@ -618,19 +663,19 @@ impl TransformerANE {
                         linear_forward(
                             &x_attn_norm,
                             dim,
-                            &self.trainable_params[layer.wq.clone()],
+                            &self.trainable_params[wq_range.clone()],
                             dim,
                         ),
                         linear_forward(
                             &x_attn_norm,
                             dim,
-                            &self.trainable_params[layer.wk.clone()],
+                            &self.trainable_params[wk_range.clone()],
                             dim,
                         ),
                         linear_forward(
                             &x_attn_norm,
                             dim,
-                            &self.trainable_params[layer.wv.clone()],
+                            &self.trainable_params[wv_range.clone()],
                             dim,
                         ),
                     )
@@ -640,19 +685,19 @@ impl TransformerANE {
                     linear_forward(
                         &x_attn_norm,
                         dim,
-                        &self.trainable_params[layer.wq.clone()],
+                        &self.trainable_params[wq_range.clone()],
                         dim,
                     ),
                     linear_forward(
                         &x_attn_norm,
                         dim,
-                        &self.trainable_params[layer.wk.clone()],
+                        &self.trainable_params[wk_range.clone()],
                         dim,
                     ),
                     linear_forward(
                         &x_attn_norm,
                         dim,
-                        &self.trainable_params[layer.wv.clone()],
+                        &self.trainable_params[wv_range.clone()],
                         dim,
                     ),
                 )
@@ -664,16 +709,11 @@ impl TransformerANE {
             let attn_proj_out = if self.use_ane_head {
                 #[cfg(target_vendor = "apple")]
                 {
+                    let wo = self.trainable_params[wo_range.clone()].to_vec();
                     let previous_hook = std::panic::take_hook();
                     std::panic::set_hook(Box::new(|_| {}));
                     let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        self.forward_linear_with_ane(
-                            &attn_out,
-                            seq_len,
-                            &self.trainable_params[layer.wo.clone()],
-                            dim,
-                            dim,
-                        )
+                        self.forward_linear_with_ane(&attn_out, seq_len, &wo, dim, dim)
                     }));
                     std::panic::set_hook(previous_hook);
                     match ane_result {
@@ -686,7 +726,7 @@ impl TransformerANE {
                             linear_forward(
                                 &attn_out,
                                 dim,
-                                &self.trainable_params[layer.wo.clone()],
+                                &self.trainable_params[wo_range.clone()],
                                 dim,
                             )
                         }
@@ -697,7 +737,7 @@ impl TransformerANE {
                     linear_forward(
                         &attn_out,
                         dim,
-                        &self.trainable_params[layer.wo.clone()],
+                        &self.trainable_params[wo_range.clone()],
                         dim,
                     )
                 }
@@ -705,28 +745,30 @@ impl TransformerANE {
                 linear_forward(
                     &attn_out,
                     dim,
-                    &self.trainable_params[layer.wo.clone()],
+                    &self.trainable_params[wo_range.clone()],
                     dim,
                 )
             };
             let x_ffn_in = add_residual(&x_attn_in, &attn_proj_out);
             let x_ffn_norm = rmsnorm_forward(
                 &x_ffn_in,
-                &self.trainable_params[layer.rms_ffn.clone()],
+                &self.trainable_params[rms_ffn_range.clone()],
                 dim,
             );
 
             let (h1, h3) = if self.use_ane_head {
                 #[cfg(target_vendor = "apple")]
                 {
+                    let w1 = self.trainable_params[w1_range.clone()].to_vec();
+                    let w3 = self.trainable_params[w3_range.clone()].to_vec();
                     let previous_hook = std::panic::take_hook();
                     std::panic::set_hook(Box::new(|_| {}));
                     let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         self.forward_dual_linear_with_ane(
                             &x_ffn_norm,
                             seq_len,
-                            &self.trainable_params[layer.w1.clone()],
-                            &self.trainable_params[layer.w3.clone()],
+                            &w1,
+                            &w3,
                             dim,
                             self.config.hidden_dim,
                         )
@@ -738,13 +780,13 @@ impl TransformerANE {
                             linear_forward(
                                 &x_ffn_norm,
                                 dim,
-                                &self.trainable_params[layer.w1.clone()],
+                                &self.trainable_params[w1_range.clone()],
                                 self.config.hidden_dim,
                             ),
                             linear_forward(
                                 &x_ffn_norm,
                                 dim,
-                                &self.trainable_params[layer.w3.clone()],
+                                &self.trainable_params[w3_range.clone()],
                                 self.config.hidden_dim,
                             ),
                         ),
@@ -756,13 +798,13 @@ impl TransformerANE {
                         linear_forward(
                             &x_ffn_norm,
                             dim,
-                            &self.trainable_params[layer.w1.clone()],
+                            &self.trainable_params[w1_range.clone()],
                             self.config.hidden_dim,
                         ),
                         linear_forward(
                             &x_ffn_norm,
                             dim,
-                            &self.trainable_params[layer.w3.clone()],
+                            &self.trainable_params[w3_range.clone()],
                             self.config.hidden_dim,
                         ),
                     )
@@ -772,13 +814,13 @@ impl TransformerANE {
                     linear_forward(
                         &x_ffn_norm,
                         dim,
-                        &self.trainable_params[layer.w1.clone()],
+                        &self.trainable_params[w1_range.clone()],
                         self.config.hidden_dim,
                     ),
                     linear_forward(
                         &x_ffn_norm,
                         dim,
-                        &self.trainable_params[layer.w3.clone()],
+                        &self.trainable_params[w3_range.clone()],
                         self.config.hidden_dim,
                     ),
                 )
@@ -788,13 +830,14 @@ impl TransformerANE {
             let ffn_out = if self.use_ane_head {
                 #[cfg(target_vendor = "apple")]
                 {
+                    let w2 = self.trainable_params[w2_range.clone()].to_vec();
                     let previous_hook = std::panic::take_hook();
                     std::panic::set_hook(Box::new(|_| {}));
                     let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         self.forward_linear_with_ane(
                             &ffn_hidden,
                             seq_len,
-                            &self.trainable_params[layer.w2.clone()],
+                            &w2,
                             self.config.hidden_dim,
                             dim,
                         )
@@ -805,7 +848,7 @@ impl TransformerANE {
                         _ => linear_forward(
                             &ffn_hidden,
                             self.config.hidden_dim,
-                            &self.trainable_params[layer.w2.clone()],
+                            &self.trainable_params[w2_range.clone()],
                             dim,
                         ),
                     }
@@ -815,7 +858,7 @@ impl TransformerANE {
                     linear_forward(
                         &ffn_hidden,
                         self.config.hidden_dim,
-                        &self.trainable_params[layer.w2.clone()],
+                        &self.trainable_params[w2_range.clone()],
                         dim,
                     )
                 }
@@ -823,7 +866,7 @@ impl TransformerANE {
                 linear_forward(
                     &ffn_hidden,
                     self.config.hidden_dim,
-                    &self.trainable_params[layer.w2.clone()],
+                    &self.trainable_params[w2_range.clone()],
                     dim,
                 )
             };
@@ -1212,7 +1255,7 @@ impl TransformerANE {
 
     #[cfg(target_vendor = "apple")]
     fn forward_qkv_with_ane(
-        &self,
+        &mut self,
         x_attn_norm: &[f32],
         positions: usize,
         wq: &[f32],
@@ -1222,13 +1265,21 @@ impl TransformerANE {
         use crate::ane::WeightBlob;
 
         let dim = self.config.dim;
-        let mut qkv_weights = Vec::with_capacity(3 * dim * dim);
-        qkv_weights.extend_from_slice(wq);
-        qkv_weights.extend_from_slice(wk);
-        qkv_weights.extend_from_slice(wv);
-        let weight_blob = WeightBlob::from_f32(&qkv_weights, 3 * dim, dim)?;
-        let request = linear_matmul_compile_request(positions, dim, 3 * dim, &weight_blob);
-        let mut executor = request.compile()?;
+        let cache_key = format!("qkv_{positions}_{dim}_{}", 3 * dim);
+
+        // Compile on cache miss, reuse executor on cache hit
+        if !self.ane_cache.contains_key(&cache_key) {
+            let mut qkv_weights = Vec::with_capacity(3 * dim * dim);
+            qkv_weights.extend_from_slice(wq);
+            qkv_weights.extend_from_slice(wk);
+            qkv_weights.extend_from_slice(wv);
+            let weight_blob = WeightBlob::from_f32(&qkv_weights, 3 * dim, dim)?;
+            let request = linear_matmul_compile_request(positions, dim, 3 * dim, &weight_blob);
+            let executor = request.compile()?;
+            self.ane_cache.insert(cache_key.clone(), executor);
+        }
+
+        let executor = self.ane_cache.get_mut(&cache_key).unwrap();
 
         let input = transpose_row_major(x_attn_norm, positions, dim);
         let input_tensor = ANETensor::from_fp32(input, vec![1, dim, positions])?;
@@ -1249,7 +1300,7 @@ impl TransformerANE {
 
     #[cfg(target_vendor = "apple")]
     fn forward_linear_with_ane(
-        &self,
+        &mut self,
         input: &[f32],
         positions: usize,
         weights: &[f32],
@@ -1258,9 +1309,16 @@ impl TransformerANE {
     ) -> Result<Vec<f32>> {
         use crate::ane::WeightBlob;
 
-        let weight_blob = WeightBlob::from_f32(weights, out_dim, in_dim)?;
-        let request = linear_matmul_compile_request(positions, in_dim, out_dim, &weight_blob);
-        let mut executor = request.compile()?;
+        let cache_key = format!("linear_{positions}_{in_dim}_{out_dim}");
+
+        if !self.ane_cache.contains_key(&cache_key) {
+            let weight_blob = WeightBlob::from_f32(weights, out_dim, in_dim)?;
+            let request = linear_matmul_compile_request(positions, in_dim, out_dim, &weight_blob);
+            let executor = request.compile()?;
+            self.ane_cache.insert(cache_key.clone(), executor);
+        }
+
+        let executor = self.ane_cache.get_mut(&cache_key).unwrap();
 
         let input_tensor = ANETensor::from_fp32(
             transpose_row_major(input, positions, in_dim),
@@ -1277,7 +1335,7 @@ impl TransformerANE {
 
     #[cfg(target_vendor = "apple")]
     fn forward_dual_linear_with_ane(
-        &self,
+        &mut self,
         input: &[f32],
         positions: usize,
         w1: &[f32],
@@ -1287,13 +1345,20 @@ impl TransformerANE {
     ) -> Result<(Vec<f32>, Vec<f32>)> {
         use crate::ane::WeightBlob;
 
-        let mut weights = Vec::with_capacity(2 * hidden_dim * in_dim);
-        weights.extend_from_slice(w1);
-        weights.extend_from_slice(w3);
-        let weight_blob = WeightBlob::from_f32(&weights, 2 * hidden_dim, in_dim)?;
-        let request =
-            linear_matmul_compile_request(positions, in_dim, 2 * hidden_dim, &weight_blob);
-        let mut executor = request.compile()?;
+        let cache_key = format!("dual_{positions}_{in_dim}_{}", 2 * hidden_dim);
+
+        if !self.ane_cache.contains_key(&cache_key) {
+            let mut weights = Vec::with_capacity(2 * hidden_dim * in_dim);
+            weights.extend_from_slice(w1);
+            weights.extend_from_slice(w3);
+            let weight_blob = WeightBlob::from_f32(&weights, 2 * hidden_dim, in_dim)?;
+            let request =
+                linear_matmul_compile_request(positions, in_dim, 2 * hidden_dim, &weight_blob);
+            let executor = request.compile()?;
+            self.ane_cache.insert(cache_key.clone(), executor);
+        }
+
+        let executor = self.ane_cache.get_mut(&cache_key).unwrap();
 
         let input_tensor = ANETensor::from_fp32(
             transpose_row_major(input, positions, in_dim),
@@ -1354,6 +1419,11 @@ pub fn ane_forward_block_summary() -> Option<String> {
 impl Model for TransformerANE {
     fn forward(&mut self, batch: &Batch) -> Result<ANETensor> {
         self.validate_batch(batch)?;
+
+        // Clear ANE compile cache — weights change after each optimizer step,
+        // so cached executors with baked-in weights are stale.
+        #[cfg(target_vendor = "apple")]
+        self.ane_cache.clear();
 
         self.cached.clear();
         self.last_input_tokens = batch.tokens().to_vec();

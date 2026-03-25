@@ -392,10 +392,11 @@ fn main() -> Result<()> {
     print_speedup(&results);
 
     println!("\n  NOTES:");
-    println!("  - ANE QKV, attn_out, dual_linear, and w2 projections run on ANE");
+    println!("  - ANE compile cache: compiles once per unique shape, reuses within batch");
+    println!("  - QKV and attn_out projections run on ANE (2 of 4 matmul types work)");
     println!("  - ANE final_norm (RMSNorm) and logits head skip ANE (always fail) → CPU");
-    println!("  - First ANE step compiles ~4-8 matmul ops (subsequent steps recompile");
-    println!("    since compile cache is not yet wired in — each compile ~4s)");
+    println!("  - dual_linear (w1/w3) and w2 projections fail on ANE → CPU fallback");
+    println!("  - Cache cleared each step (weights change after optimizer)");
     println!("  - Backward pass is always CPU (not yet ANE-accelerated)");
     println!();
 
