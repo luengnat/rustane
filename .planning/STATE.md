@@ -5,21 +5,21 @@
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** Fused ANE programs that train transformers faster than CPU
-**Current focus:** Phase 5 — Delta Compilation
+**Current focus:** Phase 6 — Training Loop Integration
 
 ## Current Position
 
 **Milestone:** M2: Fused Training
-**Phase:** 4 of 7 (Backward Pass Correctness) — COMPLETE
-**Plan:** 4 of 4 — COMPLETE
-**Status:** All backward MIL generators ported and verified. Ready for delta compilation.
-**Last activity:** 2026-03-26 — Phase 4 complete, all backward generators implemented
+**Phase:** 5 of 7 (Delta Compilation) — COMPLETE
+**Plan:** 3 of 3 — COMPLETE
+**Status:** Delta compilation infrastructure built: DeltaCompiler, multi-layer tests, state survival verified. Ready for training loop.
+**Last activity:** 2026-03-26 — Phase 5 complete, delta compilation validated
 
 ## Progress
 
 ```
 [██████████] 100% — M1: ANE Foundation (COMPLETE)
-[██████░░░░]  57% — M2: Fused Training — Phase 4 complete, 3 phases remaining
+[████████░░]  71% — M2: Fused Training — Phase 5 complete, 2 phases remaining
 ```
 
 ## Accumulated Context from M1
@@ -39,6 +39,9 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | Sub decomposition: add(x, mul(y, const(-1.0))) | Consistent pattern for replacing rejected sub op | Phase 4 |
 | Packed single-input + slice_by_size for backward programs | ANE only supports single input; activations packed and unpacked | Phase 4 |
 | SDPA backward split into two MIL programs | bwd1 (dV + probs) feeds bwd2 (dQ + dK) | Phase 4 |
+| DeltaCompiler owns ANEExecutor instances via RAII | Drop frees ANE resources automatically | Phase 5 |
+| CompileBudgetMonitor via delegation (not inheritance) | Simpler API, no trait boilerplate | Phase 5 |
+| memory_pool module commented out (untracked, broken) | Pre-existing compile errors, out of scope | Phase 5 |
 
 ### Validated Capabilities
 
@@ -50,6 +53,9 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 - bwd_ffn_mil() — SwiGLU FFN backward with sigmoid gating and SiLU derivative
 - bwd_qkv_mil() — QKV projection backward (3 transposed convolutions)
 - bwd_sdpa_bwd1_mil() + bwd_sdpa_bwd2_mil() — Full SDPA backward (dV, dQ, dK)
+- DeltaCompiler — Multi-layer program management with budget tracking
+- reload_weights() verified across 20+ cycles without state corruption
+- Compile count non-increase during reloads (DLT-02 verified)
 
 ### Carried Blockers
 
@@ -68,6 +74,9 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | 4 | 02-04 | — | 2 | 1 |
 | 4 | 03-04 | — | 2 | 2 |
 | 4 | 04-04 | — | 1 | 1 |
+| 5 | 01-05 | 10min | 1 | 2 |
+| 5 | 02-05 | 8min | 1 | 2 |
+| 5 | 03-05 | 5min | 1 | 1 |
 
 ## Session History
 
@@ -80,9 +89,10 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | 2026-03-25 | BREAKTHROUGH: MIL syntax fixes unlock reduce_sum, softmax, pow, full SDPA | Need larger tensors for eval |
 | 2026-03-26 | M2 milestone started, roadmap created (4 phases) | Phase 4 planning |
 | 2026-03-26 | Phase 4 complete: all backward MIL generators ported from stories_mil.h | Ready for Phase 5 delta compilation |
+| 2026-03-26 | Phase 5 complete: DeltaCompiler, multi-layer tests, state survival verified | Ready for Phase 6 training loop |
 
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: Phase 4 complete, all backward generators implemented
+Stopped at: Phase 5 complete, delta compilation validated
 Resume file: None

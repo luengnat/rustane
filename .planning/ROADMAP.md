@@ -72,9 +72,9 @@ Plans:
 **Plans**: TBD
 
 Plans:
-- [ ] 05-01: Multi-layer delta compilation test with timing (DLT-01, DLT-03)
-- [ ] 05-02: DeltaCompiler abstraction with compile budget tracking (DLT-02)
-- [ ] 05-03: State survival verification across reload cycles (DLT-04)
+- [x] 05-01: Multi-layer delta compilation test with timing (DLT-01, DLT-03)
+- [x] 05-02: DeltaCompiler abstraction with compile budget tracking (DLT-02)
+- [x] 05-03: State survival verification across reload cycles (DLT-04)
 
 #### Phase 6: Training Loop Integration
 **Goal**: End-to-end training loop runs on synthetic data with ANE-accelerated forward and backward passes
@@ -114,6 +114,6 @@ Phases execute in numeric order: 4 → 5 → 6 → 7
 | 2. Constraint Testing | M1 | 1/1 | Complete | 2026-03-26 |
 | 3. Fused MIL Generators | M1 | 2/2 | Complete | 2026-03-26 |
 | 4. Backward Pass | M2 | 4/4 | Complete | 2026-03-26 |
-| 5. Delta Compilation | M2 | 0/3 | Not started | - |
+| 5. Delta Compilation | M2 | 3/3 | Complete | 2026-03-26 |
 | 6. Training Loop | M2 | 0/? | Not started | - |
 | 7. Benchmarking | M2 | 0/? | Not started | - |
