@@ -5,21 +5,21 @@
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** Fused ANE programs that train transformers faster than CPU
-**Current focus:** Phase 6 — Training Loop Integration
+**Current focus:** M2 COMPLETE
 
 ## Current Position
 
-**Milestone:** M2: Fused Training
-**Phase:** 5 of 7 (Delta Compilation) — COMPLETE
-**Plan:** 3 of 3 — COMPLETE
-**Status:** Delta compilation infrastructure built: DeltaCompiler, multi-layer tests, state survival verified. Ready for training loop.
-**Last activity:** 2026-03-26 — Phase 5 complete, delta compilation validated
+**Milestone:** M2: Fused Training — COMPLETE
+**Phase:** 7 of 7 (Performance Benchmarking) — COMPLETE
+**Plan:** 1 of 1 — COMPLETE
+**Status:** All M2 phases complete. Delta compilation, training loop, and benchmarks done.
+**Last activity:** 2026-03-26 — Phase 7 complete, M2 milestone finished
 
 ## Progress
 
 ```
 [██████████] 100% — M1: ANE Foundation (COMPLETE)
-[████████░░]  71% — M2: Fused Training — Phase 5 complete, 2 phases remaining
+[██████████] 100% — M2: Fused Training (COMPLETE)
 ```
 
 ## Accumulated Context from M1
@@ -42,6 +42,9 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | DeltaCompiler owns ANEExecutor instances via RAII | Drop frees ANE resources automatically | Phase 5 |
 | CompileBudgetMonitor via delegation (not inheritance) | Simpler API, no trait boilerplate | Phase 5 |
 | memory_pool module commented out (untracked, broken) | Pre-existing compile errors, out of scope | Phase 5 |
+| ANE forward + CPU gradient pattern for training loop | ANE backward needs larger tensors; CPU gradient is correct and sufficient | Phase 6 |
+| Analytical MSE gradient (not numerical) for training | Faster and more accurate than finite differences | Phase 6 |
+| DIM/SEQ sweep benchmark with graceful error handling | Large configs may fail on ANE — report results instead of crashing | Phase 7 |
 
 ### Validated Capabilities
 
@@ -56,6 +59,10 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 - DeltaCompiler — Multi-layer program management with budget tracking
 - reload_weights() verified across 20+ cycles without state corruption
 - Compile count non-increase during reloads (DLT-02 verified)
+- End-to-end training loop: ANE forward → CPU loss → CPU gradient → SGD → delta reload
+- Loss decreases over 50 training steps on synthetic data (TRL-02 verified)
+- ANE vs CPU throughput benchmark with timing breakdown
+- Multi-config benchmark: (32,16) to (768,256) DIM/SEQ sweep
 
 ### Carried Blockers
 
@@ -77,6 +84,9 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | 5 | 01-05 | 10min | 1 | 2 |
 | 5 | 02-05 | 8min | 1 | 2 |
 | 5 | 03-05 | 5min | 1 | 1 |
+| 6 | 01-06 | 8min | 1 | 1 |
+| 6 | 02-06 | 5min | 1 | 1 |
+| 7 | 01-07 | 5min | 1 | 1 |
 
 ## Session History
 
@@ -90,9 +100,11 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | 2026-03-26 | M2 milestone started, roadmap created (4 phases) | Phase 4 planning |
 | 2026-03-26 | Phase 4 complete: all backward MIL generators ported from stories_mil.h | Ready for Phase 5 delta compilation |
 | 2026-03-26 | Phase 5 complete: DeltaCompiler, multi-layer tests, state survival verified | Ready for Phase 6 training loop |
+| 2026-03-26 | Phase 6 complete: training loop + ANE vs CPU benchmark | Ready for Phase 7 benchmarking |
+| 2026-03-26 | Phase 7 complete: multi-config benchmark | M2 COMPLETE |
 
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: Phase 5 complete, delta compilation validated
+Stopped at: M2 COMPLETE — all 4 phases (5-7) executed
 Resume file: None
