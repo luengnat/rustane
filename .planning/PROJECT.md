@@ -17,15 +17,20 @@ Fused ANE programs that train transformers faster than CPU — not individual op
 - ✓ Weight blob format works — `WeightBlob::from_f32()` produces correct ANE-compatible blobs
 - ✓ fp32 I/O with internal fp16 cast works — `fp32 input → cast → conv → cast → fp32 output` compiles and evals
 - ✓ ANE MIL syntax discovered — `{{`/`}}` only in buildInfo dict outer wrapper, single braces elsewhere
+- ✓ All 30+ ANE constraint tests run in subprocess isolation with clear PASS/FAIL results
+- ✓ 9 ANE ops confirmed working + 7 decomposition strategies (sub, div, exp, log, sqrt, abs, relu)
+- ✓ reduce_sum, softmax, pow compile on ANE with correct MIL syntax (Phase 3.5 breakthrough)
+- ✓ Full SDPA MIL pipeline compiles on ANE
+- ✓ RMSNorm MIL generator works on ANE
+- ✓ conv1x1 for weight multiplication, matmul for QK^T and AV (reference pattern)
 
 ### Active
 
-- [ ] All 20 Orion ANE constraints empirically tested on this hardware
-- [ ] Fused forward MIL programs (FFN + SDPA) that compile and run on ANE
 - [ ] Fused backward MIL programs that produce correct gradients
 - [ ] Delta compilation (weight patch + reload) under 500ms
 - [ ] End-to-end training loop faster than CPU-only baseline
-- [ ] ANEMLL RMSNorm trick verified on ANE
+- [ ] Inference correctness at production sizes (DIM≥768, SEQ≥256)
+- [ ] concat workaround (only truly rejected op — blocks gradient taps output)
 
 ### Out of Scope
 
@@ -64,5 +69,16 @@ Fused ANE programs that train transformers faster than CPU — not individual op
 | Follow stories_mil.h for fused programs | Proven working Objective-C reference code | — Pending |
 | Delta compilation over recompilation | 8.5x faster weight updates (Orion) | — Pending |
 
+## Current Milestone: M2 Fused Training
+
+**Goal:** Build fused backward MIL programs, delta compilation, and wire end-to-end training loop that's faster than CPU.
+
+**Target features:**
+- Fused backward MIL generators (FFN, QKV, SDPA)
+- Delta compilation with compile limit tracking
+- End-to-end training loop on synthetic data
+- Performance benchmarking vs CPU baseline
+
 ---
-*Last updated: 2026-03-25 after project initialization*
+
+*Last updated: 2026-03-26 — M2 Fused Training started*
