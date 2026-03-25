@@ -856,72 +856,16 @@ impl TransformerANE {
         }
 
         let final_in = x;
-        let final_norm = if self.use_ane_head {
-            #[cfg(target_vendor = "apple")]
-            {
-                let previous_hook = std::panic::take_hook();
-                std::panic::set_hook(Box::new(|_| {}));
-                let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    self.forward_final_norm_with_ane(&final_in, seq_len - 1)
-                }));
-                std::panic::set_hook(previous_hook);
-                match ane_result {
-                    Ok(Ok(norm)) => norm,
-                    _ => {
-                        log_ane_forward_block("final_norm", "CPU fallback");
-                        rmsnorm_forward(&final_in, self.final_norm(), dim)
-                    }
-                }
-            }
-            #[cfg(not(target_vendor = "apple"))]
-            {
-                rmsnorm_forward(&final_in, self.final_norm(), dim)
-            }
-        } else {
-            rmsnorm_forward(&final_in, self.final_norm(), dim)
-        };
-        let logits_proj = if self.use_ane_head {
-            #[cfg(target_vendor = "apple")]
-            {
-                let previous_hook = std::panic::take_hook();
-                std::panic::set_hook(Box::new(|_| {}));
-                let ane_result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                    self.forward_logits_with_ane(&final_norm[..(seq_len - 1) * dim], seq_len - 1)
-                }));
-                std::panic::set_hook(previous_hook);
-                match ane_result {
-                    Ok(Ok(logits)) => {
-                        static ANE_FORWARD_LOGGED: OnceLock<()> = OnceLock::new();
-                        ANE_FORWARD_LOGGED.get_or_init(|| {
-                            eprintln!("ANE forward slice executed via private runtime");
-                        });
-                        logits
-                    }
-                    _ => linear_forward(
-                        &final_norm[..(seq_len - 1) * dim],
-                        dim,
-                        self.classifier(),
-                        vocab_size,
-                    ),
-                }
-            }
-            #[cfg(not(target_vendor = "apple"))]
-            {
-                linear_forward(
-                    &final_norm[..(seq_len - 1) * dim],
-                    dim,
-                    self.classifier(),
-                    vocab_size,
-                )
-            }
-        } else {
-            linear_forward(
-                &final_norm[..(seq_len - 1) * dim],
-                dim,
-                self.classifier(),
-                vocab_size,
-            )
-        };
+        // final_norm and logits always skip ANE — RMSNorm gets "Program Inference error"
+        // and logits projection is too large (vocab_size × dim) causing hangs.
+        // Both fall back to CPU every time, so just use CPU directly.
+        let final_norm = rmsnorm_forward(&final_in, self.final_norm(), dim);
+        let logits_proj = linear_forward(
+            &final_norm[..(seq_len - 1) * dim],
+            dim,
+            self.classifier(),
+            vocab_size,
+        );
         let logits = apply_logit_softcap(&logits_proj, self.config.logit_softcap);
 
         sample_cache.final_in = final_in;
