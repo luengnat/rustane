@@ -256,11 +256,14 @@ pub mod backend;
 pub mod benchmark;
 pub mod checkpoint;
 pub mod chunked_backward;
+pub mod delta_compiler;
 pub mod grad_accum;
+pub mod gradient_checkpoint;
 pub mod large_models;
 pub mod loss;
 pub mod loss_scale;
 pub mod metrics;
+pub mod mixed_precision;
 pub mod model;
 pub mod model_parallel;
 pub mod scheduler;
@@ -282,7 +285,12 @@ pub use chunked_backward::{
     ActivationCache, BackwardChunk, ChunkedBackwardConfig, ChunkedBackwardError,
     ChunkedBackwardExecutor, ChunkedBackwardStats, ChunkedExecutionPlan,
 };
+pub use delta_compiler::DeltaCompiler;
 pub use grad_accum::GradAccumulator;
+pub use gradient_checkpoint::{
+    Activation, CheckpointBuilder, CheckpointContext, CheckpointData, CheckpointManager,
+    CheckpointStrategy,
+};
 pub use large_models::{
     InitializationStrategy, LargeModelConfig, LargeModelError, LargeModelInitializer,
     LargeModelMemory, ModelPresets, ModelSizeCategory, ParameterSharding,
@@ -293,6 +301,10 @@ pub use loss_scale::LossScaler;
 pub use metrics::{
     ConsoleLogger, FileLogger, JsonLogger, MetricStats, MetricsAggregator, MetricsLogger,
     MetricsTracker,
+};
+pub use mixed_precision::{
+    bf16_slice_to_f32, bf16_to_f32, f32_slice_to_bf16, f32_slice_to_fp16, f32_to_bf16, f32_to_fp16,
+    fp16_slice_to_f32, fp16_to_f32, MasterWeights, MixedPrecisionState, WorkingWeights,
 };
 pub use model::Model;
 pub use model_parallel::{
