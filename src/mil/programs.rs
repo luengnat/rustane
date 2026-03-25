@@ -441,6 +441,259 @@ pub fn pg_attention_mil(
         .build()
 }
 
+/// CONV_CONST string used by backward MIL programs (from stories_mil.h)
+const CONV_CONST_STR: &str = "        string pt = const()[name=string(\"pt\"), val=string(\"valid\")];\n        tensor<int32, [2]> st = const()[name=string(\"st\"), val=tensor<int32, [2]>([1,1])];\n        tensor<int32, [4]> pd = const()[name=string(\"pd\"), val=tensor<int32, [4]>([0,0,0,0])];\n        tensor<int32, [2]> dl = const()[name=string(\"dl\"), val=tensor<int32, [2]>([1,1])];\n        int32 gr = const()[name=string(\"gr\"), val=int32(1)];\n";
+
+/// FFN (SwiGLU) backward pass MIL program (program 1.3 format)
+///
+/// Ported from `gen_ffn_bwd()` in stories_mil.h. Computes gradients for the
+/// SwiGLU FFN block: backward through W2, sigmoid-gating, and W1/W3 projections.
+///
+/// ANE adaptations vs reference:
+/// - `sub(x, y)` → `add(x, mul(y, const(-1.0)))` (sub is rejected)
+/// - `concat(dx, dh1, dh3)` → multi-output return (concat is rejected)
+///
+/// Input shape: `[1, DIM+2*HIDDEN, 1, SEQ]` fp16 (packed: dffn, h1, h3)
+/// Output shapes: `[1, DIM, 1, SEQ]` (dx), `[1, HIDDEN, 1, SEQ]` (dh1, dh3) fp16
+pub fn bwd_ffn_mil(seq_len: usize, dim: usize, hidden_dim: usize) -> String {
+    let in_ch = dim + 2 * hidden_dim;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        in_ch, seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    mil.push_str("        tensor<int32, [4]> bd = const()[name=string(\"bd\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sd = const()[name=string(\"sd\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dffn = slice_by_size(x=x,begin=bd,size=sd)[name=string(\"s0\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b1 = const()[name=string(\"b1\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> s1 = const()[name=string(\"s1\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> h1 = slice_by_size(x=x,begin=b1,size=s1)[name=string(\"s1x\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b3 = const()[name=string(\"b3\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        dim + hidden_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> h3 = slice_by_size(x=x,begin=b3,size=s1)[name=string(\"s3x\")];\n",
+        hidden_dim, seq_len
+    ));
+    // W2t and dsilu
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> W2t = const()[name=string(\"W2t\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/w2t.bin\"), offset=uint64(64)))];\n",
+        hidden_dim, dim, hidden_dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dsilu = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W2t,x=dffn)[name=string(\"cw2\")];\n",
+        hidden_dim, seq_len
+    ));
+    // sigmoid
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> sig = sigmoid(x=h1)[name=string(\"sg\")];\n",
+        hidden_dim, seq_len
+    ));
+    // sub decomposition: oms = 1 - sig → add(1, mul(sig, -1))
+    mil.push_str("        fp16 one = const()[name=string(\"one\"), val=fp16(1.0)];\n");
+    mil.push_str("        fp16 nm1 = const()[name=string(\"nm1\"), val=fp16(-1.0)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> sneg = mul(x=sig,y=nm1)[name=string(\"msn\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> oms = add(x=one,y=sneg)[name=string(\"oms\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> homs = mul(x=h1,y=oms)[name=string(\"homs\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> brk = add(x=one,y=homs)[name=string(\"brk\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dsd = mul(x=sig,y=brk)[name=string(\"dsd\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> t1 = mul(x=dsilu,y=h3)[name=string(\"t1\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dh1 = mul(x=t1,y=dsd)[name=string(\"dh1\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> slh = mul(x=h1,y=sig)[name=string(\"slh\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dh3 = mul(x=dsilu,y=slh)[name=string(\"dh3\")];\n",
+        hidden_dim, seq_len
+    ));
+    // W1t, W3t, dx
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> W1t = const()[name=string(\"W1t\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/w1t.bin\"), offset=uint64(64)))];\n",
+        dim, hidden_dim, dim, hidden_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dx1 = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W1t,x=dh1)[name=string(\"cw1\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> W3t = const()[name=string(\"W3t\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/w3t.bin\"), offset=uint64(64)))];\n",
+        dim, hidden_dim, dim, hidden_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dx3 = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W3t,x=dh3)[name=string(\"cw3\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dx = add(x=dx1,y=dx3)[name=string(\"adx\")];\n",
+        dim, seq_len
+    ));
+    // Multi-output return (alphabetical order): dh1, dh3, dx
+    mil.push_str("    } -> (dh1, dh3, dx);\n}\n");
+    mil
+}
+
+/// Build a compile request for the `bwd_ffn_mil` template.
+pub fn bwd_ffn_compile_request(
+    seq_len: usize,
+    dim: usize,
+    hidden_dim: usize,
+    w1t: &ANEWeightBlob,
+    w2t: &ANEWeightBlob,
+    w3t: &ANEWeightBlob,
+) -> ANECompileRequest {
+    let in_ch = dim + 2 * hidden_dim;
+    ANECompileRequest::new(
+        bwd_ffn_mil(seq_len, dim, hidden_dim),
+        vec![in_ch * seq_len * 2],
+        vec![
+            hidden_dim * seq_len * 2,
+            hidden_dim * seq_len * 2,
+            dim * seq_len * 2,
+        ],
+    )
+    .with_weight_blob("@model_path/weights/w1t.bin", w1t)
+    .with_weight_blob("@model_path/weights/w2t.bin", w2t)
+    .with_weight_blob("@model_path/weights/w3t.bin", w3t)
+}
+
+/// QKV backward pass MIL program (program 1.3 format)
+///
+/// Ported from `gen_qkvb()` in stories_mil.h. Computes dx from packed (dq, dk, dv).
+///
+/// Input shape: `[1, 3*DIM, 1, SEQ]` fp16 (packed: dq, dk, dv)
+/// Output shape: `[1, DIM, 1, SEQ]` fp16 (dx)
+pub fn bwd_qkv_mil(seq_len: usize, dim: usize) -> String {
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        3 * dim,
+        seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz = const()[name=string(\"sz\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name=string(\"b0\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dq = slice_by_size(x=x,begin=b0,size=sz)[name=string(\"s0\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b1 = const()[name=string(\"b1\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dk = slice_by_size(x=x,begin=b1,size=sz)[name=string(\"s1\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b2 = const()[name=string(\"b2\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        2 * dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dv = slice_by_size(x=x,begin=b2,size=sz)[name=string(\"s2\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> Wqt = const()[name=string(\"Wqt\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/wqt.bin\"), offset=uint64(64)))];\n",
+        dim, dim, dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> Wkt = const()[name=string(\"Wkt\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/wkt.bin\"), offset=uint64(64)))];\n",
+        dim, dim, dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> Wvt = const()[name=string(\"Wvt\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/wvt.bin\"), offset=uint64(64)))];\n",
+        dim, dim, dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dxq = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wqt,x=dq)[name=string(\"cq\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dxk = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wkt,x=dk)[name=string(\"ck\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dxv = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wvt,x=dv)[name=string(\"cv\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dxqk = add(x=dxq,y=dxk)[name=string(\"aqk\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dx = add(x=dxqk,y=dxv)[name=string(\"out\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("    } -> (dx);\n}\n");
+    mil
+}
+
+/// Build a compile request for the `bwd_qkv_mil` template.
+pub fn bwd_qkv_compile_request(
+    seq_len: usize,
+    dim: usize,
+    wqt: &ANEWeightBlob,
+    wkt: &ANEWeightBlob,
+    wvt: &ANEWeightBlob,
+) -> ANECompileRequest {
+    ANECompileRequest::new(
+        bwd_qkv_mil(seq_len, dim),
+        vec![3 * dim * seq_len * 2],
+        vec![dim * seq_len * 2],
+    )
+    .with_weight_blob("@model_path/weights/wqt.bin", wqt)
+    .with_weight_blob("@model_path/weights/wkt.bin", wkt)
+    .with_weight_blob("@model_path/weights/wvt.bin", wvt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
