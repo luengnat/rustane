@@ -29,7 +29,7 @@ use crate::data::Batch;
 use crate::error::Result;
 use crate::layers::transformer_backward::rmsnorm_backward;
 #[cfg(target_vendor = "apple")]
-use crate::mil::{linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil};
+use crate::mil::{conv1x1_compile_request, rmsnorm_compile_request, rmsnorm_mil};
 use crate::training::{Model, Precision, TransformerConfig};
 use crate::utils::fp32_to_fp16;
 use crate::wrapper::{ANECompiler, ANEExecutor, ANETensor};
@@ -775,21 +775,45 @@ impl TransformerANE {
                     }));
                     std::panic::set_hook(previous_hook);
                     match ane_result {
-                        Ok(Ok(pair)) => pair,
-                        _ => (
-                            linear_forward(
-                                &x_ffn_norm,
-                                dim,
-                                &self.trainable_params[w1_range.clone()],
-                                self.config.hidden_dim,
-                            ),
-                            linear_forward(
-                                &x_ffn_norm,
-                                dim,
-                                &self.trainable_params[w3_range.clone()],
-                                self.config.hidden_dim,
-                            ),
-                        ),
+                        Ok(Ok(pair)) => {
+                            log_ane_forward_block("dual", "ANE");
+                            pair
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("ANE dual error: {e}");
+                            log_ane_forward_block("dual", "CPU fallback");
+                            (
+                                linear_forward(
+                                    &x_ffn_norm,
+                                    dim,
+                                    &self.trainable_params[w1_range.clone()],
+                                    self.config.hidden_dim,
+                                ),
+                                linear_forward(
+                                    &x_ffn_norm,
+                                    dim,
+                                    &self.trainable_params[w3_range.clone()],
+                                    self.config.hidden_dim,
+                                ),
+                            )
+                        }
+                        _ => {
+                            log_ane_forward_block("dual", "CPU fallback (panic)");
+                            (
+                                linear_forward(
+                                    &x_ffn_norm,
+                                    dim,
+                                    &self.trainable_params[w1_range.clone()],
+                                    self.config.hidden_dim,
+                                ),
+                                linear_forward(
+                                    &x_ffn_norm,
+                                    dim,
+                                    &self.trainable_params[w3_range.clone()],
+                                    self.config.hidden_dim,
+                                ),
+                            )
+                        }
                     }
                 }
                 #[cfg(not(target_vendor = "apple"))]
@@ -844,13 +868,29 @@ impl TransformerANE {
                     }));
                     std::panic::set_hook(previous_hook);
                     match ane_result {
-                        Ok(Ok(out)) => out,
-                        _ => linear_forward(
-                            &ffn_hidden,
-                            self.config.hidden_dim,
-                            &self.trainable_params[w2_range.clone()],
-                            dim,
-                        ),
+                        Ok(Ok(out)) => {
+                            log_ane_forward_block("w2", "ANE");
+                            out
+                        }
+                        Ok(Err(e)) => {
+                            eprintln!("ANE w2 error: {e}");
+                            log_ane_forward_block("w2", "CPU fallback");
+                            linear_forward(
+                                &ffn_hidden,
+                                self.config.hidden_dim,
+                                &self.trainable_params[w2_range.clone()],
+                                dim,
+                            )
+                        }
+                        _ => {
+                            log_ane_forward_block("w2", "CPU fallback (panic)");
+                            linear_forward(
+                                &ffn_hidden,
+                                self.config.hidden_dim,
+                                &self.trainable_params[w2_range.clone()],
+                                dim,
+                            )
+                        }
                     }
                 }
                 #[cfg(not(target_vendor = "apple"))]
@@ -1239,7 +1279,7 @@ impl TransformerANE {
         let vocab_size = self.config.vocab_size;
         let weights = self.classifier();
         let weight_blob = WeightBlob::from_f32(weights, vocab_size, dim)?;
-        let request = linear_matmul_compile_request(positions, dim, vocab_size, &weight_blob);
+        let request = conv1x1_compile_request(positions, dim, vocab_size, &weight_blob);
         let mut executor = request.compile()?;
 
         let input = transpose_row_major(final_norm, positions, dim);
@@ -1274,7 +1314,7 @@ impl TransformerANE {
             qkv_weights.extend_from_slice(wk);
             qkv_weights.extend_from_slice(wv);
             let weight_blob = WeightBlob::from_f32(&qkv_weights, 3 * dim, dim)?;
-            let request = linear_matmul_compile_request(positions, dim, 3 * dim, &weight_blob);
+            let request = conv1x1_compile_request(positions, dim, 3 * dim, &weight_blob);
             let executor = request.compile()?;
             self.ane_cache.insert(cache_key.clone(), executor);
         }
@@ -1313,7 +1353,7 @@ impl TransformerANE {
 
         if !self.ane_cache.contains_key(&cache_key) {
             let weight_blob = WeightBlob::from_f32(weights, out_dim, in_dim)?;
-            let request = linear_matmul_compile_request(positions, in_dim, out_dim, &weight_blob);
+            let request = conv1x1_compile_request(positions, in_dim, out_dim, &weight_blob);
             let executor = request.compile()?;
             self.ane_cache.insert(cache_key.clone(), executor);
         }
@@ -1352,8 +1392,7 @@ impl TransformerANE {
             weights.extend_from_slice(w1);
             weights.extend_from_slice(w3);
             let weight_blob = WeightBlob::from_f32(&weights, 2 * hidden_dim, in_dim)?;
-            let request =
-                linear_matmul_compile_request(positions, in_dim, 2 * hidden_dim, &weight_blob);
+            let request = conv1x1_compile_request(positions, in_dim, 2 * hidden_dim, &weight_blob);
             let executor = request.compile()?;
             self.ane_cache.insert(cache_key.clone(), executor);
         }
@@ -1420,8 +1459,9 @@ impl Model for TransformerANE {
     fn forward(&mut self, batch: &Batch) -> Result<ANETensor> {
         self.validate_batch(batch)?;
 
-        // Clear ANE compile cache — weights change after each optimizer step,
-        // so cached executors with baked-in weights are stale.
+        // Clear ANE compile cache — weights change after each optimizer step.
+        // Compile is ~25ms per executor (cached by ANE framework), which is
+        // faster than reload_weights (~500ms per executor).
         #[cfg(target_vendor = "apple")]
         self.ane_cache.clear();
 

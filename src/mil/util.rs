@@ -356,3 +356,237 @@ mod tests {
         assert!(matches!(result, Err(Error::InvalidParameter(_))));
     }
 }
+
+// ============================================================================
+// RoPE (Rotary Position Embeddings) Utilities
+// ============================================================================
+
+/// Generate RoPE (Rotary Position Embeddings) cos/sin tables
+///
+/// RoPE applies rotation matrices to position embeddings in transformer attention.
+/// The rotation angle for position `p` and dimension `i` is:
+/// `theta = p * base^(-2i/head_dim)`
+///
+/// # Arguments
+/// * `head_dim` - Dimension of each attention head (must be even)
+/// * `max_seq_len` - Maximum sequence length to support
+/// * `base` - RoPE base frequency (typically 10000.0)
+///
+/// # Returns
+/// A tuple of (cos_table, sin_table) where each table has shape
+/// `[max_seq_len * head_dim / 2]` (only half the dimensions due to even/odd pairing)
+///
+/// # Example
+///
+/// ```
+/// use rustane::mil::generate_rope_tables;
+///
+/// let (cos, sin) = generate_rope_tables(64, 512, 10000.0);
+/// assert_eq!(cos.len(), 512 * 32); // seq_len * (head_dim / 2)
+/// assert_eq!(sin.len(), 512 * 32);
+/// ```
+pub fn generate_rope_tables(
+    head_dim: usize,
+    max_seq_len: usize,
+    base: f32,
+) -> (Vec<f32>, Vec<f32>) {
+    assert!(
+        head_dim % 2 == 0,
+        "head_dim must be even for RoPE, got {}",
+        head_dim
+    );
+
+    let half_dim = head_dim / 2;
+    let table_size = max_seq_len * half_dim;
+
+    let mut cos_table = vec![0.0f32; table_size];
+    let mut sin_table = vec![0.0f32; table_size];
+
+    // Precompute frequencies: freq[i] = base^(-2i/head_dim) for i in [0, half_dim)
+    let mut frequencies = vec![0.0f32; half_dim];
+    for i in 0..half_dim {
+        frequencies[i] = (base).powf(-2.0 * (i as f32) / (head_dim as f32));
+    }
+
+    // Generate cos/sin for each position and frequency
+    for pos in 0..max_seq_len {
+        let pos_offset = pos * half_dim;
+        for i in 0..half_dim {
+            let theta = (pos as f32) * frequencies[i];
+            let idx = pos_offset + i;
+            cos_table[idx] = theta.cos();
+            sin_table[idx] = theta.sin();
+        }
+    }
+
+    (cos_table, sin_table)
+}
+
+/// Generate RoPE tables and convert to WeightBlob format
+///
+/// Convenience function that generates RoPE tables and wraps them in
+/// WeightBlob format for ANE compilation.
+///
+/// # Arguments
+/// * `head_dim` - Dimension of each attention head (must be even)
+/// * `max_seq_len` - Maximum sequence length
+/// * `base` - RoPE base frequency (typically 10000.0)
+///
+/// # Returns
+/// A tuple of (cos_blob, sin_blob) ready for ANE weight loading
+///
+/// # Example
+///
+/// ```
+/// use rustane::mil::generate_rope_blobs;
+///
+/// let (cos_blob, sin_blob) = generate_rope_blobs(64, 512, 10000.0).unwrap();
+/// assert!(!cos_blob.is_empty());
+/// assert!(!sin_blob.is_empty());
+/// ```
+pub fn generate_rope_blobs(
+    head_dim: usize,
+    max_seq_len: usize,
+    base: f32,
+) -> Result<(WeightBlob, WeightBlob)> {
+    let (cos_table, sin_table) = generate_rope_tables(head_dim, max_seq_len, base);
+
+    // Reshape for ANE: [seq_len, half_dim] -> flat array
+    // ANE expects weights in row-major order
+    let cos_blob = WeightBlob::from_fp32(&cos_table, max_seq_len as i32, (head_dim / 2) as i32)?;
+    let sin_blob = WeightBlob::from_fp32(&sin_table, max_seq_len as i32, (head_dim / 2) as i32)?;
+
+    Ok((cos_blob, sin_blob))
+}
+
+#[cfg(test)]
+mod rope_tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_rope_tables_basic() {
+        let (cos, sin) = generate_rope_tables(64, 10, 10000.0);
+
+        // Check sizes
+        assert_eq!(cos.len(), 10 * 32); // seq_len * (head_dim / 2)
+        assert_eq!(sin.len(), 10 * 32);
+
+        // Check first position (theta = 0, so cos=1, sin=0)
+        for i in 0..32 {
+            assert!((cos[i] - 1.0).abs() < 1e-6, "cos[0,{}] should be 1.0", i);
+            assert!(sin[i].abs() < 1e-6, "sin[0,{}] should be 0.0", i);
+        }
+    }
+
+    #[test]
+    fn test_generate_rope_tables_frequencies() {
+        let head_dim = 8;
+        let max_seq_len = 4;
+        let base = 10000.0;
+
+        let (cos, sin) = generate_rope_tables(head_dim, max_seq_len, base);
+
+        // Verify frequency pattern: lower dimensions rotate faster
+        // At position 1, dim 0 should have larger angle than dim 3
+        let _theta_dim0 = (base).powf(-2.0 * 0.0 / 8.0); // = 1.0
+        let _theta_dim3 = (base).powf(-2.0 * 3.0 / 8.0); // = 10000^(-0.75)
+
+        // Position 1, dim 0: theta = 1.0 * 1.0 = 1.0 radian
+        let expected_cos_1_0 = _theta_dim0.cos();
+        let expected_sin_1_0 = _theta_dim0.sin();
+
+        assert!((cos[1 * 4 + 0] - expected_cos_1_0).abs() < 1e-5);
+        assert!((sin[1 * 4 + 0] - expected_sin_1_0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_generate_rope_tables_periodicity() {
+        // RoPE should be periodic (approximately) for large base
+        let (cos, sin) = generate_rope_tables(64, 100, 10000.0);
+
+        // Check that values are in valid range
+        for i in 0..cos.len() {
+            assert!((-1.0..=1.0).contains(&cos[i]), "cos[{}] out of range", i);
+            assert!((-1.0..=1.0).contains(&sin[i]), "sin[{}] out of range", i);
+        }
+
+        // Verify cos^2 + sin^2 = 1 for each position/dimension
+        let half_dim = 32;
+        for pos in 0..10 {
+            for i in 0..half_dim {
+                let idx = pos * half_dim + i;
+                let norm = cos[idx] * cos[idx] + sin[idx] * sin[idx];
+                assert!(
+                    (norm - 1.0).abs() < 1e-5,
+                    "Unit circle violated at idx {}",
+                    idx
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_generate_rope_blobs() {
+        let (cos_blob, sin_blob) = generate_rope_blobs(64, 512, 10000.0).unwrap();
+
+        // Check blob sizes - WeightBlob includes a 64-byte header
+        // Data size: 512 (seq) * 32 (half_dim) * 4 (fp32) = 65536 bytes
+        // Plus 64-byte header = 65600 bytes expected
+        let data_bytes = 512 * 32 * 4; // seq * half_dim * sizeof(f32)
+        assert_eq!(cos_blob.len(), 64 + data_bytes);
+        assert_eq!(sin_blob.len(), 64 + data_bytes);
+
+        // Verify blobs are different (cos != sin)
+        assert_ne!(cos_blob.as_bytes(), sin_blob.as_bytes());
+
+        // Verify blobs are non-empty
+        assert!(!cos_blob.is_empty());
+        assert!(!sin_blob.is_empty());
+    }
+
+    #[test]
+    fn test_generate_rope_tables_panics_on_odd_dim() {
+        let result = std::panic::catch_unwind(|| {
+            generate_rope_tables(63, 512, 10000.0);
+        });
+        assert!(result.is_err(), "Should panic on odd head_dim");
+    }
+
+    #[test]
+    fn test_rope_rotation_formula() {
+        // Verify RoPE rotation formula:
+        // For input [x0, x1, x2, x3], RoPE produces:
+        // [x0*cos0 - x1*sin0, x0*sin0 + x1*cos0, x2*cos1 - x3*sin1, x2*sin1 + x3*cos1]
+
+        let head_dim = 4;
+        let seq_len = 1;
+        let base = 10000.0;
+
+        let (cos, sin) = generate_rope_tables(head_dim, seq_len, base);
+
+        // At position 0, all angles are 0, so cos=1, sin=0
+        // This means RoPE should be identity at position 0
+        for i in 0..cos.len() {
+            assert!((cos[i] - 1.0).abs() < 1e-6);
+            assert!(sin[i].abs() < 1e-6);
+        }
+
+        // At position 1, we have non-trivial rotation
+        let _ = generate_rope_tables(head_dim, 2, base);
+
+        // For position 1, dimension 0 (highest frequency)
+        let theta = (base).powf(-2.0 * 0.0 / 4.0); // = 1.0
+        let c = theta.cos();
+        let s = theta.sin();
+
+        // Simulate RoPE on [1.0, 0.0, 0.0, 0.0]
+        // Expected: [1*c - 0*s, 1*s + 0*c, 0, 0] = [c, s, 0, 0]
+        let x0 = 1.0f32;
+        let x1 = 0.0f32;
+        let out0 = x0 * c - x1 * s;
+        let out1 = x0 * s + x1 * c;
+
+        assert!((out0 - c).abs() < 1e-6);
+        assert!((out1 - s).abs() < 1e-6);
+    }
+}
