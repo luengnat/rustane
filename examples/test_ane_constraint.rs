@@ -48,6 +48,38 @@ fn main() {
         "dual_conv_basic" => test_dual_conv(),
         "qkv_fused_basic" => test_qkv_fused(),
         "multi_input_add" => test_multi_input_add(),
+        // Phase 3: op variant tests
+        "mb_matmul" => test_mb_matmul(),
+        "mb_softmax" => test_mb_softmax(),
+        "mb_concat" => test_mb_concat(),
+        "mb_layer_norm" => test_mb_layer_norm(),
+        "mb_reduce_sum" => test_mb_reduce_sum(),
+        "mb_transpose" => test_mb_transpose(),
+        "mb_reshape" => test_mb_reshape(),
+        "mb_slice_by_size" => test_mb_slice_by_size(),
+        "op_sub" => test_sub(),
+        "op_pow" => test_pow(),
+        "op_transpose" => test_transpose(),
+        "op_reshape" => test_reshape(),
+        "op_slice_by_size" => test_slice_by_size(),
+        "op_clamp" => test_clamp(),
+        "op_exp" => test_exp(),
+        "op_log" => test_log(),
+        "op_abs" => test_abs(),
+        "op_tanh" => test_tanh(),
+        "op_relu" => test_relu(),
+        "op_leaky_relu" => test_leaky_relu(),
+        "op_conv_nobias" => test_conv_no_bias(),
+        "op_conv3x1" => test_conv3x1(),
+        "seq_20" => test_seq_boundary(20),
+        "seq_24" => test_seq_boundary(24),
+        "seq_28" => test_seq_boundary(28),
+        "seq_32" => test_seq_boundary(32),
+        "seq_48" => test_seq_boundary(48),
+        "seq_64" => test_seq_boundary(64),
+        "seq_128" => test_seq_boundary(128),
+        "seq_256" => test_seq_boundary(256),
+        "seq_512" => test_seq_boundary(512),
         _ => {
             eprintln!("Unknown test: {}", test_name);
             std::process::exit(1);
@@ -1135,4 +1167,433 @@ fn test_multi_input_add() {
         Some(&input),
     );
     println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+// ============================================================
+// Phase 3: mb.* prefixed op variants
+// ============================================================
+
+/// Helper: test a simple unary op with no weights.
+fn test_unary_op(op_mil: &str, dim: usize, seq: usize) {
+    let mut body = String::new();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = {op_mil};\n",
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n",
+    )
+    .unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Helper: test a binary op with no weights.
+fn test_binary_op(op_mil: &str, dim: usize, seq: usize) {
+    let mut body = String::new();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> ones = const()[name = string(\"ones\"), val = tensor<fp16, [1, {dim}, 1, {seq}]>(1.0)];\n",
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = {op_mil};\n",
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n",
+    )
+    .unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_matmul() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(
+        body,
+        "        bool bF = const()[name = string(\"bF\"), val = bool(false)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [{dim}, {dim}, 1, 1]> W = const()[name = string(\"W\"), val = tensor<fp16, [{dim}, {dim}, 1, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = mb.matmul(transpose_x = bF, transpose_y = bF, x = W, y = x16)[name = string(\"mm\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let w = make_weight_data(dim * dim);
+    let blob = make_blob(&w, dim * dim, dim);
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/weight.bin", &blob)],
+        &[dim * seq * 4],
+        &[dim * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_softmax() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(
+        body,
+        "        int32 sax = const()[name = string(\"sax\"), val = int32(-1)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = mb.softmax(axis = sax, x = x16)[name = string(\"sm\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_concat() {
+    let dim = 64;
+    let seq = 16;
+    let doubled = dim * 2;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> ones = const()[name = string(\"ones\"), val = tensor<fp16, [1, {dim}, 1, {seq}]>(1.0)];\n").unwrap();
+    write!(
+        body,
+        "        int32 cax = const()[name = string(\"cax\"), val = int32(1)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        bool cid = const()[name = string(\"cid\"), val = bool(false)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {doubled}, 1, {seq}]> cat16 = mb.concat(axis = cax, interleave = cid, values = (x16, ones))[name = string(\"cat\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {doubled}, 1, {seq}]> y = cast(dtype = to_fp32, x = cat16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[dim * seq * 4],
+        &[doubled * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_layer_norm() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [1]> rax = const()[name = string(\"rax\"), val = tensor<int32, [1]>([1])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = mb.layer_norm(x = x16, axes = rax)[name = string(\"ln\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_reduce_sum() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [1]> rax = const()[name = string(\"rax\"), val = tensor<int32, [1]>([1])];\n").unwrap();
+    write!(
+        body,
+        "        bool kd = const()[name = string(\"kd\"), val = bool(true)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> y16 = mb.reduce_sum(x = x16, axes = rax, keep_dims = kd)[name = string(\"rs\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, 1, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[dim * seq * 4],
+        &[1 * 1 * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_transpose() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> pm = const()[name = string(\"pm\"), val = tensor<int32, [4]>([0, 3, 2, 1])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {seq}, 1, {dim}]> y16 = mb.transpose(perm = pm, x = x16)[name = string(\"tr\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {seq}, 1, {dim}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[dim * seq * 4],
+        &[seq * 1 * dim * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_reshape() {
+    let dim = 64;
+    let seq = 16;
+    let heads = 4;
+    let hd = dim / heads;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> sh = const()[name = string(\"sh\"), val = tensor<int32, [4]>([1, {heads}, {hd}, {seq}])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {hd}, {seq}]> y16 = mb.reshape(shape = sh, x = x16)[name = string(\"rs\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {heads}, {hd}, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[dim * seq * 4],
+        &[heads * hd * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_mb_slice_by_size() {
+    let dim = 64;
+    let seq = 16;
+    let half = dim / 2;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> bd = const()[name = string(\"bd\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> sz = const()[name = string(\"sz\"), val = tensor<int32, [4]>([1, {half}, 1, {seq}])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {half}, 1, {seq}]> y16 = mb.slice_by_size(x = x16, begin = bd, size = sz)[name = string(\"sl\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {half}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[half * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+// ============================================================
+// Phase 3: basic ops not yet tested
+// ============================================================
+
+fn test_sub() {
+    test_binary_op(
+        "tensor<fp16, [1, 64, 1, 16]> y16 = sub(x = x16, y = ones)[name = string(\"sub\")];\n",
+        64,
+        16,
+    );
+}
+
+fn test_pow() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 nhalf = const()[name = string(\"nhalf\"), val = fp16(-0.5)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y16 = pow(x = x16, y = nhalf)[name = string(\"pw\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[dim * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_transpose() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> pm = const()[name = string(\"pm\"), val = tensor<int32, [4]>([0, 3, 2, 1])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {seq}, 1, {dim}]> y16 = transpose(perm = pm, x = x16)[name = string(\"tr\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {seq}, 1, {dim}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[dim * seq * 4],
+        &[seq * 1 * dim * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_reshape() {
+    let dim = 64;
+    let seq = 16;
+    let heads = 4;
+    let hd = dim / heads;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> sh = const()[name = string(\"sh\"), val = tensor<int32, [4]>([1, {heads}, {hd}, {seq}])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {hd}, {seq}]> y16 = reshape(shape = sh, x = x16)[name = string(\"rs\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {heads}, {hd}, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[dim * seq * 4],
+        &[heads * hd * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_slice_by_size() {
+    let dim = 64;
+    let seq = 16;
+    let half = dim / 2;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> bd = const()[name = string(\"bd\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> sz = const()[name = string(\"sz\"), val = tensor<int32, [4]>([1, {half}, 1, {seq}])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {half}, 1, {seq}]> y16 = slice_by_size(x = x16, begin = bd, size = sz)[name = string(\"sl\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {half}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 4], &[half * seq * 4], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_clamp() {
+    test_unary_op("tensor<fp16, [1, 64, 1, 16]> y16 = clamp(x = x16, alpha = 0.0, beta = 1.0)[name = string(\"cl\")];\n", 64, 16);
+}
+
+fn test_exp() {
+    test_unary_op(
+        "tensor<fp16, [1, 64, 1, 16]> y16 = exp(x = x16)[name = string(\"ex\")];\n",
+        64,
+        16,
+    );
+}
+
+fn test_log() {
+    test_unary_op(
+        "tensor<fp16, [1, 64, 1, 16]> y16 = log(x = x16)[name = string(\"lg\")];\n",
+        64,
+        16,
+    );
+}
+
+fn test_abs() {
+    test_unary_op(
+        "tensor<fp16, [1, 64, 1, 16]> y16 = abs(x = x16)[name = string(\"ab\")];\n",
+        64,
+        16,
+    );
+}
+
+fn test_tanh() {
+    test_unary_op(
+        "tensor<fp16, [1, 64, 1, 16]> y16 = tanh(x = x16)[name = string(\"th\")];\n",
+        64,
+        16,
+    );
+}
+
+fn test_relu() {
+    test_unary_op(
+        "tensor<fp16, [1, 64, 1, 16]> y16 = relu(x = x16)[name = string(\"rl\")];\n",
+        64,
+        16,
+    );
+}
+
+fn test_leaky_relu() {
+    test_unary_op("tensor<fp16, [1, 64, 1, 16]> y16 = leaky_relu(x = x16, alpha = 0.01)[name = string(\"lr\")];\n", 64, 16);
+}
+
+fn test_conv_no_bias() {
+    let mil = conv1x1_mil(16, 64, 64, "W", "");
+    let w = make_weight_data(64 * 64);
+    let blob = make_blob(&w, 64, 64);
+    let input = input_bytes(64 * 16);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/W.bin", &blob)],
+        &[64 * 16 * 4],
+        &[64 * 16 * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+fn test_conv3x1() {
+    let dim = 64;
+    let seq = 16;
+    let out_dim = 32;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [{out_dim}, {dim}, 3, 1]> W = const()[name = string(\"W\"), val = tensor<fp16, [{out_dim}, {dim}, 3, 1]>(BLOBFILE(path = string(\"@model_path/weights/weight.bin\"), offset = uint64(64)))];\n").unwrap();
+    body.push_str(CONV_PARAMS);
+    write!(body, "        tensor<fp16, [1, {out_dim}, 1, {seq}]> y16 = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = W, x = x16)[name = string(\"conv\")];\n").unwrap();
+    write!(body, "        tensor<fp32, [1, {out_dim}, 1, {seq}]> y = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n").unwrap();
+    let mil = mil_fp32_program(&format!("tensor<fp32, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let w = make_weight_data(out_dim * dim * 3);
+    let blob = make_blob(&w, out_dim * dim * 3, dim * 3);
+    let input = input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/weight.bin", &blob)],
+        &[dim * seq * 4],
+        &[out_dim * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+// ============================================================
+// Phase 3: sequence length boundary
+// ============================================================
+
+fn test_seq_boundary(seq: usize) {
+    let dim = 64;
+    let mil = conv1x1_mil(seq, dim, dim, "W", "");
+    let w = make_weight_data(dim * dim);
+    let blob = make_blob(&w, dim, dim);
+    let input = input_bytes(dim * seq);
+    let input_sz = dim * seq * 4;
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/W.bin", &blob)],
+        &[input_sz],
+        &[input_sz],
+        Some(&input),
+    );
+    println!(
+        "OK seq={} {}bytes compile={:.0}ms eval={:.1}ms",
+        seq, input_sz, c, e
+    );
 }
