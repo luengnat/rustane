@@ -94,6 +94,14 @@ fn main() {
         "decomp_sq_small" => test_decomp_sq_small(),
         "decomp_sum_small" => test_decomp_sum_small(),
         "decomp_rmsnorm_small" => test_decomp_rmsnorm_small(),
+        // Phase 3.5: re-test with reference code syntax (stories_mil.h patterns)
+        "ref_reduce_sum" => test_ref_reduce_sum(),
+        "ref_softmax" => test_ref_softmax(),
+        "ref_concat" => test_ref_concat(),
+        "ref_matmul" => test_ref_matmul(),
+        "ref_pow_neg" => test_ref_pow_neg(),
+        "ref_rmsnorm" => test_ref_rmsnorm(),
+        "ref_full_sdpa" => test_ref_full_sdpa(),
         _ => {
             eprintln!("Unknown test: {}", test_name);
             std::process::exit(1);
@@ -1910,6 +1918,423 @@ fn test_decomp_rmsnorm_small() {
         &[("@model_path/weights/wsum.bin", &blob)],
         &[dim * seq * 4],
         &[1 * seq * 4],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+// ============================================================
+// Phase 3.5: Re-test with stories_mil.h reference syntax
+// The reference code uses different MIL syntax patterns that
+// may be required by the ANE MIL parser:
+//   - Named constants for all op parameters (no inline literals)
+//   - concat uses values=(...) tuple syntax with interleave param
+//   - matmul uses bool type for transpose flags (not int32)
+//   - reduce_sum uses tensor<int32, [1]> axes (not inline [1])
+//   - No spaces around = in named parameters
+// ============================================================
+
+/// Helper: fp16-only MIL program (no fp32 I/O cast, matching stories_mil.h pattern).
+/// NOTE: input_sizes must be in bytes (fp16 = *2), and input data must be fp16-sized.
+fn mil_fp16_direct(input_sig: &str, body: &str, outputs: &str) -> String {
+    let mut mil = String::new();
+    mil.push_str(MIL_HEADER);
+    write!(mil, "    func main<ios18>({input_sig}) {{\n").unwrap();
+    mil.push_str(body);
+    write!(mil, "    }} -> ({outputs});\n").unwrap();
+    mil.push_str("}\n");
+    mil
+}
+
+/// Generate fp16-compatible input bytes (2 bytes per element).
+/// Values are small to stay in fp16-safe range.
+fn fp16_input_bytes(n: usize) -> Vec<u8> {
+    (0..n)
+        .map(|i| {
+            let val = ((i % 100) as f32) * 0.01;
+            let fp16 = half::f16::from_f32(val);
+            fp16.to_le_bytes()
+        })
+        .flatten()
+        .collect()
+}
+
+/// Reference-syntax reduce_sum: uses named constants for axes and keep_dims.
+/// Pattern from stories_mil.h line 26-27.
+fn test_ref_reduce_sum() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> sq = mul(x=x,y=x)[name=string(\"sq\")];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<int32, [1]> rax = const()[name=string(\"rax\"), val=tensor<int32, [1]>([1])];\n").unwrap();
+    write!(
+        body,
+        "        bool kd = const()[name=string(\"kd\"), val=bool(true)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> ss = reduce_sum(x=sq,axes=rax,keep_dims=kd)[name=string(\"ss\")];\n").unwrap();
+    let mil = mil_fp16_direct(
+        &format!("tensor<fp16, [1, {dim}, 1, {seq}]> x"),
+        &body,
+        "ss",
+    );
+    let input = fp16_input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 2], &[1 * seq * 2], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Reference-syntax softmax: uses named int32 constant for axis.
+/// Pattern from stories_mil.h line 60-61.
+fn test_ref_softmax() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(
+        body,
+        "        int32 sax = const()[name=string(\"sax\"), val=int32(-1)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> aw = softmax(axis=sax,x=x)[name=string(\"sm\")];\n").unwrap();
+    let mil = mil_fp16_direct(
+        &format!("tensor<fp16, [1, {dim}, 1, {seq}]> x"),
+        &body,
+        "aw",
+    );
+    let input = fp16_input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 2], &[dim * seq * 2], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Reference-syntax concat: uses values=(...) tuple with interleave param.
+/// Pattern from stories_mil.h line 67-69.
+fn test_ref_concat() {
+    let dim = 64;
+    let seq = 16;
+    let doubled = dim * 2;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> ones = const()[name=string(\"ones\"), val=tensor<fp16, [1, {dim}, 1, {seq}](1.0)];\n").unwrap();
+    write!(
+        body,
+        "        int32 cax = const()[name=string(\"cax\"), val=int32(1)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        bool cid = const()[name=string(\"cid\"), val=bool(false)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {doubled}, 1, {seq}]> out = concat(axis=cax,interleave=cid,values=(x,ones))[name=string(\"cat\")];\n").unwrap();
+    let mil = mil_fp16_direct(
+        &format!("tensor<fp16, [1, {dim}, 1, {seq}]> x"),
+        &body,
+        "out",
+    );
+    let input = fp16_input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[],
+        &[dim * seq * 2],
+        &[doubled * seq * 2],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Reference-syntax matmul: uses bool type for transpose flags.
+/// Pattern from stories_mil.h line 53-55.
+fn test_ref_matmul() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(body, "        tensor<fp16, [{dim}, {dim}, 1, 1]> W = const()[name=string(\"W\"), val=tensor<fp16, [{dim}, {dim}, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/weight.bin\"), offset=uint64(64)))];\n").unwrap();
+    write!(
+        body,
+        "        bool tx = const()[name=string(\"tx\"), val=bool(false)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        bool ty = const()[name=string(\"ty\"), val=bool(true)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> y = matmul(transpose_x=tx,transpose_y=ty,x=W,y=x)[name=string(\"mm\")];\n").unwrap();
+    let mil = mil_fp16_direct(&format!("tensor<fp16, [1, {dim}, 1, {seq}]> x"), &body, "y");
+    let w = make_weight_data(dim * dim);
+    let blob = make_blob(&w, 1, dim * dim);
+    let input = fp16_input_bytes(dim * seq);
+    let (c, e) = compile_eval(
+        &mil,
+        &[("@model_path/weights/weight.bin", &blob)],
+        &[dim * seq * 2],
+        &[dim * seq * 2],
+        Some(&input),
+    );
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Reference-syntax pow with negative exponent: uses fp16 const.
+/// Pattern from stories_mil.h line 32-33.
+fn test_ref_pow_neg() {
+    let dim = 64;
+    let seq = 16;
+    let mut body = String::new();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> sq = mul(x=x,y=x)[name=string(\"sq\")];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<int32, [1]> rax = const()[name=string(\"rax\"), val=tensor<int32, [1]>([1])];\n").unwrap();
+    write!(
+        body,
+        "        bool kd = const()[name=string(\"kd\"), val=bool(true)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> ss = reduce_sum(x=sq,axes=rax,keep_dims=kd)[name=string(\"ss\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 invd = const()[name=string(\"invd\"), val=fp16(0.015625)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, 1, 1, {seq}]> ss2 = mul(x=ss,y=invd)[name=string(\"ss2\")];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        fp16 eps = const()[name=string(\"eps\"), val=fp16(0.00001)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, 1, 1, {seq}]> ss3 = add(x=ss2,y=eps)[name=string(\"ss3\")];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        fp16 nhalf = const()[name=string(\"nhalf\"), val=fp16(-0.5)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> rrms = pow(x=ss3,y=nhalf)[name=string(\"rrms\")];\n").unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> xr = mul(x=x,y=rrms)[name=string(\"xr\")];\n"
+    )
+    .unwrap();
+    let mil = mil_fp16_direct(
+        &format!("tensor<fp16, [1, {dim}, 1, {seq}]> x"),
+        &body,
+        "xr",
+    );
+    let input = fp16_input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 2], &[dim * seq * 2], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Full RMSNorm following stories_mil.h exactly (lines 24-36).
+/// mul(x,x) -> reduce_sum -> mul(1/dim) -> add(eps) -> pow(-0.5) -> mul(x)
+fn test_ref_rmsnorm() {
+    let dim = 64;
+    let seq = 16;
+    let invd = 1.0f32 / (dim as f32);
+    let mut body = String::new();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> sq = mul(x=x,y=x)[name=string(\"sq\")];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<int32, [1]> rax = const()[name=string(\"rax\"), val=tensor<int32, [1]>([1])];\n").unwrap();
+    write!(
+        body,
+        "        bool kd = const()[name=string(\"kd\"), val=bool(true)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> ss = reduce_sum(x=sq,axes=rax,keep_dims=kd)[name=string(\"ss\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 invd = const()[name=string(\"invd\"), val=fp16({invd})];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, 1, 1, {seq}]> ss2 = mul(x=ss,y=invd)[name=string(\"ss2\")];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        fp16 eps = const()[name=string(\"eps\"), val=fp16(0.00001)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, 1, 1, {seq}]> ss3 = add(x=ss2,y=eps)[name=string(\"ss3\")];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        fp16 nhalf = const()[name=string(\"nhalf\"), val=fp16(-0.5)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> rrms = pow(x=ss3,y=nhalf)[name=string(\"rrms\")];\n").unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> xr = mul(x=x,y=rrms)[name=string(\"xr\")];\n"
+    )
+    .unwrap();
+    let mil = mil_fp16_direct(
+        &format!("tensor<fp16, [1, {dim}, 1, {seq}]> x"),
+        &body,
+        "xr",
+    );
+    let input = fp16_input_bytes(dim * seq);
+    let (c, e) = compile_eval(&mil, &[], &[dim * seq * 2], &[dim * seq * 2], Some(&input));
+    println!("OK compile={:.0}ms eval={:.1}ms", c, e);
+}
+
+/// Full SDPA forward from stories_mil.h (lines 18-71), scaled down to dim=64, heads=4.
+/// Tests the complete attention pipeline: RMSNorm -> QKV -> reshape -> transpose ->
+/// matmul(Q,K) -> scale -> softmax -> matmul(A,V) -> transpose -> reshape -> Wo
+fn test_ref_full_sdpa() {
+    let dim = 64;
+    let heads = 4;
+    let hd = dim / heads;
+    let seq = 16;
+    let sc = 1.0f32 / (hd as f32).sqrt();
+    let mut body = String::new();
+
+    // RMSNorm
+    let invd = 1.0f32 / (dim as f32);
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> sq = mul(x=x,y=x)[name=string(\"sq\")];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<int32, [1]> rax = const()[name=string(\"rax\"), val=tensor<int32, [1]>([1])];\n").unwrap();
+    write!(
+        body,
+        "        bool kd = const()[name=string(\"kd\"), val=bool(true)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> ss = reduce_sum(x=sq,axes=rax,keep_dims=kd)[name=string(\"ss\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 invd = const()[name=string(\"invd\"), val=fp16({invd})];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, 1, 1, {seq}]> ss2 = mul(x=ss,y=invd)[name=string(\"ss2\")];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        fp16 eps = const()[name=string(\"eps\"), val=fp16(0.00001)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, 1, 1, {seq}]> ss3 = add(x=ss2,y=eps)[name=string(\"ss3\")];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        fp16 nhalf = const()[name=string(\"nhalf\"), val=fp16(-0.5)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, 1, 1, {seq}]> rrms = pow(x=ss3,y=nhalf)[name=string(\"rrms\")];\n").unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> xr = mul(x=x,y=rrms)[name=string(\"xr\")];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, 1]> rw = const()[name=string(\"rw\"), val=tensor<fp16, [1, {dim}, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/rw.bin\"), offset=uint64(64)))];\n").unwrap();
+    write!(
+        body,
+        "        tensor<fp16, [1, {dim}, 1, {seq}]> xn = mul(x=xr,y=rw)[name=string(\"xn\")];\n"
+    )
+    .unwrap();
+
+    // QKV projections via conv1x1
+    body.push_str(CONV_PARAMS);
+    write!(body, "        tensor<fp16, [{dim}, {dim}, 1, 1]> Wq = const()[name=string(\"Wq\"), val=tensor<fp16, [{dim}, {dim}, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/wq.bin\"), offset=uint64(64)))];\n").unwrap();
+    write!(body, "        tensor<fp16, [{dim}, {dim}, 1, 1]> Wk = const()[name=string(\"Wk\"), val=tensor<fp16, [{dim}, {dim}, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/wk.bin\"), offset=uint64(64)))];\n").unwrap();
+    write!(body, "        tensor<fp16, [{dim}, {dim}, 1, 1]> Wv = const()[name=string(\"Wv\"), val=tensor<fp16, [{dim}, {dim}, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/wv.bin\"), offset=uint64(64)))];\n").unwrap();
+    write!(body, "        tensor<fp16, [{dim}, {dim}, 1, 1]> Wo = const()[name=string(\"Wo\"), val=tensor<fp16, [{dim}, {dim}, 1, 1]>(BLOBFILE(path=string(\"@model_path/weights/wo.bin\"), offset=uint64(64)))];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> qf = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wq,x=xn)[name=string(\"cq\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> kf = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wk,x=xn)[name=string(\"ck\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> vf = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wv,x=xn)[name=string(\"cv\")];\n").unwrap();
+
+    // Reshape + transpose for multi-head attention
+    write!(body, "        tensor<int32, [4]> qsh = const()[name=string(\"qsh\"), val=tensor<int32, [4]>([1, {heads}, {hd}, {seq}])];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> pm = const()[name=string(\"pm\"), val=tensor<int32, [4]>([0, 1, 3, 2])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {hd}, {seq}]> q4 = reshape(shape=qsh,x=qf)[name=string(\"rq\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {seq}, {hd}]> q = transpose(perm=pm,x=q4)[name=string(\"tq\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {hd}, {seq}]> k4 = reshape(shape=qsh,x=kf)[name=string(\"rk\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {seq}, {hd}]> k = transpose(perm=pm,x=k4)[name=string(\"tk\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {hd}, {seq}]> v4 = reshape(shape=qsh,x=vf)[name=string(\"rv\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {seq}, {hd}]> v = transpose(perm=pm,x=v4)[name=string(\"tv\")];\n").unwrap();
+
+    // Attention: QK^T -> scale -> softmax -> AV
+    write!(
+        body,
+        "        bool tx = const()[name=string(\"tx\"), val=bool(false)];\n"
+    )
+    .unwrap();
+    write!(
+        body,
+        "        bool ty = const()[name=string(\"ty\"), val=bool(true)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {seq}, {seq}]> sc1 = matmul(transpose_x=tx,transpose_y=ty,x=q,y=k)[name=string(\"mm1\")];\n").unwrap();
+    write!(
+        body,
+        "        fp16 scv = const()[name=string(\"scv\"), val=fp16({sc})];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {seq}, {seq}]> sc2 = mul(x=sc1,y=scv)[name=string(\"scl\")];\n").unwrap();
+    write!(
+        body,
+        "        int32 sax = const()[name=string(\"sax\"), val=int32(-1)];\n"
+    )
+    .unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {seq}, {seq}]> aw = softmax(axis=sax,x=sc2)[name=string(\"sm\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {seq}, {hd}]> a4 = matmul(transpose_x=tx,transpose_y=tx,x=aw,y=v)[name=string(\"mm2\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {heads}, {hd}, {seq}]> at = transpose(perm=pm,x=a4)[name=string(\"ta\")];\n").unwrap();
+    write!(body, "        tensor<int32, [4]> os = const()[name=string(\"os\"), val=tensor<int32, [4]>([1, {dim}, 1, {seq}])];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> af = reshape(shape=os,x=at)[name=string(\"ra\")];\n").unwrap();
+    write!(body, "        tensor<fp16, [1, {dim}, 1, {seq}]> oo = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wo,x=af)[name=string(\"co\")];\n").unwrap();
+
+    let mil = mil_fp16_direct(
+        &format!("tensor<fp16, [1, {dim}, 1, {seq}]> x"),
+        &body,
+        "oo",
+    );
+    let input = fp16_input_bytes(dim * seq);
+
+    // Create weights
+    let w = make_weight_data(dim * dim);
+    let rw = make_weight_data(dim);
+    let brw = make_blob(&rw, 1, dim);
+    let bq = make_blob(&w, 1, dim * dim);
+    let bk = make_blob(&w, 1, dim * dim);
+    let bv = make_blob(&w, 1, dim * dim);
+    let bo = make_blob(&w, 1, dim * dim);
+
+    let (c, e) = compile_eval(
+        &mil,
+        &[
+            ("@model_path/weights/rw.bin", &brw),
+            ("@model_path/weights/wq.bin", &bq),
+            ("@model_path/weights/wk.bin", &bk),
+            ("@model_path/weights/wv.bin", &bv),
+            ("@model_path/weights/wo.bin", &bo),
+        ],
+        &[dim * seq * 2],
+        &[dim * seq * 2],
         Some(&input),
     );
     println!("OK compile={:.0}ms eval={:.1}ms", c, e);
