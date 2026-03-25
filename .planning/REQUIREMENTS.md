@@ -54,19 +54,19 @@ Build fused backward MIL programs, implement delta compilation for weight update
 
 | REQ-ID | Phase | Plan | Status |
 |--------|-------|------|--------|
-| BWD-01 | — | — | Pending |
-| BWD-02 | — | — | Pending |
-| BWD-03 | — | — | Pending |
-| BWD-04 | — | — | Pending |
-| BWD-05 | — | — | Pending |
-| DLT-01 | — | — | Pending |
-| DLT-02 | — | — | Pending |
-| DLT-03 | — | — | Pending |
-| DLT-04 | — | — | Pending |
-| TRL-01 | — | — | Pending |
-| TRL-02 | — | — | Pending |
-| TRL-03 | — | — | Pending |
-| TRL-04 | — | — | Pending |
-| PERF-01 | — | — | Pending |
-| PERF-02 | — | — | Pending |
-| PERF-03 | — | — | Pending |
+| BWD-01 | Phase 4 | — | Pending |
+| BWD-02 | Phase 4 | — | Pending |
+| BWD-03 | Phase 4 | — | Pending |
+| BWD-04 | Phase 4 | — | Pending |
+| BWD-05 | Phase 4 | — | Pending |
+| DLT-01 | Phase 5 | — | Pending |
+| DLT-02 | Phase 5 | — | Pending |
+| DLT-03 | Phase 5 | — | Pending |
+| DLT-04 | Phase 5 | — | Pending |
+| TRL-01 | Phase 6 | — | Pending |
+| TRL-02 | Phase 6 | — | Pending |
+| TRL-03 | Phase 6 | — | Pending |
+| TRL-04 | Phase 6 | — | Pending |
+| PERF-01 | Phase 7 | — | Pending |
+| PERF-02 | Phase 7 | — | Pending |
+| PERF-03 | Phase 7 | — | Pending |
