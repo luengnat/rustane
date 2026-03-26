@@ -335,7 +335,7 @@ fn mil_ffn(d: usize, inter: usize, sp: usize) -> String {
     m.push_str(", 1, ");
     m.push_str(&sp.to_string());
     m.push_str("]> y = conv(dilations = dl, groups = gr, pad = pd, pad_type = pt, strides = st, weight = WdI, x = cat)[name = tensor<string, []>(\"cd\")];\n");
-    m.push_str("    } -> (y);\n}\n");
+    m.push_str("    } -> (gate, up, y);\n}\n");
     m
 }
 
@@ -397,11 +397,13 @@ struct TransformerLayer {
     ane_qkv: Option<rustane::wrapper::ANEExecutor>,
     ane_out: Option<rustane::wrapper::ANEExecutor>,
     ane_ffn: Option<rustane::wrapper::ANEExecutor>,
-    // Pre-allocated buffers
+    // Pre-allocated ANE I/O buffers
     x16: Vec<u8>,
     qkv16: Vec<u8>,
     out_in16: Vec<u8>, // 2 inputs for out_proj
     ffn_x16: Vec<u8>,
+    gate16: Vec<u8>,
+    up16: Vec<u8>,
     out16: Vec<u8>,
     ffn16: Vec<u8>,
     // Cached activations for backward
@@ -414,6 +416,13 @@ struct TransformerLayer {
     ffn_in: Vec<f32>,   // input to FFN block = out_proj output
     gate: Vec<f32>,
     up: Vec<f32>,
+    // Pre-allocated backward buffers (zero-allocation element-wise ops)
+    fused: Vec<f32>,   // [inter * sp]
+    dup: Vec<f32>,     // [inter * sp]
+    dgate: Vec<f32>,   // [inter * sp]
+    dffn_in: Vec<f32>, // [d * sp]
+    dscaled: Vec<f32>, // [sp * sp]
+    dx: Vec<f32>,      // [d * sp]
 }
 
 impl TransformerLayer {
@@ -489,7 +498,7 @@ impl TransformerLayer {
                 &[&blob_wg[..], &blob_wu[..], &blob_wdi[..]],
                 &[blob_wg.len(), blob_wu.len(), blob_wdi.len()],
                 &[d * sp * 2],
-                &[d * sp * 2],
+                &[inter * sp * 2, inter * sp * 2, d * sp * 2],
             )
             .expect("ffn compile");
 
@@ -511,6 +520,8 @@ impl TransformerLayer {
             qkv16: vec![0u8; 3 * d * sp * 2],
             out_in16: vec![0u8; 2 * d * sp * 2],
             ffn_x16: vec![0u8; d * sp * 2],
+            gate16: vec![0u8; inter * sp * 2],
+            up16: vec![0u8; inter * sp * 2],
             out16: vec![0u8; d * sp * 2],
             ffn16: vec![0u8; d * sp * 2],
             q: vec![0.0f32; d * sp],
@@ -522,6 +533,13 @@ impl TransformerLayer {
             ffn_in: vec![0.0f32; d * sp],
             gate: vec![0.0f32; inter * sp],
             up: vec![0.0f32; inter * sp],
+            // Pre-allocated backward buffers
+            fused: vec![0.0f32; inter * sp],
+            dup: vec![0.0f32; inter * sp],
+            dgate: vec![0.0f32; inter * sp],
+            dffn_in: vec![0.0f32; d * sp],
+            dscaled: vec![0.0f32; sp * sp],
+            dx: vec![0.0f32; d * sp],
         }
     }
 
@@ -552,6 +570,8 @@ impl TransformerLayer {
             qkv16: vec![0u8; 3 * d * sp * 2],
             out_in16: vec![0u8; 2 * d * sp * 2],
             ffn_x16: vec![0u8; d * sp * 2],
+            gate16: vec![0u8; inter * sp * 2],
+            up16: vec![0u8; inter * sp * 2],
             out16: vec![0u8; d * sp * 2],
             ffn16: vec![0u8; d * sp * 2],
             q: vec![0.0f32; d * sp],
@@ -563,6 +583,13 @@ impl TransformerLayer {
             ffn_in: vec![0.0f32; d * sp],
             gate: vec![0.0f32; inter * sp],
             up: vec![0.0f32; inter * sp],
+            // Pre-allocated backward buffers
+            fused: vec![0.0f32; inter * sp],
+            dup: vec![0.0f32; inter * sp],
+            dgate: vec![0.0f32; inter * sp],
+            dffn_in: vec![0.0f32; d * sp],
+            dscaled: vec![0.0f32; sp * sp],
+            dx: vec![0.0f32; d * sp],
         }
     }
 
@@ -615,7 +642,7 @@ impl TransformerLayer {
         from_fp16_inplace(&self.out16, &mut ffn_in);
         self.ffn_in.copy_from_slice(&ffn_in);
 
-        // ANE FFN + residual
+        // ANE FFN + residual — returns (gate, up, y)
         let ane_ffn = self
             .ane_ffn
             .as_mut()
@@ -623,7 +650,12 @@ impl TransformerLayer {
         to_fp16_inplace(&ffn_in, &mut self.ffn_x16);
         ane_ffn.write_input(0, &self.ffn_x16).unwrap();
         ane_ffn.eval().unwrap();
-        ane_ffn.read_output(0, &mut self.ffn16).unwrap();
+        // Read gate (output 0), up (output 1), y (output 2)
+        ane_ffn.read_output(0, &mut self.gate16).unwrap();
+        ane_ffn.read_output(1, &mut self.up16).unwrap();
+        ane_ffn.read_output(2, &mut self.ffn16).unwrap();
+        from_fp16_inplace(&self.gate16, &mut self.gate);
+        from_fp16_inplace(&self.up16, &mut self.up);
         let mut y = vec![0.0f32; d * sp];
         from_fp16_inplace(&self.ffn16, &mut y);
         y
@@ -657,8 +689,9 @@ impl TransformerLayer {
         out2
     }
 
-    /// CPU backward pass (called after forward_ane cached activations)
-    /// Returns gradients for all weights and input gradient
+    /// Zero-allocation CPU backward pass (called after forward_ane cached activations)
+    /// Uses pre-allocated buffers for element-wise ops; BLAS allocates weight gradients.
+    /// Returns gradients for all weights and input gradient.
     fn backward_cpu(
         &mut self,
         dy: &[f32], // [D, SP] gradient from above
@@ -677,158 +710,85 @@ impl TransformerLayer {
         let inter = self.inter;
 
         // ═══ FFN backward ═══
-        // dL/dWd = dy @ fused^T  (fused = silu * up)
-        let mut fused = vec![0.0f32; inter * sp];
+        // Recompute fused = silu(gate) * up (into pre-allocated buffer)
         for i in 0..inter * sp {
             let s = 1.0 / (1.0 + (-self.gate[i]).exp());
-            fused[i] = self.gate[i] * s * self.up[i];
+            self.fused[i] = self.gate[i] * s * self.up[i];
         }
-        let dwd = mm_abt(dy, d, sp, &fused, inter);
+        // dL/dWd = dy @ fused^T
+        let dwd = mm_abt(dy, d, sp, &self.fused, inter);
 
         // dfused = Wd^T @ dy
         let dfused = mm_at(&self.wd, d, inter, dy, sp);
 
-        // dL/d(up) = dfused * silu
-        let mut dup = vec![0.0f32; inter * sp];
+        // dL/d(up) = dfused * silu(gate) — into pre-allocated dup
         for i in 0..inter * sp {
             let s = 1.0 / (1.0 + (-self.gate[i]).exp());
-            dup[i] = dfused[i] * self.gate[i] * s;
+            self.dup[i] = dfused[i] * self.gate[i] * s;
         }
         // dL/dWu = dup @ ffn_in^T
-        let dwu = mm_abt(&dup, inter, sp, &self.ffn_in, d);
+        let dwu = mm_abt(&self.dup, inter, sp, &self.ffn_in, d);
 
-        // dL/d(gate) = dfused * up * SiLU'(gate)
-        let mut dgate = vec![0.0f32; inter * sp];
+        // dL/d(gate) = dfused * up * SiLU'(gate) — into pre-allocated dgate
         for i in 0..inter * sp {
             let g = self.gate[i];
             let s = 1.0 / (1.0 + (-g).exp());
-            dgate[i] = dfused[i] * self.up[i] * s * (1.0 + g * (1.0 - s));
+            self.dgate[i] = dfused[i] * self.up[i] * s * (1.0 + g * (1.0 - s));
         }
-        let dwg = mm_abt(&dgate, inter, sp, &self.ffn_in, d);
+        let dwg = mm_abt(&self.dgate, inter, sp, &self.ffn_in, d);
 
         // dL/d(ffn_in) = Wg^T @ dgate + Wu^T @ dup + dy  (residual)
-        let dx_ffn_g = mm_at(&self.wg, inter, d, &dgate, sp);
-        let dx_ffn_u = mm_at(&self.wu, inter, d, &dup, sp);
-        let mut dffn_in = vec![0.0f32; d * sp];
+        let dx_ffn_g = mm_at(&self.wg, inter, d, &self.dgate, sp);
+        let dx_ffn_u = mm_at(&self.wu, inter, d, &self.dup, sp);
         for i in 0..d * sp {
-            dffn_in[i] = dx_ffn_g[i] + dx_ffn_u[i] + dy[i];
+            self.dffn_in[i] = dx_ffn_g[i] + dx_ffn_u[i] + dy[i];
         }
 
         // ═══ Output projection backward ═══
-        // dL/dWo = dffn_in @ attn_out^T  (note: dffn_in already includes residual gradient)
-        // Actually: out = Wo @ attn_out + x, so dout/dWo = attn_out^T
-        // But dffn_in is the gradient of the residual output, not the Wo output.
-        // We need to separate: dffn_in = d_outproj_out + d_residual
-        // d_outproj_out = dffn_in (since residual is identity, gradient just passes through)
         // dL/d(attn_out) = Wo^T @ dffn_in
-        // dL/dWo = dffn_in @ attn_out^T
-        let dattn_out = mm_at(&self.wo, d, d, &dffn_in, sp);
-        let dwo = mm_abt(&dffn_in, d, sp, &self.attn_out, d);
-
-        // dL/d(attn_in) = dffn_in (residual gradient passes through)
-        // dL/d(x_before_attn) = dattn_out (gradient through attention) + dffn_in (residual)
-        // But wait — attn_in is the input to attention block. The residual connection means:
-        // ffn_in = Wo @ attn_out + attn_in  (attn_in = x)
-        // So dL/d(attn_in) = dffn_in (the residual gradient)
+        let dattn_out = mm_at(&self.wo, d, d, &self.dffn_in, sp);
+        let dwo = mm_abt(&self.dffn_in, d, sp, &self.attn_out, d);
 
         // ═══ Attention backward ═══
-        // attn_out = V @ attn^T  (transposed from [SP, D] to [D, SP])
-        // So in our layout: attn_out[h, i] = sum_j attn[i, j] * V[h, j]
-        // dL/d(attn) = V^T @ dattn_out^T  → [SP, SP]
-        // dL/dV = dattn_out^T @ attn  → [D, SP]
-        let dv = mm(&dattn_out, d, sp, &self.attn, sp); // dattn_out [D,SP] @ attn [SP,SP]^T = [D, SP]
-                                                        // Actually: attn_out = transpose(attn @ V), so:
-                                                        // attn_out[h, i] = sum_j attn[i, j] * V[h, j]
-                                                        // dL/dV[h, j] = sum_i dattn_out[h, i] * attn[i, j] = dattn_out @ attn
-                                                        // dL/dattn[i, j] = sum_h dattn_out[h, i] * V[h, j] = dattn_out^T @ V
+        // cpu_attention: out = transpose(attn @ V) where attn = softmax(Q^T @ K / sqrt(d))
+        // dL/dattn = dattn_out^T @ V = [SP, SP]
+        // dL/dV = dattn_out @ attn = [D, SP]
+        let dattn = mm_at(&dattn_out, d, sp, &self.v, sp);
+        let dv_final = mm(&dattn_out, d, sp, &self.attn, sp);
 
-        // Simpler: our cpu_attention computes out = transpose(attn @ V)
-        // So dL/dattn = dattn_out^T @ V  (where dattn_out is [D, SP])
-        // dL/dV = dattn_out @ attn^T
-
-        let dattn = mm_at(&dattn_out, d, sp, &self.v, sp); // [D,SP]^T @ [D,SP] = [SP,SP]
-        let dv2 = mm(&dattn_out, d, sp, &self.attn, sp); // [D,SP] @ [SP,SP] = [D,SP]
-
-        // Softmax backward: dscaled = attn * (dattn - (dattn * attn).row_sum)
+        // Softmax backward: dscaled = attn * (dattn - (dattn * attn).row_sum) * scale
         let scale = 1.0 / (d as f32).sqrt();
-        let mut dscaled = vec![0.0f32; sp * sp];
         for i in 0..sp {
             let mut dot = 0.0_f32;
             for j in 0..sp {
                 dot += dattn[i * sp + j] * self.attn[i * sp + j];
             }
             for j in 0..sp {
-                dscaled[i * sp + j] = self.attn[i * sp + j] * (dattn[i * sp + j] - dot) * scale;
+                self.dscaled[i * sp + j] =
+                    self.attn[i * sp + j] * (dattn[i * sp + j] - dot) * scale;
             }
         }
 
-        // dscores = dscaled  (already scaled)
-        // dL/dQ^T = dscores @ K  → dQ = K @ dscores^T  → [D, SP]
-        // dL/dK^T = Q @ dscores^T  → dK = dscores @ Q^T  → [D, SP]
-        let dq = mm_at(&self.k, d, sp, &dscaled, sp); // K^T @ dscaled = [D, SP]
-        let dk = mm(&dscaled, sp, sp, &self.q, d); // dscaled @ Q^T = [SP, D] → need transpose
-                                                   // Actually dk should be [D, SP]: dL/dK[h, j] = sum_i dscaled[i, j] * Q[h, i]
-        let dk2 = mm_at(&self.q, d, sp, &dscaled, sp); // Q^T @ dscaled = [D, SP]
-                                                       // Hmm, let me think more carefully:
-                                                       // scores = Q^T @ K  (using mm_at: Q is [D, SP], K is [D, SP], scores = Q^T @ K = [SP, SP])
-                                                       // dL/dQ = K @ dscores^T = K @ dscores^T  where dscores is [SP, SP]
-                                                       // dL/dK = Q @ dscores  where Q is [D, SP] and dscores is [SP, SP] → [D, SP]
-        let dq_correct = mm(&self.k, d, sp, &dscaled, sp); // [D, SP] @ [SP, SP] = [D, SP] — wait no
-
-        // scores[i,j] = sum_h Q[h,i] * K[h,j]
-        // dL/dQ[h,i] = sum_j dscaled[i,j] * K[h,j] = K @ dscaled^T... no
-        // dL/dQ[h,i] = sum_j K[h,j] * dscaled[i,j] = (K @ dscaled^T)[h, i]?
-        // No: K is [D, SP], dscaled is [SP, SP]
-        // K @ dscaled^T: [D, SP] @ [SP, SP]^T = [D, SP] @ [SP, SP] — dimensions don't work for ^T
-        // K @ dscaled: [D, SP] @ [SP, SP] = [D, SP] ✓ — this is (K @ dscaled)[h, i] = sum_j K[h,j] * dscaled[j, i]
-        // But we want sum_j dscaled[i,j] * K[h,j] = sum_j K[h,j] * dscaled[i,j]
-        // = (dscaled @ K^T)[i, h] → need to transpose → K @ dscaled^T
-
-        // OK let me just be careful:
-        // scores = Q^T @ K where Q,K are [D, SP], scores is [SP, SP]
-        // dL/dQ: for each h,i: sum_j dscores[i,j] * d(scores[i,j])/d(Q[h,i]) = sum_j dscores[i,j] * K[h,j]
-        // This is (dscores @ K^T)[i, h], transposed to [D, SP] = (K @ dscores^T)[h, i]
-        // Using mm: mm(K, D, SP, dscores_t, SP, SP) — but dscores_t is [SP, SP], mm does [D,SP]@[SP,SP]=[D,SP]... no
-        // mm(K, D, SP, X, SP, SP) = K[D,SP] @ X[SP,SP] = [D,SP] ← wrong, that's K @ X
-        // We want K @ dscores^T = [D,SP] @ [SP,SP] — but mm_abt does A @ B^T
-        // mm_abt(K, D, SP, dscaled, SP, SP) = K[D,SP] @ dscaled[SP,SP]^T = K[D,SP] @ dscaled^T[SP,SP] = [D,SP] ✓
-
-        let dq_final = mm_abt(&self.k, d, sp, &dscaled, sp); // K @ dscaled^T = [D, SP]
-                                                             // dL/dK: for each h,j: sum_i dscores[i,j] * d(scores[i,j])/d(K[h,j]) = sum_i dscores[i,j] * Q[h,i]
-                                                             // = (Q @ dscores)[h, j] ← Q[D,SP] @ dscores[SP,SP] = [D,SP] ✓
-        let dk_final = mm(&self.q, d, sp, &dscaled, sp); // Q @ dscores = [D, SP]
-                                                         // dL/dV: for each h,j: sum_i dattn_out[h,i] * d(attn_out[h,i])/d(V[h,j])
-                                                         // attn_out[h,i] = sum_j attn[i,j] * V[h,j]
-                                                         // dL/dV[h,j] = sum_i dattn_out[h,i] * attn[i,j] = (dattn_out @ attn)[h, j]
-        let dv_final = mm(&dattn_out, d, sp, &self.attn, sp); // [D, SP] @ [SP, SP] = [D, SP]
+        // scores = Q^T @ K → dL/dQ = K @ dscaled^T, dL/dK = Q @ dscaled
+        let dq_final = mm_abt(&self.k, d, sp, &self.dscaled, sp);
+        let dk_final = mm(&self.q, d, sp, &self.dscaled, sp);
 
         // Weight gradients for attention
         let dwq = mm_abt(&dq_final, d, sp, &self.attn_in, d);
         let dwk = mm_abt(&dk_final, d, sp, &self.attn_in, d);
         let dwv = mm_abt(&dv_final, d, sp, &self.attn_in, d);
 
-        // dL/d(attn_in) = Q^T^T @ dscores @ K^T ... no, simpler:
-        // dL/d(x) where x is the input to QKV projections:
         // dL/dx = Wq^T @ dq + Wk^T @ dk + Wv^T @ dv + dffn_in (residual)
         let dx_q = mm_at(&self.wq, d, d, &dq_final, sp);
         let dx_k = mm_at(&self.wk, d, d, &dk_final, sp);
         let dx_v = mm_at(&self.wv, d, d, &dv_final, sp);
-        let mut dx = vec![0.0f32; d * sp];
         for i in 0..d * sp {
-            dx[i] = dx_q[i] + dx_k[i] + dx_v[i] + dffn_in[i];
+            self.dx[i] = dx_q[i] + dx_k[i] + dx_v[i] + self.dffn_in[i];
         }
 
-        // Note: we don't use gate/up from ANE forward for backward because
-        // the ANE FFN computes internally. We need to recompute on CPU.
-        // Actually we DO cache gate/up in forward_ane — but wait, the ANE FFN
-        // program doesn't return gate/up. It only returns y. So we need to
-        // recompute gate/up from ffn_in on CPU for backward.
-        self.gate = mm(&self.wg, inter, d, &self.ffn_in, sp);
-        self.up = mm(&self.wu, inter, d, &self.ffn_in, sp);
-
-        (dx, dwq, dwk, dwv, dwo, dwg, dwu, dwd)
+        // gate/up are cached by forward_ane (ANE FFN returns them)
+        (self.dx.clone(), dwq, dwk, dwv, dwo, dwg, dwu, dwd)
     }
-
     /// SGD update
     fn sgd_update(
         &mut self,
