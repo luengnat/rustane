@@ -1332,9 +1332,6 @@ pub fn pack_dynamic_matmul_input(
     dim: usize,
     seq_len: usize,
 ) -> Vec<u8> {
-    assert_eq!(activations.len(), dim * seq_len);
-    assert_eq!(weights.len(), dim * dim);
-
     let total_ch = dim + dim * dim;
     let mut input = vec![0.0f32; total_ch * seq_len];
 
@@ -1342,14 +1339,57 @@ pub fn pack_dynamic_matmul_input(
     input[..dim * seq_len].copy_from_slice(activations);
 
     // Copy weights to channels D..D+D*D
-    // Weight W[r][c] goes at position (D + r*D + c) * S + 0
-    let w_base = dim * seq_len;
-    for r in 0..dim {
-        for c in 0..dim {
-            input[w_base + (r * dim + c) * seq_len] = weights[r * dim + c];
-        }
-    }
+    pack_weights_into(&mut input, weights, dim, seq_len);
 
     // Convert to bytes (fp32 little-endian)
     input.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Update only the weight region of a pre-allocated packed input buffer.
+///
+/// This avoids reallocating the 1MB+ buffer on every training step.
+/// The `buffer` must have been created by `pack_dynamic_matmul_input` or
+/// `pack_dynamic_matmul_input_f32`.
+///
+/// Weight matrix is stored in row-major: W[r][c] at `base + (r*D + c) * S + 0`.
+pub fn pack_weights_into(buffer: &mut [f32], weights: &[f32], dim: usize, seq_len: usize) {
+    assert_eq!(weights.len(), dim * dim);
+    let w_base = dim * seq_len;
+
+    // Zero out old weight region (D*D channels × S spatial = D*D*S floats)
+    let w_region_len = dim * dim * seq_len;
+    buffer[w_base..w_base + w_region_len].fill(0.0);
+
+    // Write new weights: W[r][c] at position (D + r*D + c) * S + 0
+    for r in 0..dim {
+        for c in 0..dim {
+            buffer[w_base + (r * dim + c) * seq_len] = weights[r * dim + c];
+        }
+    }
+}
+
+/// Pack activations and weights into a pre-allocated f32 buffer.
+///
+/// Returns the f32 slice that can be converted to bytes for IOSurface.
+/// The caller can reuse the buffer across steps by calling `pack_weights_into`.
+pub fn pack_dynamic_matmul_input_f32(
+    buffer: &mut [f32],
+    activations: &[f32],
+    weights: &[f32],
+    dim: usize,
+    seq_len: usize,
+) {
+    let total_ch = dim + dim * dim;
+    assert_eq!(buffer.len(), total_ch * seq_len);
+    assert_eq!(activations.len(), dim * seq_len);
+    assert_eq!(weights.len(), dim * dim);
+
+    // Zero entire buffer
+    buffer.fill(0.0);
+
+    // Copy activations to channels 0..D
+    buffer[..dim * seq_len].copy_from_slice(activations);
+
+    // Copy weights
+    pack_weights_into(buffer, weights, dim, seq_len);
 }
