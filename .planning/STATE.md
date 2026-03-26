@@ -12,8 +12,8 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 **Milestone:** M2: Fused Training — COMPLETE
 **Phase:** Post-M2 — ANE training feasibility analysis COMPLETE
 **Plan:** N/A (investigation concluded)
-**Status:** Full transformer training benchmarked — 1.21-1.43x speedup
-**Last activity:** 2026-03-26 — Full transformer training: ANE forward 4-5x, total 1.2-1.4x
+**Status:** Full transformer training benchmarked — 1.33-1.44x speedup
+**Last activity:** 2026-03-27 — Cleaned up backward_cpu: removed dead code, pre-allocated buffers, 12L total 1.21x→1.44x
 
 ## Progress
 
@@ -107,8 +107,8 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 
 ## Session Continuity
 
-Last session: 2026-03-26
-Stopped at: Full transformer training benchmarked — ANE forward 4-5x, total 1.2-1.4x
+Last session: 2026-03-27
+Stopped at: Backward cleanup complete — 12L total speedup 1.21x→1.44x
 Resume file: None
 
 ## Training Strategy — FINAL RECOMMENDATION (2026-03-26)
@@ -298,13 +298,13 @@ Realistic benchmark with attention + FFN per layer:
 
 | Config | Layers | Params | Fwd Speedup | Bwd | Total Speedup |
 |--------|--------|--------|-------------|-----|---------------|
-| D=512 6L | 6 | 25.2M | 3.04x | 0.94x | **1.26x** |
-| D=768 6L | 6 | 56.6M | 4.39x | 1.03x | **1.43x** |
-| D=768 12L | 12 | 113.2M | 4.96x | 0.82x | **1.21x** |
+| D=512 6L | 6 | 25.2M | 2.47x | 0.99x | **1.33x** |
+| D=768 6L | 6 | 56.6M | 3.25x | 1.02x | **1.42x** |
+| D=768 12L | 12 | 113.2M | 3.36x | 1.02x | **1.44x** |
 
-Forward speedup increases with depth (4.0x → 5.0x) as CPU BLAS scales worse.
-Backward is CPU-only and slightly slower than pure CPU (extra allocations + cached activations).
-Fwd/Bwd ratio: ~10-15% forward, ~85-90% backward — limits total speedup.
+Forward speedup consistent ~3.0-3.4x across configs.
+Backward now at CPU parity (1.0x) after dead code cleanup — was 0.82x at 12L due to 6 wasted BLAS calls.
+Fwd/Bwd ratio: ~18-23% forward, ~77-82% backward — limits total speedup.
 
 ### Path Forward Options
 
