@@ -1144,3 +1144,212 @@ mod tests {
         );
     }
 }
+
+/// Dynamic linear layer: matmul with weights packed into the input tensor.
+///
+/// Instead of baking weights into the model (which requires recompilation to update),
+/// this program packs the weight matrix into the input alongside activations.
+/// Weights can then change every step by just changing the input IOSurface content.
+///
+/// **Input layout** (fp32): `[1, D + D*D, 1, S]`
+/// - Channels `0..D` contain activations `[1, D, 1, S]`
+/// - Channels `D..D+D*D` contain weight matrix `[D, D]` (only first spatial position used)
+///
+/// **Output layout** (fp32): `[1, D, 1, S]`
+///
+/// **No weights file needed** — all weight data comes through the input.
+///
+/// ## How it works (inside MIL)
+///
+/// ```text
+/// input [1, D+D*D, 1, S]
+///   ├── slice [0..D] → act [1, D, 1, S]
+///   └── slice [D..D+D*D] → wf [1, D*D, 1, S]
+///         └── slice [:, 0] → wf1 [1, D*D, 1, 1]
+///               └── reshape → W [1, 1, D, D]
+///   act → reshape → [1, 1, S, D] → transpose → [1, 1, D, S]
+///   matmul([1,1,D,S], [1,1,D,D]) → [1,1,D,S]
+///   transpose → reshape → [1, D, 1, S]
+/// ```
+///
+/// ## Input size calculation
+///
+/// ```ignore
+/// let input_bytes = (D + D * D) * S * 4;  // fp32
+/// let output_bytes = D * S * 4;           // fp32
+/// ```
+///
+/// ## Weight packing format
+///
+/// Weights are stored in row-major layout in the input's weight channels.
+/// For a `[D, D]` weight matrix W, element W[r][c] goes at:
+/// `input_offset = D * S + (r * D + c) * S + 0` (only spatial position 0 matters)
+pub fn dynamic_matmul_mil(seq_len: usize, dim: usize) -> String {
+    let total_ch = dim + dim * dim;
+    let mut mil = String::new();
+
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+
+    // Input: [1, D+D*D, 1, S] fp32
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        total_ch, seq_len
+    ));
+
+    // Cast input to fp16
+    mil.push_str(
+        "        string to16 = const()[name = string(\"to16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> xh = cast(dtype = to16, x = x)[name = string(\"cin\")];\n",
+        total_ch, seq_len
+    ));
+
+    // Slice activations: [1, D, 1, S] from channels 0..D
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name = string(\"b0\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n");
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sa = const()[name = string(\"sa\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> act = slice_by_size(x = xh, begin = b0, size = sa)[name = string(\"act\")];\n",
+        dim, seq_len
+    ));
+
+    // Slice weight region: [1, D*D, 1, S] from channels D..D+D*D
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> bw = const()[name = string(\"bw\"), val = tensor<int32, [4]>([0, {}, 0, 0])];\n",
+        dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sw = const()[name = string(\"sw\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n",
+        dim * dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> wf = slice_by_size(x = xh, begin = bw, size = sw)[name = string(\"wf\")];\n",
+        dim * dim, seq_len
+    ));
+
+    // CRITICAL: Declaration order matters for ANE compiler!
+    // ws (reshape target [1,1,D,D]) MUST be declared before sw1 ([1,1,1,1]).
+    // Declaring sw1 first causes CompilationFailure on ANE.
+    // Reshape weight to [1, 1, D, D] for matmul
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> ws = const()[name = string(\"ws\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n",
+        dim, dim
+    ));
+
+    // Take first spatial position of weight: [1, D*D, 1, 1]
+    // Size must be [1, D*D, 1, 1] (NOT [1,1,1,1]) to capture all weight channels
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sw1 = const()[name = string(\"sw1\"), val = tensor<int32, [4]>([1, {}, 1, 1])];\n",
+        dim * dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, 1]> wf1 = slice_by_size(x = wf, begin = b0, size = sw1)[name = string(\"wf1\")];\n",
+        dim * dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> W = reshape(shape = ws, x = wf1)[name = string(\"W\")];\n",
+        dim, dim
+    ));
+
+    // Reshape activations to [1, 1, D, S] then transpose to [1, 1, S, D]
+    // matmul expects: x=[1,1,M,K] @ y=[1,1,K,N] → [1,1,M,N]
+    // We want: [S, D] @ [D, D] → [S, D], so x=[1,1,S,D], y=[1,1,D,D]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> as2 = const()[name = string(\"as2\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name = string(\"pm\"), val = tensor<int32, [4]>([0, 1, 3, 2])];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> a2 = reshape(shape = as2, x = act)[name = string(\"a2\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> a3 = transpose(perm = pm, x = a2)[name = string(\"a3\")];\n",
+        seq_len, dim
+    ));
+
+    // matmul: [1,1,S,D] @ [1,1,D,D] → [1,1,S,D]
+    mil.push_str("        bool bF = const()[name = string(\"bF\"), val = bool(false)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> yh = matmul(transpose_x = bF, transpose_y = bF, x = a3, y = W)[name = string(\"mm\")];\n",
+        seq_len, dim
+    ));
+
+    // Transpose back: [1,1,S,D] → [1,1,D,S] then reshape to [1, D, 1, S]
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> yt = transpose(perm = pm, x = yh)[name = string(\"yt\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> os = const()[name = string(\"os\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> yr = reshape(shape = os, x = yt)[name = string(\"yr\")];\n",
+        dim, seq_len
+    ));
+
+    // Cast output to fp32
+    mil.push_str(
+        "        string to32 = const()[name = string(\"to32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1, {}, 1, {}]> y = cast(dtype = to32, x = yr)[name = string(\"cout\")];\n",
+        dim, seq_len
+    ));
+
+    mil.push_str("    } -> (y);\n");
+    mil.push_str("}\n");
+    mil
+}
+
+/// Calculate input byte size for `dynamic_matmul_mil`.
+///
+/// Input is `[1, D + D*D, 1, S]` fp32.
+pub fn dynamic_matmul_input_bytes(dim: usize, seq_len: usize) -> usize {
+    (dim + dim * dim) * seq_len * 4
+}
+
+/// Calculate output byte size for `dynamic_matmul_mil`.
+///
+/// Output is `[1, D, 1, S]` fp32.
+pub fn dynamic_matmul_output_bytes(dim: usize, seq_len: usize) -> usize {
+    dim * seq_len * 4
+}
+
+/// Pack activations and weights into a single input buffer for `dynamic_matmul_mil`.
+///
+/// Input layout: `[activations(D*S), weights(D*D*S)]` as fp32.
+/// Weight matrix is stored in row-major: W[r][c] at `base + (r*D + c) * S + 0`.
+pub fn pack_dynamic_matmul_input(
+    activations: &[f32],
+    weights: &[f32],
+    dim: usize,
+    seq_len: usize,
+) -> Vec<u8> {
+    assert_eq!(activations.len(), dim * seq_len);
+    assert_eq!(weights.len(), dim * dim);
+
+    let total_ch = dim + dim * dim;
+    let mut input = vec![0.0f32; total_ch * seq_len];
+
+    // Copy activations to channels 0..D
+    input[..dim * seq_len].copy_from_slice(activations);
+
+    // Copy weights to channels D..D+D*D
+    // Weight W[r][c] goes at position (D + r*D + c) * S + 0
+    let w_base = dim * seq_len;
+    for r in 0..dim {
+        for c in 0..dim {
+            input[w_base + (r * dim + c) * seq_len] = weights[r * dim + c];
+        }
+    }
+
+    // Convert to bytes (fp32 little-endian)
+    input.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
