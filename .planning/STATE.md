@@ -108,7 +108,7 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: Multi-layer ANE inference pipeline — 13.4x speedup at 24 layers
+Stopped at: Hybrid transformer inference — 3.4x speedup at 6 layers
 Resume file: None
 
 ## ANE Training Feasibility — Definitive Analysis (THIS SESSION)
@@ -204,6 +204,25 @@ The Orion paper does NOT claim ANE training is faster than CPU:
 - Correctness: 0.4% avg relative error (fp16 precision)
 - Speedup *increases* with more layers (CPU slows down, ANE stays constant)
 - No ANE memory issues at 24 layers (170M params)
+
+### Hybrid Transformer Inference Results
+
+#### inference_transformer.rs — Full transformer (ANE linear + CPU attention)
+
+| Layers | Params | Programs | ANE | CPU | Speedup | Throughput |
+|--------|--------|----------|-----|-----|---------|------------|
+| 6 | 56.6M | 18 | 12.3ms | 41.8ms | **3.4x** | 20.7K tok/s |
+| 12 | 113.2M | 36 | 24.6ms | 71.9ms | **2.9x** | 10.4K tok/s |
+
+Per-layer time breakdown at 12 layers:
+- ANE QKV projection: 0.244ms (3 conv1x1 fused)
+- CPU attention (BLAS): 0.484ms (24% of layer — the bottleneck)
+- ANE out proj + residual: 0.372ms
+- ANE FFN + residual: 0.404ms
+
+**Key insight**: CPU attention is now the bottleneck (24% of layer time).
+Further speedup requires either ANE attention (needs transpose/matmul which fail)
+ or multi-head parallel attention on CPU.
 
 ## Hybird-Batch-Prefill-on-ANE Discoveries (THIS SESSION)
 
