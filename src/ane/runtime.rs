@@ -6,9 +6,10 @@ mod apple {
     use objc2::rc::{autoreleasepool, Retained};
     use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject, NSObjectProtocol};
     use objc2::{extern_class, extern_conformance, extern_methods, msg_send, AnyThread, ClassType};
-    use objc2_core_foundation::CFRetained;
+    use objc2_core_foundation::{CFDictionary, CFRetained};
     use objc2_foundation::{NSArray, NSData, NSDictionary, NSError, NSNumber, NSString};
-    use objc2_io_surface::IOSurfaceRef;
+    use objc2_io_surface::{IOSurfaceLockOptions, IOSurfaceRef};
+    use std::ffi::CString;
     use std::fs;
     use std::path::PathBuf;
     use std::slice;
@@ -23,16 +24,7 @@ mod apple {
     const CLASS_INMEM: &[u8] = b"_ANEInMemoryModel\0";
     const CLASS_REQ: &[u8] = b"_ANERequest\0";
     const CLASS_IO: &[u8] = b"_ANEIOSurfaceObject\0";
-    const IOSURFACE_LOCK_READ_ONLY: u32 = 0x0000_0001;
     const ANE_QOS: u32 = 21;
-
-    #[link(name = "IOSurface", kind = "framework")]
-    unsafe extern "C" {
-        fn IOSurfaceCreate(properties: *const c_void) -> *const IOSurfaceRef;
-        fn IOSurfaceLock(buffer: &IOSurfaceRef, options: u32, seed: *mut u32) -> i32;
-        fn IOSurfaceUnlock(buffer: &IOSurfaceRef, options: u32, seed: *mut u32) -> i32;
-        fn IOSurfaceGetBaseAddress(buffer: &IOSurfaceRef) -> *mut c_void;
-    }
 
     extern_class!(
         #[unsafe(super(NSObject))]
@@ -173,6 +165,8 @@ mod apple {
         io_outputs: Vec<CFRetained<IOSurfaceRef>>,
         request: Retained<ANERequest>,
         tmp_dir: PathBuf,
+        /// Stored MIL source text for delta compilation (reload with new weights)
+        mil_text: Vec<u8>,
         n_inputs: i32,
         n_outputs: i32,
         input_bytes: Vec<usize>,
@@ -222,11 +216,11 @@ mod apple {
             let props =
                 NSDictionary::<NSString, AnyObject>::from_retained_objects(&key_refs, &values);
 
-            let raw = unsafe {
-                IOSurfaceCreate((&*props as *const NSDictionary<NSString, AnyObject>).cast())
+            // Cast NSDictionary to CFDictionary for IOSurfaceRef::new
+            let cf_props: &CFDictionary = unsafe {
+                &*(&*props as *const NSDictionary<NSString, AnyObject> as *const CFDictionary)
             };
-            let raw = NonNull::new(raw as *mut IOSurfaceRef)?;
-            Some(unsafe { CFRetained::from_raw(raw) })
+            unsafe { IOSurfaceRef::new(cf_props) }
         }
 
         fn create_weight_dictionary(
@@ -388,13 +382,16 @@ mod apple {
                 n_weights,
             );
 
+            // Create empty dictionary if no weights provided
+            let empty_weights: Retained<NSDictionary<NSString, AnyObject>> =
+                unsafe { msg_send![NSDictionary::<NSString, AnyObject>::class(), new] };
             let desc = unsafe {
                 ANEInMemoryModelDescriptor::modelWithMILText_weights_optionsPlist(
                     &mil_data,
                     weights
                         .as_ref()
                         .map(|dict| &**dict as *const NSDictionary<NSString, AnyObject>)
-                        .unwrap_or(ptr::null()),
+                        .unwrap_or(&*empty_weights),
                     ptr::null::<AnyObject>(),
                 )
             };
@@ -475,12 +472,16 @@ mod apple {
 
             COMPILE_COUNT.fetch_add(1, Ordering::Relaxed);
 
+            // Store MIL text for delta compilation
+            let mil_text = mil_bytes.to_vec();
+
             Box::into_raw(Box::new(ANEKernelHandle {
                 model,
                 io_inputs,
                 io_outputs,
                 request,
                 tmp_dir,
+                mil_text,
                 n_inputs,
                 n_outputs,
                 input_bytes,
@@ -572,13 +573,13 @@ mod apple {
         }
         let surface = &kernel.io_inputs[idx as usize];
         unsafe {
-            IOSurfaceLock(&**surface, 0, ptr::null_mut());
+            surface.lock(IOSurfaceLockOptions(0), ptr::null_mut());
             ptr::copy_nonoverlapping(
                 data.cast::<u8>(),
-                IOSurfaceGetBaseAddress(&**surface).cast(),
+                surface.base_address().as_ptr().cast(),
                 bytes,
             );
-            IOSurfaceUnlock(&**surface, 0, ptr::null_mut());
+            surface.unlock(IOSurfaceLockOptions(0), ptr::null_mut());
         }
     }
 
@@ -596,13 +597,13 @@ mod apple {
         }
         let surface = &kernel.io_outputs[idx as usize];
         unsafe {
-            IOSurfaceLock(&**surface, IOSURFACE_LOCK_READ_ONLY, ptr::null_mut());
+            surface.lock(IOSurfaceLockOptions::ReadOnly, ptr::null_mut());
             ptr::copy_nonoverlapping(
-                IOSurfaceGetBaseAddress(&**surface).cast::<u8>(),
+                surface.base_address().as_ptr().cast::<u8>(),
                 data.cast(),
                 bytes,
             );
-            IOSurfaceUnlock(&**surface, IOSURFACE_LOCK_READ_ONLY, ptr::null_mut());
+            surface.unlock(IOSurfaceLockOptions::ReadOnly, ptr::null_mut());
         }
     }
 
@@ -631,6 +632,177 @@ mod apple {
 
     pub unsafe fn ane_bridge_reset_compile_count() {
         COMPILE_COUNT.store(0, Ordering::Relaxed);
+    }
+
+    /// Reload weights by creating a new model with updated weights (delta compilation)
+    ///
+    /// The ANE's `_ANEInMemoryModel` is a one-shot compile object — after compilation,
+    /// it can only be loaded/unloaded/evaluated. The compiled weights are stored in an
+    /// internal `data` file (~60x the size of raw weights) that `loadWithQoS` reads from.
+    /// There is no way to force it to re-read from `weights/weight.bin`.
+    ///
+    /// Therefore, delta compilation works by:
+    /// 1. Unloading the old model
+    /// 2. Creating a new model descriptor with updated weights
+    /// 3. Creating a new model from the descriptor
+    /// 4. Compiling and loading the new model
+    /// 5. Updating the kernel handle with the new model
+    ///
+    /// This is still faster than a full pipeline compile because the MIL graph
+    /// is the same — only the weight data changes. The ANE's internal compiler
+    /// can skip graph optimization and just regenerate the weight data.
+    ///
+    /// This increments the compile count.
+    ///
+    /// # Safety
+    /// - kernel must be a valid, loaded ANEKernelHandle
+    /// - weight_files must be (name, path) pairs matching MIL references
+    /// - weight data must match expected sizes
+    pub unsafe fn ane_bridge_reload_weights(
+        kernel: *mut ANEKernelHandle,
+        weight_files: &[(&str, &[u8])],
+    ) -> bool {
+        autoreleasepool(|_| {
+            let Some(kernel) = (unsafe { kernel.as_ref() }) else {
+                return false;
+            };
+
+            // Step 1: Unload the old model
+            let mut error: *mut NSError = ptr::null_mut();
+            let unloaded = unsafe { kernel.model.unloadWithQoS_error(ANE_QOS, &mut error) };
+            if !unloaded.as_bool() {
+                eprintln!("ane_bridge: unload failed: {}", ns_error_string(error));
+                return false;
+            }
+
+            // Step 2: Get the MIL source from the stored copy in the kernel handle
+            let mil_data = NSData::with_bytes(&kernel.mil_text);
+
+            // Step 3: Create new weight dictionary with updated weights
+            // Convert weight_files to C pointers for create_weight_dictionary
+            let n_weights = weight_files.len() as i32;
+            let mut c_names: Vec<*const c_char> = Vec::with_capacity(weight_files.len());
+            let mut c_datas: Vec<*const u8> = Vec::with_capacity(weight_files.len());
+            let mut c_lens: Vec<usize> = Vec::with_capacity(weight_files.len());
+
+            // We need the name strings to live long enough
+            let mut name_cstrings: Vec<CString> = Vec::with_capacity(weight_files.len());
+
+            for (name, data) in weight_files {
+                let clean_name = name.strip_prefix("@model_path/").unwrap_or(name);
+                // Re-add @model_path/ prefix since write_model_files expects it
+                let full_name = format!("@model_path/{}", clean_name);
+                let c_name =
+                    CString::new(full_name).unwrap_or_else(|_| CString::new(clean_name).unwrap());
+                c_names.push(c_name.as_ptr());
+                c_datas.push(data.as_ptr());
+                c_lens.push(data.len());
+                name_cstrings.push(c_name);
+            }
+
+            let weights = if n_weights > 0 {
+                ANEPrivateRuntime::create_weight_dictionary(
+                    c_names.as_mut_ptr(),
+                    c_datas.as_mut_ptr(),
+                    c_lens.as_ptr(),
+                    n_weights,
+                )
+            } else {
+                None
+            };
+
+            let empty_weights: Retained<NSDictionary<NSString, AnyObject>> =
+                unsafe { msg_send![NSDictionary::<NSString, AnyObject>::class(), new] };
+
+            // Step 4: Create new model descriptor and model
+            let desc = unsafe {
+                ANEInMemoryModelDescriptor::modelWithMILText_weights_optionsPlist(
+                    &mil_data,
+                    weights
+                        .as_ref()
+                        .map(|dict| &**dict as *const NSDictionary<NSString, AnyObject>)
+                        .unwrap_or(&*empty_weights),
+                    ptr::null::<AnyObject>(),
+                )
+            };
+            let Some(desc) = desc else {
+                eprintln!("ane_bridge: failed to create model descriptor for reload");
+                return false;
+            };
+
+            let new_model = unsafe { ANEInMemoryModel::inMemoryModelWithDescriptor(&desc) };
+            let Some(new_model) = new_model else {
+                eprintln!("ane_bridge: failed to create new model for reload");
+                return false;
+            };
+
+            // Step 5: Write new model files (same tmp_dir, updated weights)
+            let Some(tmp_dir) = ANEPrivateRuntime::write_model_files(
+                &new_model,
+                &mil_data,
+                c_names.as_mut_ptr(),
+                c_datas.as_mut_ptr(),
+                c_lens.as_ptr(),
+                n_weights,
+            ) else {
+                eprintln!("ane_bridge: failed to write model files for reload");
+                return false;
+            };
+
+            // Step 6: Compile the new model
+            let options = empty_dictionary();
+            let mut compile_error: *mut NSError = ptr::null_mut();
+            let compiled = unsafe {
+                new_model.compileWithQoS_options_error(ANE_QOS, &options, &mut compile_error)
+            };
+            if !compiled.as_bool() {
+                eprintln!(
+                    "ane_bridge: recompile failed: {}",
+                    ns_error_string(compile_error)
+                );
+                let _ = fs::remove_dir_all(&tmp_dir);
+                return false;
+            }
+
+            // Step 7: Load the new model
+            let mut load_error: *mut NSError = ptr::null_mut();
+            let loaded =
+                unsafe { new_model.loadWithQoS_options_error(ANE_QOS, &options, &mut load_error) };
+            if !loaded.as_bool() {
+                thread::sleep(Duration::from_millis(100));
+                let mut retry_error: *mut NSError = ptr::null_mut();
+                let retry_loaded = unsafe {
+                    new_model.loadWithQoS_options_error(ANE_QOS, &options, &mut retry_error)
+                };
+                if !retry_loaded.as_bool() {
+                    eprintln!(
+                        "ane_bridge: reload (load) failed: {}",
+                        ns_error_string(retry_error)
+                    );
+                    let _ = fs::remove_dir_all(&tmp_dir);
+                    return false;
+                }
+            }
+
+            COMPILE_COUNT.fetch_add(1, Ordering::Relaxed);
+
+            // Step 8: Rebuild the request and update the kernel handle
+            let Some(new_request) =
+                ANEPrivateRuntime::create_request(&kernel.io_inputs, &kernel.io_outputs)
+            else {
+                return false;
+            };
+
+            // Update the kernel handle with new model, request, and tmp_dir
+            let kernel_ptr = kernel as *const ANEKernelHandle as *mut ANEKernelHandle;
+            unsafe {
+                (*kernel_ptr).model = new_model;
+                (*kernel_ptr).request = new_request;
+                (*kernel_ptr).tmp_dir = tmp_dir;
+            }
+
+            true
+        })
     }
 
     fn cstr(bytes: &'static [u8]) -> &'static CStr {
@@ -717,6 +889,13 @@ mod apple {
     }
 
     pub unsafe fn ane_bridge_reset_compile_count() {}
+
+    pub unsafe fn ane_bridge_reload_weights(
+        _kernel: *mut ANEKernelHandle,
+        _weight_files: &[(&str, &[u8])],
+    ) -> bool {
+        false
+    }
 }
 
 pub(crate) use apple::*;
@@ -878,6 +1057,119 @@ pub fn ane_init() -> crate::Result<()> {
     }
 }
 
+/// Compile budget monitor for tracking ANE compilation usage
+///
+/// The ANE has a limit of ~119 compilations per process before memory issues.
+/// This monitor tracks compilation count and provides warnings/budget info.
+///
+/// # Example
+///
+/// ```no_run
+/// use rustane::ane::runtime::CompileBudgetMonitor;
+///
+/// let monitor = CompileBudgetMonitor::new();
+/// assert!(monitor.check_budget(10), "Should have budget for 10 compiles");
+///
+/// // After compiling
+/// let count = monitor.get_compile_count();
+/// println!("Compiles used: {}/{}", count, monitor.budget_limit());
+/// ```
+pub struct CompileBudgetMonitor {
+    budget_limit: i32,
+    warning_threshold: i32,
+}
+
+impl CompileBudgetMonitor {
+    /// ANE compile budget limit (from Orion research)
+    pub const DEFAULT_BUDGET: i32 = 110;
+    /// Warning threshold (90% of budget)
+    pub const DEFAULT_WARNING_THRESHOLD: i32 = 99;
+
+    /// Create a new budget monitor with default limits
+    pub fn new() -> Self {
+        Self {
+            budget_limit: Self::DEFAULT_BUDGET,
+            warning_threshold: Self::DEFAULT_WARNING_THRESHOLD,
+        }
+    }
+
+    /// Create monitor with custom budget
+    pub fn with_budget(budget: i32) -> Self {
+        Self {
+            budget_limit: budget,
+            warning_threshold: (budget as f32 * 0.9) as i32,
+        }
+    }
+
+    /// Get current compile count from ANE runtime
+    pub fn get_compile_count(&self) -> i32 {
+        unsafe { apple::ane_bridge_get_compile_count() }
+    }
+
+    /// Check if there's enough budget for N more compiles
+    pub fn check_budget(&self, needed: i32) -> bool {
+        let used = self.get_compile_count();
+        used + needed <= self.budget_limit
+    }
+
+    /// Get remaining budget
+    pub fn remaining(&self) -> i32 {
+        let used = self.get_compile_count();
+        (self.budget_limit - used).max(0)
+    }
+
+    /// Get budget limit
+    pub fn budget_limit(&self) -> i32 {
+        self.budget_limit
+    }
+
+    /// Check if we're in warning zone (90% of budget used)
+    pub fn is_warning_zone(&self) -> bool {
+        self.get_compile_count() >= self.warning_threshold
+    }
+
+    /// Check if budget is exhausted
+    pub fn is_exhausted(&self) -> bool {
+        self.get_compile_count() >= self.budget_limit
+    }
+
+    /// Get budget status as a struct
+    pub fn status(&self) -> BudgetStatus {
+        let used = self.get_compile_count();
+        BudgetStatus {
+            used,
+            limit: self.budget_limit,
+            remaining: (self.budget_limit - used).max(0),
+            percent_used: (used as f32 / self.budget_limit as f32 * 100.0).min(100.0),
+            warning: self.is_warning_zone(),
+            exhausted: self.is_exhausted(),
+        }
+    }
+}
+
+impl Default for CompileBudgetMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Budget status information
+#[derive(Debug, Clone)]
+pub struct BudgetStatus {
+    /// Compiles used
+    pub used: i32,
+    /// Budget limit
+    pub limit: i32,
+    /// Remaining budget
+    pub remaining: i32,
+    /// Percentage used (0-100)
+    pub percent_used: f32,
+    /// In warning zone
+    pub warning: bool,
+    /// Budget exhausted
+    pub exhausted: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{sort_named_weights, ANECompileRequest};
@@ -989,5 +1281,31 @@ mod tests {
             request.weights.get("@model_path/weights/wk.bin"),
             Some(&vec![3u8])
         );
+    }
+
+    #[test]
+    fn test_compile_budget_monitor_defaults() {
+        let monitor = super::CompileBudgetMonitor::new();
+        assert_eq!(monitor.budget_limit(), 110);
+        assert!(monitor.check_budget(10));
+        assert!(!monitor.is_exhausted());
+    }
+
+    #[test]
+    fn test_compile_budget_monitor_custom() {
+        let monitor = super::CompileBudgetMonitor::with_budget(50);
+        assert_eq!(monitor.budget_limit(), 50);
+        assert!(monitor.check_budget(10));
+        assert!(!monitor.check_budget(100));
+    }
+
+    #[test]
+    fn test_compile_budget_monitor_status() {
+        let monitor = super::CompileBudgetMonitor::new();
+        let status = monitor.status();
+
+        assert_eq!(status.limit, 110);
+        assert!(status.percent_used >= 0.0);
+        assert!(status.percent_used <= 100.0);
     }
 }
