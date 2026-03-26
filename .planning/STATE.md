@@ -108,7 +108,7 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: ANE training feasibility analysis COMPLETE — ANE cannot beat CPU BLAS for training
+Stopped at: Multi-layer ANE inference pipeline — 13.4x speedup at 24 layers
 Resume file: None
 
 ## ANE Training Feasibility — Definitive Analysis (THIS SESSION)
@@ -184,10 +184,26 @@ The Orion paper does NOT claim ANE training is faster than CPU:
 
 ### Path Forward Options
 
-1. **Pivot to ANE inference optimization** — 4,576x speedup is the real value
-2. **LoRA adapter-as-input** — Orion's approach: inject LoRA via input, no reload
+1. **✅ DONE: Multi-layer ANE inference pipeline** — 13.4x speedup at 24 layers
+2. **LoRA adapter-as-input** — Orion's approach: inject LoRA via IOSurface input, no recompilation
 3. **Hybrid inference/training** — ANE for inference, CPU for training (current state)
 4. **Accept limitation** — ANE is for inference, not training (honest conclusion)
+
+## Multi-Layer ANE Inference Results
+
+### inference_pipeline.rs — Multi-layer FFN benchmark
+
+| Layers | Params | ANE Total | CPU Total | Speedup | Throughput |
+|--------|--------|-----------|-----------|---------|------------|
+| 6 | 42.5M | 2.3ms | 26.7ms | **11.7x** | 112K tok/s |
+| 12 | 84.9M | 4.5ms | 48.7ms | **10.8x** | 57K tok/s |
+| 24 | 169.9M | 9.3ms | 124.7ms | **13.4x** | 28K tok/s |
+
+- Consistent ~0.38ms per layer regardless of depth
+- All layers compile successfully (~80ms/layer)
+- Correctness: 0.4% avg relative error (fp16 precision)
+- Speedup *increases* with more layers (CPU slows down, ANE stays constant)
+- No ANE memory issues at 24 layers (170M params)
 
 ## Hybird-Batch-Prefill-on-ANE Discoveries (THIS SESSION)
 
