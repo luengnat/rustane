@@ -666,54 +666,53 @@ impl FfnLayer {
         (self.dx_buf.clone(), wg, wu, wd)
     }
 
-    /// Pure CPU backward: returns (dx, dL/dWg, dL/dWu, dL/dWd)
-    fn backward_cpu(&self, dy: &[f32], x: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    /// Pure CPU backward using pre-allocated buffers — zero allocations
+    fn backward_cpu(&mut self, dy: &[f32], x: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
         let d = self.d;
         let inter = self.inter;
         let sp = self.sp;
 
+        // dfused = wd^T @ dy  (CPU BLAS)
         let dfused = mm_at(&self.wd, d, inter, dy, sp);
-        let silu: Vec<f32> = self
-            .gate
-            .iter()
-            .map(|&g| g * (1.0 / (1.0 + (-g).exp())))
-            .collect();
-        let dup: Vec<f32> = dfused
-            .iter()
-            .zip(silu.iter())
-            .map(|(&d, &s)| d * s)
-            .collect();
-        let dsilu: Vec<f32> = dfused
-            .iter()
-            .zip(self.up.iter())
-            .map(|(&d, &u)| d * u)
-            .collect();
-        let dgate: Vec<f32> = self
-            .gate
-            .iter()
-            .zip(dsilu.iter())
-            .map(|(&g, &ds)| {
-                let s = 1.0 / (1.0 + (-g).exp());
-                ds * s * (1.0 + g * (1.0 - s))
-            })
-            .collect();
-        let dx_g = mm_at(&self.wg, inter, d, &dgate, sp);
-        let dx_u = mm_at(&self.wu, inter, d, &dup, sp);
-        let mut dx = vec![0.0f32; d * sp];
-        for i in 0..dx.len() {
-            dx[i] = dx_g[i] + dx_u[i] + dy[i];
+
+        // silu_buf = gate * sigmoid(gate)
+        for i in 0..inter * sp {
+            let g = self.gate[i];
+            let s = 1.0 / (1.0 + (-g).exp());
+            self.silu_buf[i] = g * s;
+        }
+        // dup = dfused * silu
+        for i in 0..inter * sp {
+            self.dup_buf[i] = dfused[i] * self.silu_buf[i];
+        }
+        // dsilu = dfused * up
+        for i in 0..inter * sp {
+            self.dsilu_buf[i] = dfused[i] * self.up[i];
+        }
+        // dgate = dsilu * sigmoid(gate) * (1 + gate * (1 - sigmoid(gate)))
+        for i in 0..inter * sp {
+            let g = self.gate[i];
+            let s = 1.0 / (1.0 + (-g).exp());
+            self.dgate_buf[i] = self.dsilu_buf[i] * s * (1.0 + g * (1.0 - s));
+        }
+        // dx_g = wg^T @ dgate, dx_u = wu^T @ dup
+        let dx_g = mm_at(&self.wg, inter, d, &self.dgate_buf, sp);
+        let dx_u = mm_at(&self.wu, inter, d, &self.dup_buf, sp);
+        // dx = dx_g + dx_u + dy
+        for i in 0..d * sp {
+            self.dx_buf[i] = dx_g[i] + dx_u[i] + dy[i];
         }
 
-        let fused: Vec<f32> = silu
-            .iter()
-            .zip(self.up.iter())
-            .map(|(&a, &b)| a * b)
-            .collect();
-        let dwg = mm_abt(&dgate, inter, sp, x, d);
-        let dwu = mm_abt(&dup, inter, sp, x, d);
-        let dwd = mm_abt(dy, d, sp, &fused, inter);
+        // fused = silu * up
+        for i in 0..inter * sp {
+            self.fused_buf[i] = self.silu_buf[i] * self.up[i];
+        }
+        // Weight gradients
+        let dwg = mm_abt(&self.dgate_buf, inter, sp, x, d);
+        let dwu = mm_abt(&self.dup_buf, inter, sp, x, d);
+        let dwd = mm_abt(dy, d, sp, &self.fused_buf, inter);
 
-        (dx, dwg, dwu, dwd)
+        (self.dx_buf.clone(), dwg, dwu, dwd)
     }
 
     /// SGD weight update
