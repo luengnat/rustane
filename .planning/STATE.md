@@ -12,8 +12,8 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 **Milestone:** M2: Fused Training — COMPLETE
 **Phase:** Post-M2 — ANE training feasibility analysis COMPLETE
 **Plan:** N/A (investigation concluded)
-**Status:** ANE-assisted backward NOW WORKS — 1.8x faster than CPU at D=768
-**Last activity:** 2026-03-26 — ANE backward pass working with correct accuracy
+**Status:** ANE forward + CPU backward is the optimal training strategy — 1.22-1.42x
+**Last activity:** 2026-03-26 — Pre-allocated buffers, 3-strategy benchmark, forward-only constructor
 
 ## Progress
 
@@ -108,8 +108,43 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: End-to-end hybrid training step — 1.39x at 12 layers
+Stopped at: ANE forward + CPU backward strategy validated — 1.22-1.42x
 Resume file: None
+
+## Training Strategy — FINAL RECOMMENDATION (2026-03-26)
+
+### Three strategies compared:
+
+| Strategy | ANE Compiles | D=512 12L | D=768 12L | D=1024 12L |
+|----------|-------------|-----------|-----------|------------|
+| **ANE fwd + CPU bwd** | 1/layer | **1.42x** | **1.22x** | **1.22x** |
+| Hybrid (ANE fwd+bwd) | 3/layer | 1.15x | 1.04x | 1.17x |
+| Pure CPU | 0 | 1.00x | 1.00x | 1.00x |
+
+### Why ANE backward is NOT worthwhile:
+- ANE backward saves ~0.43ms/layer on 2 matmuls (micro-benchmark confirmed)
+- But each ANE program call costs ~0.5-0.9ms (write_input + eval + read_output + fp16 conversion)
+- 2 backward programs × ~0.7ms overhead = ~1.4ms overhead, saving only ~0.43ms compute
+- Net: ANE backward LOSES ~1ms per layer (0.83x vs CPU)
+- Plus wastes 2 ANE compiles per layer (critical given ~119 compile limit)
+
+### Why ANE forward + CPU backward is optimal:
+- ANE forward: 2.5-2.7x speedup, consistent across D=512-1024
+- Only 1 ANE compile per layer (can support ~119 layers)
+- CPU backward is already fast (BLAS-optimized)
+- Total speedup: 1.22-1.42x depending on model size
+
+### ANE I/O overhead breakdown (micro-benchmark, D=768):
+| Component | Time |
+|-----------|------|
+| write_input (d*sp fp16) | 0.006ms |
+| eval (ANE compute) | 0.188ms |
+| read_output (inter*sp fp16) | 0.031ms |
+| from_fp16 (inter*sp) | **0.264ms** |
+| **Total ANE call** | **0.520ms** |
+| CPU cblas_sgemm (same op) | 0.702ms |
+
+The `from_fp16` conversion (0.264ms) is the largest single overhead — it's CPU-bound conversion of 786K fp16 values to fp32.
 
 ## End-to-End Training Step — Measured (FINAL)
 
@@ -251,8 +286,9 @@ The Orion paper does NOT claim ANE training is faster than CPU:
 |----------|------------|--------|
 | **Inference** (eval) | **4,576x** vs CPU | ✅ Incredible value |
 | **Inference** (incl compile) | **14.4x** vs CPU | ✅ Strong value |
-| **Training** (per-step) | **0.3x** vs CPU BLAS | ❌ Slower |
-| **Training** (batched) | **1.0x** vs CPU BLAS | ❌ No benefit |
+| **Training** (ANE fwd + CPU bwd) | **1.22-1.42x** vs CPU | ✅ Modest but real |
+| **Training** (full hybrid) | **1.04-1.17x** vs CPU | ⚠️ Marginal |
+| **Training** (batched reload) | **1.0x** vs CPU BLAS | ❌ No benefit |
 
 ### Path Forward Options
 
