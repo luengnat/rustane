@@ -12,8 +12,8 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 **Milestone:** M2: Fused Training — COMPLETE
 **Phase:** Post-M2 — ANE training feasibility analysis COMPLETE
 **Plan:** N/A (investigation concluded)
-**Status:** ANE forward + CPU backward is the optimal training strategy — 1.22-1.42x
-**Last activity:** 2026-03-26 — Pre-allocated buffers, 3-strategy benchmark, forward-only constructor
+**Status:** Full transformer training benchmarked — 1.21-1.43x speedup
+**Last activity:** 2026-03-26 — Full transformer training: ANE forward 4-5x, total 1.2-1.4x
 
 ## Progress
 
@@ -108,7 +108,7 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: ANE forward + CPU backward strategy validated — 1.22-1.42x
+Stopped at: Full transformer training benchmarked — ANE forward 4-5x, total 1.2-1.4x
 Resume file: None
 
 ## Training Strategy — FINAL RECOMMENDATION (2026-03-26)
@@ -286,9 +286,25 @@ The Orion paper does NOT claim ANE training is faster than CPU:
 |----------|------------|--------|
 | **Inference** (eval) | **4,576x** vs CPU | ✅ Incredible value |
 | **Inference** (incl compile) | **14.4x** vs CPU | ✅ Strong value |
-| **Training** (ANE fwd + CPU bwd) | **1.22-1.42x** vs CPU | ✅ Modest but real |
+| **Training** (FFN only, fwd+CPU bwd) | **1.22-1.42x** vs CPU | ✅ Modest but real |
+| **Training** (full transformer) | **1.21-1.43x** vs CPU | ✅ Realistic speedup |
 | **Training** (full hybrid) | **1.04-1.17x** vs CPU | ⚠️ Marginal |
-| **Training** (batched reload) | **1.0x** vs CPU BLAS | ❌ No benefit |
+
+### Full Transformer Training Results (train_transformer.rs)
+
+Realistic benchmark with attention + FFN per layer:
+- ANE: QKV projection, output projection, FFN (3 programs/layer)
+- CPU: multi-head attention, all backward passes, weight gradients
+
+| Config | Layers | Params | Fwd Speedup | Bwd | Total Speedup |
+|--------|--------|--------|-------------|-----|---------------|
+| D=512 6L | 6 | 25.2M | 3.04x | 0.94x | **1.26x** |
+| D=768 6L | 6 | 56.6M | 4.39x | 1.03x | **1.43x** |
+| D=768 12L | 12 | 113.2M | 4.96x | 0.82x | **1.21x** |
+
+Forward speedup increases with depth (4.0x → 5.0x) as CPU BLAS scales worse.
+Backward is CPU-only and slightly slower than pure CPU (extra allocations + cached activations).
+Fwd/Bwd ratio: ~10-15% forward, ~85-90% backward — limits total speedup.
 
 ### Path Forward Options
 
