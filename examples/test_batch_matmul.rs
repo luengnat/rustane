@@ -28,6 +28,8 @@ fn main() {
         3 => test_batched_elementwise(dim, seq, batch),
         4 => test_batched_matmul_simple(dim, seq, batch),
         5 => test_batched_dynamic_matmul(dim, seq, batch),
+        6 => test_fused_2matmul(dim, seq),
+        7 => test_fused_3matmul(dim, seq),
         _ => {
             eprintln!("Unknown test_id: {}", test_id);
             std::process::exit(1);
@@ -491,4 +493,269 @@ fn make_input_data(size_bytes: usize) -> Vec<u8> {
         .map(|i| ((i % 100) as f32 - 50.0) / 100.0)
         .collect();
     data.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Test 6: Fused 2-matmul with dynamic weights (no batch, B=1)
+/// Input: [1, D + 2*D*D, 1, S]
+fn test_fused_2matmul(dim: usize, seq: usize) {
+    let total_ch = dim + 2 * dim * dim;
+    let in_b = total_ch * seq * 4;
+    let out_b = dim * seq * 4;
+
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str(
+        "[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}})]\n",
+    );
+    mil.push_str("{\n");
+    let sig = format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        total_ch, seq
+    );
+    mil.push_str(&sig);
+    mil.push_str(
+        "        string to16 = const()[name = string(\"to16\"), val = string(\"fp16\")];\n",
+    );
+    let cast = format!("        tensor<fp16, [1, {}, 1, {}]> xh = cast(dtype = to16, x = x)[name = string(\"cin\")];\n", total_ch, seq);
+    mil.push_str(&cast);
+    // Slice activations
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name = string(\"b0\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n");
+    let sa = format!("        tensor<int32, [4]> sa = const()[name = string(\"sa\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n", dim, seq);
+    mil.push_str(&sa);
+    let act = format!("        tensor<fp16, [1, {}, 1, {}]> act = slice_by_size(x = xh, begin = b0, size = sa)[name = string(\"act\")];\n", dim, seq);
+    mil.push_str(&act);
+    // Larger const first
+    let wrs = format!("        tensor<int32, [4]> wrs = const()[name = string(\"wrs\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n", dim, dim);
+    mil.push_str(&wrs);
+    let sw1 = format!("        tensor<int32, [4]> sw1 = const()[name = string(\"sw1\"), val = tensor<int32, [4]>([1, {}, 1, 1])];\n", dim * dim);
+    mil.push_str(&sw1);
+    let sq = format!("        tensor<int32, [4]> sq = const()[name = string(\"sq\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n", dim * dim, seq);
+    mil.push_str(&sq);
+    // W1
+    let b1 = format!("        tensor<int32, [4]> b1 = const()[name = string(\"b1\"), val = tensor<int32, [4]>([0, {}, 0, 0])];\n", dim);
+    mil.push_str(&b1);
+    let wf1 = format!("        tensor<fp16, [1, {}, 1, {}]> wf1 = slice_by_size(x = xh, begin = b1, size = sq)[name = string(\"wf1\")];\n", dim * dim, seq);
+    mil.push_str(&wf1);
+    let wf1c = format!("        tensor<fp16, [1, {}, 1, 1]> wf1c = slice_by_size(x = wf1, begin = b0, size = sw1)[name = string(\"wf1c\")];\n", dim * dim);
+    mil.push_str(&wf1c);
+    let W1 = format!("        tensor<fp16, [1, 1, {}, {}]> W1 = reshape(shape = wrs, x = wf1c)[name = string(\"W1\")];\n", dim, dim);
+    mil.push_str(&W1);
+    // W2
+    let b2 = format!("        tensor<int32, [4]> b2 = const()[name = string(\"b2\"), val = tensor<int32, [4]>([0, {}, 0, 0])];\n", dim + dim * dim);
+    mil.push_str(&b2);
+    let wf2 = format!("        tensor<fp16, [1, {}, 1, {}]> wf2 = slice_by_size(x = xh, begin = b2, size = sq)[name = string(\"wf2\")];\n", dim * dim, seq);
+    mil.push_str(&wf2);
+    let wf2c = format!("        tensor<fp16, [1, {}, 1, 1]> wf2c = slice_by_size(x = wf2, begin = b0, size = sw1)[name = string(\"wf2c\")];\n", dim * dim);
+    mil.push_str(&wf2c);
+    let W2 = format!("        tensor<fp16, [1, 1, {}, {}]> W2 = reshape(shape = wrs, x = wf2c)[name = string(\"W2\")];\n", dim, dim);
+    mil.push_str(&W2);
+    // Reshape+transpose act
+    let rs = format!("        tensor<int32, [4]> rs = const()[name = string(\"rs\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n", dim, seq);
+    mil.push_str(&rs);
+    let xr = format!("        tensor<fp16, [1, 1, {}, {}]> xr = reshape(shape = rs, x = act)[name = string(\"xr\")];\n", dim, seq);
+    mil.push_str(&xr);
+    mil.push_str("        tensor<int32, [4]> pm = const()[name = string(\"pm\"), val = tensor<int32, [4]>([0, 1, 3, 2])];\n");
+    let xt = format!("        tensor<fp16, [1, 1, {}, {}]> xt = transpose(perm = pm, x = xr)[name = string(\"xt\")];\n", seq, dim);
+    mil.push_str(&xt);
+    // 2 matmuls
+    mil.push_str("        bool bF = const()[name = string(\"bF\"), val = bool(false)];\n");
+    let m1 = format!("        tensor<fp16, [1, 1, {}, {}]> m1 = matmul(transpose_x = bF, transpose_y = bF, x = xt, y = W1)[name = string(\"m1\")];\n", seq, dim);
+    mil.push_str(&m1);
+    let m2 = format!("        tensor<fp16, [1, 1, {}, {}]> m2 = matmul(transpose_x = bF, transpose_y = bF, x = xt, y = W2)[name = string(\"m2\")];\n", seq, dim);
+    mil.push_str(&m2);
+    // Output m1
+    let mt = format!("        tensor<fp16, [1, 1, {}, {}]> mt = transpose(perm = pm, x = m1)[name = string(\"mt\")];\n", dim, seq);
+    mil.push_str(&mt);
+    let os = format!("        tensor<int32, [4]> os = const()[name = string(\"os\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n", dim, seq);
+    mil.push_str(&os);
+    let yr = format!("        tensor<fp16, [1, {}, 1, {}]> yr = reshape(shape = os, x = mt)[name = string(\"yr\")];\n", dim, seq);
+    mil.push_str(&yr);
+    mil.push_str(
+        "        string to32 = const()[name = string(\"to32\"), val = string(\"fp32\")];\n",
+    );
+    let y = format!("        tensor<fp32, [1, {}, 1, {}]> y = cast(dtype = to32, x = yr)[name = string(\"cout\")];\n", dim, seq);
+    mil.push_str(&y);
+    mil.push_str("    } -> (y);\n");
+    mil.push_str("}\n");
+
+    eprintln!(
+        "Test 6: Fused 2-matmul D={}, S={}, input={}KB",
+        dim,
+        seq,
+        in_b as f64 / 1024.0
+    );
+
+    let mut exec = match rustane::wrapper::ANECompiler::new().compile_multi(
+        &mil,
+        &[],
+        &[],
+        &[],
+        &[in_b],
+        &[out_b],
+    ) {
+        Ok(e) => {
+            eprintln!("COMPILE_OK");
+            e
+        }
+        Err(e) => {
+            eprintln!("COMPILE_FAIL: {}", e);
+            println!("COMPILE_FAIL: {}", e);
+            return;
+        }
+    };
+
+    let data = make_input_data(in_b);
+    exec.write_input(0, &data).unwrap();
+    let start = Instant::now();
+    match exec.eval() {
+        Ok(_) => {
+            let us = start.elapsed().as_micros();
+            let out = exec.read_output_vec(0).unwrap();
+            let nz = out.iter().filter(|&&b| b != 0).count();
+            eprintln!("EVAL_OK: {}us, {} non-zero", us, nz);
+            println!("OK: 2-matmul D={}, eval={}us", dim, us);
+        }
+        Err(e) => {
+            eprintln!("EVAL_FAIL: {}", e);
+            println!("EVAL_FAIL: 2-matmul D={}", dim);
+        }
+    }
+}
+
+/// Test 7: Fused 3-matmul with dynamic weights (no batch, B=1)
+/// Input: [1, D + 3*D*D, 1, S]
+fn test_fused_3matmul(dim: usize, seq: usize) {
+    let total_ch = dim + 3 * dim * dim;
+    let in_b = total_ch * seq * 4;
+    let out_b = dim * seq * 4;
+
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str(
+        "[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}})]\n",
+    );
+    mil.push_str("{\n");
+    let sig = format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        total_ch, seq
+    );
+    mil.push_str(&sig);
+    mil.push_str(
+        "        string to16 = const()[name = string(\"to16\"), val = string(\"fp16\")];\n",
+    );
+    let cast = format!("        tensor<fp16, [1, {}, 1, {}]> xh = cast(dtype = to16, x = x)[name = string(\"cin\")];\n", total_ch, seq);
+    mil.push_str(&cast);
+    // Slice activations
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name = string(\"b0\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n");
+    let sa = format!("        tensor<int32, [4]> sa = const()[name = string(\"sa\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n", dim, seq);
+    mil.push_str(&sa);
+    let act = format!("        tensor<fp16, [1, {}, 1, {}]> act = slice_by_size(x = xh, begin = b0, size = sa)[name = string(\"act\")];\n", dim, seq);
+    mil.push_str(&act);
+    // Larger const first
+    let wrs = format!("        tensor<int32, [4]> wrs = const()[name = string(\"wrs\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n", dim, dim);
+    mil.push_str(&wrs);
+    let sw1 = format!("        tensor<int32, [4]> sw1 = const()[name = string(\"sw1\"), val = tensor<int32, [4]>([1, {}, 1, 1])];\n", dim * dim);
+    mil.push_str(&sw1);
+    let sq = format!("        tensor<int32, [4]> sq = const()[name = string(\"sq\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n", dim * dim, seq);
+    mil.push_str(&sq);
+    // W1
+    let b1 = format!("        tensor<int32, [4]> b1 = const()[name = string(\"b1\"), val = tensor<int32, [4]>([0, {}, 0, 0])];\n", dim);
+    mil.push_str(&b1);
+    let wf1 = format!("        tensor<fp16, [1, {}, 1, {}]> wf1 = slice_by_size(x = xh, begin = b1, size = sq)[name = string(\"wf1\")];\n", dim * dim, seq);
+    mil.push_str(&wf1);
+    let wf1c = format!("        tensor<fp16, [1, {}, 1, 1]> wf1c = slice_by_size(x = wf1, begin = b0, size = sw1)[name = string(\"wf1c\")];\n", dim * dim);
+    mil.push_str(&wf1c);
+    let W1 = format!("        tensor<fp16, [1, 1, {}, {}]> W1 = reshape(shape = wrs, x = wf1c)[name = string(\"W1\")];\n", dim, dim);
+    mil.push_str(&W1);
+    // W2
+    let b2 = format!("        tensor<int32, [4]> b2 = const()[name = string(\"b2\"), val = tensor<int32, [4]>([0, {}, 0, 0])];\n", dim + dim * dim);
+    mil.push_str(&b2);
+    let wf2 = format!("        tensor<fp16, [1, {}, 1, {}]> wf2 = slice_by_size(x = xh, begin = b2, size = sq)[name = string(\"wf2\")];\n", dim * dim, seq);
+    mil.push_str(&wf2);
+    let wf2c = format!("        tensor<fp16, [1, {}, 1, 1]> wf2c = slice_by_size(x = wf2, begin = b0, size = sw1)[name = string(\"wf2c\")];\n", dim * dim);
+    mil.push_str(&wf2c);
+    let W2 = format!("        tensor<fp16, [1, 1, {}, {}]> W2 = reshape(shape = wrs, x = wf2c)[name = string(\"W2\")];\n", dim, dim);
+    mil.push_str(&W2);
+    // W3
+    let b3 = format!("        tensor<int32, [4]> b3 = const()[name = string(\"b3\"), val = tensor<int32, [4]>([0, {}, 0, 0])];\n", dim + 2 * dim * dim);
+    mil.push_str(&b3);
+    let wf3 = format!("        tensor<fp16, [1, {}, 1, {}]> wf3 = slice_by_size(x = xh, begin = b3, size = sq)[name = string(\"wf3\")];\n", dim * dim, seq);
+    mil.push_str(&wf3);
+    let wf3c = format!("        tensor<fp16, [1, {}, 1, 1]> wf3c = slice_by_size(x = wf3, begin = b0, size = sw1)[name = string(\"wf3c\")];\n", dim * dim);
+    mil.push_str(&wf3c);
+    let W3 = format!("        tensor<fp16, [1, 1, {}, {}]> W3 = reshape(shape = wrs, x = wf3c)[name = string(\"W3\")];\n", dim, dim);
+    mil.push_str(&W3);
+    // Reshape+transpose act
+    let rs = format!("        tensor<int32, [4]> rs = const()[name = string(\"rs\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n", dim, seq);
+    mil.push_str(&rs);
+    let xr = format!("        tensor<fp16, [1, 1, {}, {}]> xr = reshape(shape = rs, x = act)[name = string(\"xr\")];\n", dim, seq);
+    mil.push_str(&xr);
+    mil.push_str("        tensor<int32, [4]> pm = const()[name = string(\"pm\"), val = tensor<int32, [4]>([0, 1, 3, 2])];\n");
+    let xt = format!("        tensor<fp16, [1, 1, {}, {}]> xt = transpose(perm = pm, x = xr)[name = string(\"xt\")];\n", seq, dim);
+    mil.push_str(&xt);
+    // 3 matmuls
+    mil.push_str("        bool bF = const()[name = string(\"bF\"), val = bool(false)];\n");
+    let m1 = format!("        tensor<fp16, [1, 1, {}, {}]> m1 = matmul(transpose_x = bF, transpose_y = bF, x = xt, y = W1)[name = string(\"m1\")];\n", seq, dim);
+    mil.push_str(&m1);
+    let m2 = format!("        tensor<fp16, [1, 1, {}, {}]> m2 = matmul(transpose_x = bF, transpose_y = bF, x = xt, y = W2)[name = string(\"m2\")];\n", seq, dim);
+    mil.push_str(&m2);
+    let m3 = format!("        tensor<fp16, [1, 1, {}, {}]> m3 = matmul(transpose_x = bF, transpose_y = bF, x = xt, y = W3)[name = string(\"m3\")];\n", seq, dim);
+    mil.push_str(&m3);
+    // Output m1
+    let mt = format!("        tensor<fp16, [1, 1, {}, {}]> mt = transpose(perm = pm, x = m1)[name = string(\"mt\")];\n", dim, seq);
+    mil.push_str(&mt);
+    let os = format!("        tensor<int32, [4]> os = const()[name = string(\"os\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n", dim, seq);
+    mil.push_str(&os);
+    let yr = format!("        tensor<fp16, [1, {}, 1, {}]> yr = reshape(shape = os, x = mt)[name = string(\"yr\")];\n", dim, seq);
+    mil.push_str(&yr);
+    mil.push_str(
+        "        string to32 = const()[name = string(\"to32\"), val = string(\"fp32\")];\n",
+    );
+    let y = format!("        tensor<fp32, [1, {}, 1, {}]> y = cast(dtype = to32, x = yr)[name = string(\"cout\")];\n", dim, seq);
+    mil.push_str(&y);
+    mil.push_str("    } -> (y);\n");
+    mil.push_str("}\n");
+
+    eprintln!(
+        "Test 7: Fused 3-matmul D={}, S={}, input={}KB",
+        dim,
+        seq,
+        in_b as f64 / 1024.0
+    );
+
+    let mut exec = match rustane::wrapper::ANECompiler::new().compile_multi(
+        &mil,
+        &[],
+        &[],
+        &[],
+        &[in_b],
+        &[out_b],
+    ) {
+        Ok(e) => {
+            eprintln!("COMPILE_OK");
+            e
+        }
+        Err(e) => {
+            eprintln!("COMPILE_FAIL: {}", e);
+            println!("COMPILE_FAIL: {}", e);
+            return;
+        }
+    };
+
+    let data = make_input_data(in_b);
+    exec.write_input(0, &data).unwrap();
+    let start = Instant::now();
+    match exec.eval() {
+        Ok(_) => {
+            let us = start.elapsed().as_micros();
+            let out = exec.read_output_vec(0).unwrap();
+            let nz = out.iter().filter(|&&b| b != 0).count();
+            eprintln!("EVAL_OK: {}us, {} non-zero", us, nz);
+            println!("OK: 3-matmul D={}, eval={}us", dim, us);
+        }
+        Err(e) => {
+            eprintln!("EVAL_FAIL: {}", e);
+            println!("EVAL_FAIL: 3-matmul D={}", dim);
+        }
+    }
 }
