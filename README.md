@@ -101,6 +101,12 @@ fn main() -> rustane::Result<()> {
 The library includes several examples demonstrating different use cases:
 
 ```bash
+# Multi-layer conv throughput benchmark
+cargo run --example ane_peak_throughput
+
+# Single-layer conv baseline
+cargo run --example ane_peak_throughput_single
+
 # Simple inference with a linear layer
 cargo run --example simple_inference
 
@@ -118,6 +124,31 @@ It shows the end-to-end flow for checking ANE availability, compiling a MIL prog
 writing inputs, and reading outputs.
 
 ## Benchmarks
+
+### Peak Throughput
+
+The ANE peak throughput benchmarks measure TFLOPS achieved by chaining 1x1 convolutions:
+
+```bash
+# Multi-layer conv benchmark (depth scaling)
+cargo run --example ane_peak_throughput
+
+# Single-layer baseline
+cargo run --example ane_peak_throughput_single
+```
+
+**Results on M4:**
+| Config | TFLOPS | % Peak |
+|--------|--------|--------|
+| 4x conv 256ch sp32 | 0.17 | 0.9% |
+| 8x conv 128ch sp32 | 0.09 | 0.5% |
+| 16x conv 64ch sp32 | 0.04 | 0.2% |
+
+Note: The ANE compiler rejects programs with 20+ layers. Peak utilization (94%+) requires 32-128 layer graphs per Apple's analysis.
+
+See [`docs/ANE_PEAK_VERIFICATION.md`](docs/ANE_PEAK_VERIFICATION.md) for details.
+
+### MatMul Benchmarks
 
 The current matmul benchmark of record is the packed dynamic layout in
 [`examples/ane_dynamic_matmul_benchmark.rs`](examples/ane_dynamic_matmul_benchmark.rs).
