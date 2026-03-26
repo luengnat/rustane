@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Current Position
 
 **Milestone:** M2: Fused Training — COMPLETE
-**Phase:** Post-M2 research — dynamic weight ANE training
+**Phase:** Post-M2 research — operator audit + performance characterization
 **Plan:** N/A (independent investigation)
-**Status:** Dynamic matmul WORKS. ANE compute is ~3x faster than CPU matmul. Full training step at parity. Next: fused programs.
-**Last activity:** 2026-03-26 — Dynamic matmul fixed and benchmarked
+**Status:** Operator audit complete. 11/13 ops work on ANE. ANE value is in fused programs.
+**Last activity:** 2026-03-26 — Operator audit, ANE vs CPU speed analysis
 
 ## Progress
 
@@ -108,8 +108,36 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: Dynamic matmul working, benchmarks show ANE compute 3x faster than CPU
+Stopped at: Maderix patterns benchmarked — spatial packing 5x faster, fused QKV 7 TFLOPS
 Resume file: None
+
+## Maderix Pattern Discoveries (THIS SESSION)
+
+### 41. Spatial packing [1,IC,1,SEQ+OC] is 5× faster than channel packing [1,D+D*D,1,S] at D=768
+- At D=64: channel 58us vs spatial 68us (channel wins at small dims)
+- At D=512: channel 433us vs spatial 87us (5× spatial wins at large dims)
+- At D=768: channel 687us vs spatial 136us (5× spatial wins)
+- Spatial scales with compute, channel is bottlenecked by slice/reshape overhead
+
+### 42. Fused QKV projection: 3 matmuls in 128us at D=768, S=256 (7 TFLOPS)
+- 43μs per matmul when fused (vs 136μs for single matmul = 3.2× fusion win)
+- Approaches ANE peak (6.6 TFLOPS M4, 19 TFLOPS FP16 theoretical)
+
+### 43. Fused FFN (SwiGLU): 3 matmuls + SiLU + gate + residual in 520us at D=768, S=256
+- sigmoid, mul, add all work on ANE (only softmax/gelu crash)
+- 7.0 TFLOPS sustained throughput
+
+### 44. fp16 direct I/O 11% faster than fp32 cast I/O at D=768
+- fp16: 149us (2.0 TFLOPS), fp32: 167us (1.8 TFLOPS)
+- Difference shrinks at large dims (compute dominates)
+
+### 45. Mega SDPA (QKV + attention + softmax) COMPILE FAIL
+- Softmax in fused context causes InvalidMILProgram
+- Need CPU fallback for softmax (matches maderix approach)
+
+### 46. Fusion scaling: 4+ matmuls with spatial packing COMPILE FAIL
+- Too many const declarations overwhelm MIL compiler
+- Solution: split into separate kernels (maderix uses 10 per layer)
 
 ## Post-M2 Dynamic Weight Discoveries
 
