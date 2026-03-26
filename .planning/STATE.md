@@ -108,10 +108,60 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: Maderix patterns benchmarked — spatial packing 5x faster, fused QKV 7 TFLOPS
+Stopped at: ANE correctness tests pass — 7/7 with 100% accuracy (conv1x1, softmax, fused 2/3-conv, fused FFN SwiGLU, batch, dim sweep)
 Resume file: None
 
-## Maderix Pattern Discoveries (THIS SESSION)
+## Hybird-Batch-Prefill-on-ANE Discoveries (THIS SESSION)
+
+### 47. `_ANEInMemoryModel` requires `program(1.3)`, NOT `program(1.0)`
+- Hybird uses `program(1.0)` because it compiles via CoreML's public API
+- Our `_ANEInMemoryModel` direct compile requires `program(1.3)` with full buildInfo
+- `program(1.0)` → InvalidMILProgram on our runtime (works on hybird's)
+- `program(1.3)` → compiles successfully on our runtime
+- This was THE critical fix — previous benchmarks may have been invalid due to wrong MIL version
+
+### 48. Weight dict offset must be `NSNumber numberWithInt:0`, not `numberWithUnsignedChar:0`
+- Our code used `NSNumber::new_u8(0)` → ANE compiler ignores it
+- Hybird uses `[NSNumber numberWithInt:0]` → works correctly
+- Fixed to `NSNumber::new_i32(0)` in `create_weight_dictionary`
+
+### 49. Weight dict keys must be full BLOBFILE path `@model_path/weights/{name}.bin`
+- ANE compiler looks up BLOBFILE path in weight dictionary
+- Key must match MIL's `BLOBFILE(path = tensor<string, []>("@model_path/weights/W.bin"), ...)`
+- Hybird constructs: `snprintf(buf, ..., "@model_path/weights/%s.bin", name)`
+
+### 50. BLOBFILE MIL closing syntax: `)]  ;` not `)]];`
+- ANE MIL parser requires exactly `)]  ;` (with two spaces before semicolon) to close const with BLOBFILE
+- `)]];` causes InvalidMILProgram — discovered through binary comparison
+
+### 51. ALL 7 ANE correctness tests pass with 100% accuracy (D=64, SP=32)
+| Test | Op | Time | Accuracy |
+|------|-----|------|----------|
+| 10 | Conv1x1 | 56μs | 100% |
+| 11 | Softmax | 92μs | 100% |
+| 12 | Fused 2-Conv | 48μs | 100% |
+| 13 | Fused 3-Conv QKV | 87μs | 100% |
+| 14 | Fused FFN SwiGLU | 85μs | 100% |
+| 15 | Batch Prefill | 78μs | 100% |
+| 16 | Dim Sweep (32-1024) | 57-65μs | 100% |
+
+### 52. Softmax WORKS on ANE (contradicts prior belief)
+- Previously believed softmax crashes on ANE (SIGSEGV)
+- Softmax standalone passes with 100% accuracy at 92μs
+- Softmax in fused context may still fail (mega SDPA test)
+- All softmax sum≈1 verified (32/32)
+
+### 53. Concat WORKS in fused programs
+- Fused 2-conv + concat: 48μs, 100% accuracy
+- Fused 3-conv + concat: 87μs, 100% accuracy
+- Previously concat was "the only truly rejected op" — now confirmed working
+
+### 54. Dimension sweep shows consistent ~60μs latency across D=32-1024
+- Suggests minimum fixed overhead ~60μs per ANE eval call
+- At D=1024: 1.03 TFLOPS (still far from peak but correct)
+- Need larger spatial dimensions (SP) and fused programs for better throughput
+
+## Maderix Pattern Discoveries (PREVIOUS SESSION)
 
 ### 41. Spatial packing [1,IC,1,SEQ+OC] is 5× faster than channel packing [1,D+D*D,1,S] at D=768
 - At D=64: channel 58us vs spatial 68us (channel wins at small dims)
