@@ -170,13 +170,14 @@ fn main() {
     println!("{}", "-".repeat(80));
 
     // Test configurations - verified working patterns for multi-layer conv
-    // Depth limited to avoid FP16 underflow/overflow in long chains
+    // ANE compiler limit: programs with 20+ layers fail with InvalidMILProgram
     let configs = [
-        (64, 32, 4),      // Baseline: 64 channels, 32 spatial, 4 layers
-        (64, 64, 8),      // More spatial parallelism
-        (128, 64, 4),     // Larger channels
-        (256, 32, 4),     // Max channels tested
-        (64, 128, 4),     // More spatial
+        (64, 32, 4),      // Baseline: minimal depth
+        (64, 32, 8),      // Moderate depth
+        (64, 32, 12),     // Deeper graph
+        (64, 32, 16),     // Max working depth for 64ch
+        (128, 32, 8),     // Larger channels, moderate depth
+        (256, 32, 4),     // Max channels, shallow depth
     ];
 
     let peak_tflops = 19.0; // M4 ANE peak FP16

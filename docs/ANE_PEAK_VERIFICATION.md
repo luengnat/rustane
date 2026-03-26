@@ -18,13 +18,18 @@
 | Config | Weight Size | GFLOPS | TFLOPS | % Peak | Verified |
 |--------|-------------|--------|--------|--------|----------|
 | 4x conv 64ch sp32 | <0.1 MB | 0.00 | 0.01 | 0.1% | ✓ |
-| 8x conv 64ch sp64 | 0.1 MB | 0.00 | 0.04 | 0.2% | ✓ |
-| 4x conv 128ch sp64 | 0.1 MB | 0.01 | 0.11 | 0.6% | ✓ |
-| 4x conv 256ch sp32 | 0.5 MB | 0.02 | 0.16 | 0.9% | ✓ |
+| 8x conv 64ch sp32 | 0.1 MB | 0.00 | 0.01 | 0.1% | ✓ |
+| 12x conv 64ch sp32 | 0.1 MB | 0.00 | 0.05 | 0.3% | ✓ |
+| 16x conv 64ch sp32 | 0.1 MB | 0.00 | 0.06 | 0.3% | ✓ |
+| 8x conv 128ch sp32 | 0.3 MB | 0.01 | 0.07 | 0.4% | ✓ |
+| 4x conv 256ch sp32 | 0.5 MB | 0.02 | 0.22 | 1.2% | ✓ |
+
+**Compiler Limit**: Programs with 20+ layers fail with `InvalidMILProgram`.
+The ANE compiler service appears to have a limit on MIL program size or number of intermediate tensors.
 
 **Note**: TFLOPS are low because:
 1. Small tensor sizes don't fill ANE pipeline
-2. Only 4-8 layers (vs 32-128 needed for 94%+ utilization)
+2. Max 16 layers working (vs 32-128 recommended for 94%+ utilization)
 3. FP16 precision limits for deep chains (underflow/overflow with random weights)
 
 ### Single-Layer Performance (VERIFIED)
