@@ -5,15 +5,15 @@
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** Fused ANE programs that train transformers faster than CPU
-**Current focus:** M2 COMPLETE
+**Current focus:** Dynamic weight research (post-M2)
 
 ## Current Position
 
 **Milestone:** M2: Fused Training — COMPLETE
-**Phase:** 7 of 7 (Performance Benchmarking) — COMPLETE
-**Plan:** 1 of 1 — COMPLETE
-**Status:** All M2 phases complete. Delta compilation, training loop, and benchmarks done.
-**Last activity:** 2026-03-26 — Phase 7 complete, M2 milestone finished
+**Phase:** Post-M2 research — dynamic weight ANE training
+**Plan:** N/A (independent investigation)
+**Status:** Dynamic matmul WORKS. ANE compute is ~3x faster than CPU matmul. Full training step at parity. Next: fused programs.
+**Last activity:** 2026-03-26 — Dynamic matmul fixed and benchmarked
 
 ## Progress
 
@@ -102,9 +102,42 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | 2026-03-26 | Phase 5 complete: DeltaCompiler, multi-layer tests, state survival verified | Ready for Phase 6 training loop |
 | 2026-03-26 | Phase 6 complete: training loop + ANE vs CPU benchmark | Ready for Phase 7 benchmarking |
 | 2026-03-26 | Phase 7 complete: multi-config benchmark | M2 COMPLETE |
+| 2026-03-26 | Dynamic weights research: fixed reload, discovered dynamic input approach | Dynamic mul 2x faster than CPU |
+| 2026-03-26 | Fixed dynamic matmul (const order + sw1 size bug), benchmarked training | ANE compute 3x faster, step at parity |
 
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: M2 COMPLETE — all 4 phases (5-7) executed
+Stopped at: Dynamic matmul working, benchmarks show ANE compute 3x faster than CPU
 Resume file: None
+
+## Post-M2 Dynamic Weight Discoveries
+
+### Dynamic Weight Approaches (from reference test_weight_patch.m)
+| Approach | Status | Speed |
+|----------|--------|-------|
+| 1. Disk patch weights.bin | ❌ Fails | N/A |
+| 2. unload/update/load weights | ❌ Fails | N/A |
+| 3. _ANEWeight objects | ❌ Crashes | N/A |
+| 4. IOSurface as weightsBuffer | ❌ Ignored | N/A |
+| 5. Element-wise mul (weights in input) | ✅ Works | 14,282 steps/sec (2x CPU) |
+| 6. Dynamic matmul (weights in input) | ✅ Works | ANE compute 3x faster |
+
+### Key Bugs Found and Fixed
+1. **ANE const declaration order matters**: `ws=[1,1,D,D]` must be declared before `sw1=[1,D*D,1,1]` or CompilationFailure
+2. **sw1 slice size was wrong**: Must be `[1,D*D,1,1]` not `[1,1,1,1]` — captures all weight channels
+3. **Reshape target for activations**: Must be `[1,1,D,S]` (ObjC pattern) not `[1,1,S,D]`
+
+### ANE Training Performance (D=64, S=64)
+| Component | Time | % of step |
+|-----------|------|-----------|
+| Pack weights (f32→bytes) | 28μs | 10.0% |
+| Write to IOSurface | 17μs | 6.2% |
+| ANE eval (matmul) | 95μs | 33.9% |
+| Read from IOSurface | 2μs | 0.5% |
+| CPU gradient + SGD | 137μs | 49.3% |
+| **Total** | **280μs** | **100%** |
+
+CPU matmul alone: ~280μs. ANE matmul: 95μs → **3x faster compute**.
+Full step: ANE 3,558 steps/sec vs CPU 4,159 steps/sec → gradient on CPU is bottleneck.
+Path to faster: fuse forward+activation into one ANE program to reduce overhead.
