@@ -108,8 +108,32 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: ANE backward pass working — 2.0x hybrid speedup at D=768
+Stopped at: End-to-end hybrid training step — 1.39x at 12 layers
 Resume file: None
+
+## End-to-End Training Step — Measured (FINAL)
+
+### train_hybrid_step.rs results (D=768, SP=256)
+
+| Layers | Hybrid Forward | CPU Forward | Fwd Speedup | Hybrid Backward | CPU Backward | Bwd Speedup | Hybrid Total | CPU Total | Total Speedup |
+|--------|---------------|-------------|-------------|-----------------|-------------|-------------|-------------|-----------|---------------|
+| 1       | 1.35ms        | 3.49ms      | 2.59x       | 8.61ms          | 10.66ms     | 1.24x       | 10.07ms      | 14.18ms   | 1.41x         |
+| 6       | 7.52ms        | 21.26ms     | 2.83x       | 50.44ms         | 49.13ms     | 0.97x       | 58.07ms      | 70.41ms   | 1.21x         |
+| 12      | 14.89ms       | 58.66ms     | 3.94x       | 111.39ms        | 116.51ms    | 1.05x       | 126.39ms     | 175.19ms  | 1.39x         |
+
+### Why Backward Speedup is Modest
+
+- ANE saves ~1.6ms/layer on input-gradient matmuls (3.6x faster than CPU)
+- But write_input/read_output overhead: ~0.6ms per layer (2 programs × ~0.3ms I/O)
+- CPU weight gradients: ~3ms/layer (can't use ANE — activations change every step)
+- Net: ANE saves 1.6ms but pays 0.6ms overhead = 1.0ms net saving vs ~8ms total = ~12% improvement
+- Forward scales much better: 1 program per layer, single I/O, larger matmuls dominate
+
+### Key Insight
+
+**ANE training IS faster than CPU (1.2-1.4x for FFN-only), but the speedup is modest.**
+The real win is in inference: 3-4x forward speedup that scales with depth.
+For training, the backward pass is dominated by weight gradients which must stay on CPU.
 
 ## ANE Backward Pass — NOW WORKING (BREAKTHROUGH)
 
