@@ -250,7 +250,7 @@ mod apple {
                 let data = NSData::with_bytes(unsafe { slice::from_raw_parts(data_ptr, data_len) });
 
                 let inner_keys = [NSString::from_str("offset"), NSString::from_str("data")];
-                let inner_values = vec![NSNumber::new_u8(0).into(), data.into()];
+                let inner_values = vec![NSNumber::new_i32(0).into(), data.into()];
                 let inner_key_refs = inner_keys.iter().map(|key| &**key).collect::<Vec<_>>();
                 let entry = NSDictionary::<NSString, AnyObject>::from_retained_objects(
                     &inner_key_refs,
