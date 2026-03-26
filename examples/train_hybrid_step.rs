@@ -123,22 +123,18 @@ fn build_blob(w: &[f32]) -> Vec<u8> {
     }
     b
 }
-fn to_fp16(d: &[f32]) -> Vec<u8> {
-    let mut b = vec![0u8; d.len() * 2];
-    for (i, &v) in d.iter().enumerate() {
+fn to_fp16_inplace(src: &[f32], dst: &mut [u8]) {
+    for (i, &v) in src.iter().enumerate() {
         let h = f16::from_f32(v).to_bits();
-        b[i * 2] = (h & 0xFF) as u8;
-        b[i * 2 + 1] = (h >> 8) as u8;
+        dst[i * 2] = (h & 0xFF) as u8;
+        dst[i * 2 + 1] = (h >> 8) as u8;
     }
-    b
 }
-fn from_fp16(r: &[u8]) -> Vec<f32> {
-    let mut o = vec![0.0f32; r.len() / 2];
-    for i in 0..o.len() {
-        let h = (r[i * 2] as u16) | ((r[i * 2 + 1] as u16) << 8);
-        o[i] = f16::from_bits(h).to_f32();
+fn from_fp16_inplace(src: &[u8], dst: &mut [f32]) {
+    for i in 0..dst.len() {
+        let h = (src[i * 2] as u16) | ((src[i * 2 + 1] as u16) << 8);
+        dst[i] = f16::from_bits(h).to_f32();
     }
-    o
 }
 fn rand_m(r: usize, c: usize, s: f32, seed: u64) -> Vec<f32> {
     (0..r * c)
@@ -337,11 +333,30 @@ struct FfnLayer {
     fwd: rustane::wrapper::ANEExecutor,
     bwd_a: rustane::wrapper::ANEExecutor,
     bwd_b: rustane::wrapper::ANEExecutor,
-    // Cached fp16 inputs
-    dy16: Vec<u8>,
     // Cached backward intermediates (CPU)
     gate: Vec<f32>,
     up: Vec<f32>,
+    // Pre-allocated buffers to avoid per-call allocation
+    // fp16 buffers for ANE I/O
+    x16_buf: Vec<u8>,
+    dy16_buf: Vec<u8>,
+    dgate16_buf: Vec<u8>,
+    dup16_buf: Vec<u8>,
+    // fp16 output buffers (read directly from ANE)
+    gate16_buf: Vec<u8>,
+    up16_buf: Vec<u8>,
+    y16_buf: Vec<u8>,
+    dfused16_buf: Vec<u8>,
+    dx16_buf: Vec<u8>,
+    y_buf: Vec<f32>,
+    // fp32 intermediate buffers (backward)
+    dfused_buf: Vec<f32>,
+    silu_buf: Vec<f32>,
+    dsilu_buf: Vec<f32>,
+    dup_buf: Vec<f32>,
+    dgate_buf: Vec<f32>,
+    dx_buf: Vec<f32>,
+    fused_buf: Vec<f32>,
 }
 
 impl FfnLayer {
@@ -440,6 +455,25 @@ impl FfnLayer {
             )
             .expect("bwd_b compile");
 
+        // Pre-allocate all buffers (sizes known from dimensions)
+        let x16_buf = vec![0u8; d * sp * 2];
+        let dy16_buf = vec![0u8; d * sp * 2];
+        let dgate16_buf = vec![0u8; inter * sp * 2];
+        let dup16_buf = vec![0u8; inter * sp * 2];
+        let gate16_buf = vec![0u8; inter * sp * 2];
+        let up16_buf = vec![0u8; inter * sp * 2];
+        let y16_buf = vec![0u8; d * sp * 2];
+        let dfused16_buf = vec![0u8; inter * sp * 2];
+        let dx16_buf = vec![0u8; d * sp * 2];
+        let y_buf = vec![0.0f32; d * sp];
+        let dfused_buf = vec![0.0f32; inter * sp];
+        let silu_buf = vec![0.0f32; inter * sp];
+        let dsilu_buf = vec![0.0f32; inter * sp];
+        let dup_buf = vec![0.0f32; inter * sp];
+        let dgate_buf = vec![0.0f32; inter * sp];
+        let dx_buf = vec![0.0f32; d * sp];
+        let fused_buf = vec![0.0f32; inter * sp];
+
         FfnLayer {
             wg,
             wu,
@@ -450,24 +484,43 @@ impl FfnLayer {
             fwd,
             bwd_a,
             bwd_b,
-            dy16: vec![],
-            gate: vec![],
-            up: vec![],
+            gate: vec![0.0f32; inter * sp],
+            up: vec![0.0f32; inter * sp],
+            x16_buf,
+            dy16_buf,
+            dgate16_buf,
+            dup16_buf,
+            gate16_buf,
+            up16_buf,
+            y16_buf,
+            dfused16_buf,
+            dx16_buf,
+            y_buf,
+            dfused_buf,
+            silu_buf,
+            dsilu_buf,
+            dup_buf,
+            dgate_buf,
+            dx_buf,
+            fused_buf,
         }
     }
 
-    /// ANE forward pass: x → (gate, up, y)
+    /// ANE forward pass: x → (gate, up, y) using pre-allocated buffers
     fn forward_ane(&mut self, x: &[f32]) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-        let x16 = to_fp16(x);
-        self.fwd.write_input(0, &x16).expect("w");
+        // Convert x to fp16 in-place into pre-allocated buffer
+        to_fp16_inplace(x, &mut self.x16_buf);
+        self.fwd.write_input(0, &self.x16_buf).expect("w");
         self.fwd.eval().expect("e");
-        let gate = from_fp16(&self.fwd.read_output_vec(0).expect("r"));
-        let up = from_fp16(&self.fwd.read_output_vec(1).expect("r"));
-        let y = from_fp16(&self.fwd.read_output_vec(2).expect("r"));
-        // Cache for backward
-        self.gate = gate.clone();
-        self.up = up.clone();
-        (gate, up, y)
+        // Read outputs into pre-allocated buffers
+        self.fwd.read_output(0, &mut self.gate16_buf).expect("r");
+        self.fwd.read_output(1, &mut self.up16_buf).expect("r");
+        self.fwd.read_output(2, &mut self.y16_buf).expect("r");
+        // Convert fp16 → fp32 in-place
+        from_fp16_inplace(&self.gate16_buf, &mut self.gate);
+        from_fp16_inplace(&self.up16_buf, &mut self.up);
+        from_fp16_inplace(&self.y16_buf, &mut self.y_buf);
+        (self.gate.clone(), self.up.clone(), self.y_buf.clone())
     }
 
     /// CPU forward pass: x → (gate, up, y)
@@ -488,6 +541,7 @@ impl FfnLayer {
     }
 
     /// ANE-assisted backward: returns (dx, dL/dWg, dL/dWu, dL/dWd)
+    /// Uses pre-allocated buffers to minimize allocation overhead
     fn backward_hybrid(
         &mut self,
         dy: &[f32],
@@ -498,66 +552,61 @@ impl FfnLayer {
         let sp = self.sp;
 
         // Step 1: ANE — dfused = Wd^T @ dy
-        let dy16 = to_fp16(dy);
-        self.bwd_a.write_input(0, &dy16).expect("w");
+        to_fp16_inplace(dy, &mut self.dy16_buf);
+        self.bwd_a.write_input(0, &self.dy16_buf).expect("w");
         self.bwd_a.eval().expect("e");
-        let dfused = from_fp16(&self.bwd_a.read_output_vec(0).expect("r"));
+        self.bwd_a
+            .read_output(0, &mut self.dfused16_buf)
+            .expect("r");
+        from_fp16_inplace(&self.dfused16_buf, &mut self.dfused_buf);
 
-        // Step 2: CPU — SiLU' + dgate + dup
-        let silu: Vec<f32> = self
-            .gate
-            .iter()
-            .map(|&g| g * (1.0 / (1.0 + (-g).exp())))
-            .collect();
-        let dsilu: Vec<f32> = dfused
-            .iter()
-            .zip(self.up.iter())
-            .map(|(&d, &u)| d * u)
-            .collect();
-        let dup: Vec<f32> = dfused
-            .iter()
-            .zip(silu.iter())
-            .map(|(&d, &s)| d * s)
-            .collect();
-        let dgate: Vec<f32> = self
-            .gate
-            .iter()
-            .zip(dsilu.iter())
-            .map(|(&g, &ds)| {
-                let s = 1.0 / (1.0 + (-g).exp());
-                ds * s * (1.0 + g * (1.0 - s))
-            })
-            .collect();
-
-        // Step 3: ANE — dx_partial = [WgT|WuT] @ concat(dgate, dup)
-        let dgate16 = to_fp16(&dgate);
-        let dup16 = to_fp16(&dup);
-        self.bwd_b.write_input(0, &dgate16).expect("w");
-        self.bwd_b.write_input(1, &dup16).expect("w");
-        self.bwd_b.eval().expect("e");
-        let dx_partial = from_fp16(&self.bwd_b.read_output_vec(0).expect("r"));
-
-        // Step 4: CPU — dx = dx_partial + dy
-        let mut dx = vec![0.0f32; d * sp];
-        for i in 0..dx.len() {
-            dx[i] = dx_partial[i] + dy[i];
+        // Step 2: CPU — SiLU' + dgate + dup (in-place into pre-allocated buffers)
+        // silu_buf = gate * sigmoid(gate)
+        for i in 0..inter * sp {
+            let g = self.gate[i];
+            let s = 1.0 / (1.0 + (-g).exp());
+            self.silu_buf[i] = g * s;
+        }
+        // dsilu = dfused * up
+        for i in 0..inter * sp {
+            self.dsilu_buf[i] = self.dfused_buf[i] * self.up[i];
+        }
+        // dup = dfused * silu
+        for i in 0..inter * sp {
+            self.dup_buf[i] = self.dfused_buf[i] * self.silu_buf[i];
+        }
+        // dgate = dsilu * sigmoid(gate) * (1 + gate * (1 - sigmoid(gate)))
+        for i in 0..inter * sp {
+            let g = self.gate[i];
+            let s = 1.0 / (1.0 + (-g).exp());
+            self.dgate_buf[i] = self.dsilu_buf[i] * s * (1.0 + g * (1.0 - s));
         }
 
-        // Step 5: CPU — weight gradients
-        let dwg = mm_abt(&dgate, inter, sp, x, d);
-        let dwu = mm_abt(&dup, inter, sp, x, d);
-        let fused: Vec<f32> = self
-            .gate
-            .iter()
-            .zip(self.up.iter())
-            .map(|(&g, &u)| {
-                let s = 1.0 / (1.0 + (-g).exp());
-                g * s * u
-            })
-            .collect();
-        let dwd = mm_abt(dy, d, sp, &fused, inter);
+        // Step 3: ANE — dx_partial = [WgT|WuT] @ concat(dgate, dup)
+        to_fp16_inplace(&self.dgate_buf, &mut self.dgate16_buf);
+        to_fp16_inplace(&self.dup_buf, &mut self.dup16_buf);
+        self.bwd_b.write_input(0, &self.dgate16_buf).expect("w");
+        self.bwd_b.write_input(1, &self.dup16_buf).expect("w");
+        self.bwd_b.eval().expect("e");
+        self.bwd_b.read_output(0, &mut self.dx16_buf).expect("r");
+        from_fp16_inplace(&self.dx16_buf, &mut self.dx_buf);
 
-        (dx, dwg, dwu, dwd)
+        // Step 4: CPU — dx = dx_partial + dy
+        for i in 0..d * sp {
+            self.dx_buf[i] += dy[i];
+        }
+
+        // Step 5: CPU — weight gradients (into pre-allocated buffers)
+        // fused = silu * up (reuse dsilu_buf as temp — compute fused first)
+        for i in 0..inter * sp {
+            self.fused_buf[i] = self.silu_buf[i] * self.up[i];
+        }
+        // dWg = dgate^T @ x^T → [inter, sp]^T @ [sp, d] = [inter, d]
+        let wg = mm_abt(&self.dgate_buf, inter, sp, x, d);
+        let wu = mm_abt(&self.dup_buf, inter, sp, x, d);
+        let wd = mm_abt(dy, d, sp, &self.fused_buf, inter);
+
+        (self.dx_buf.clone(), wg, wu, wd)
     }
 
     /// Pure CPU backward: returns (dx, dL/dWg, dL/dWu, dL/dWd)
@@ -655,11 +704,10 @@ fn main() {
     // ── Warmup ──
     let mut tmp_x = x.clone();
     for layer in &mut ane_layers {
-        let (gate, up, _y) = layer.forward_ane(&tmp_x);
-        layer.gate = gate;
-        layer.up = up;
-        let dy = &vec![0.0f32; d * sp];
-        let _ = layer.backward_hybrid(dy, &tmp_x);
+        let (_gate, _up, _y) = layer.forward_ane(&tmp_x);
+        // gate/up already cached by forward_ane
+        let dy = vec![0.0f32; d * sp];
+        let _ = layer.backward_hybrid(&dy, &tmp_x);
     }
 
     // ── Benchmark: ANE Hybrid Training Step ──
@@ -668,7 +716,7 @@ fn main() {
     let mut hybrid_bwd_times = Vec::new();
     let mut loss_sum = 0.0_f64;
 
-    for step in 0..steps {
+    for _step in 0..steps {
         let mut tmp_x = x.clone();
         let mut layer_inputs: Vec<Vec<f32>> = Vec::new();
         layer_inputs.push(tmp_x.clone());
@@ -775,11 +823,102 @@ fn main() {
     let cpu_fwd = cpu_fwd_times.iter().sum::<f64>() / steps as f64;
     let cpu_bwd = cpu_bwd_times.iter().sum::<f64>() / steps as f64;
 
+    // ── Benchmark: ANE Forward Only + CPU Backward ──
+    // This avoids the ANE backward overhead while keeping the forward speedup
+    let mut fwd_only_layers: Vec<FfnLayer> = (0..layers)
+        .map(|i| FfnLayer::new(d, inter, sp, 42 + i as u64 * 1000))
+        .collect();
+
+    let mut fwd_only_step_times = Vec::new();
+    let mut fwd_only_fwd_times = Vec::new();
+    let mut fwd_only_bwd_times = Vec::new();
+
+    for _step in 0..steps {
+        let mut tmp_x = x.clone();
+        let mut layer_inputs: Vec<Vec<f32>> = Vec::new();
+        layer_inputs.push(tmp_x.clone());
+
+        let t_step = Instant::now();
+        let t_fwd = Instant::now();
+
+        // ANE forward
+        for layer in &mut fwd_only_layers {
+            let (_gate, _up, y) = layer.forward_ane(&tmp_x);
+            tmp_x = y;
+            layer_inputs.push(tmp_x.clone());
+        }
+
+        let fwd_t = t_fwd.elapsed().as_secs_f64() * 1000.0;
+
+        let final_y = &tmp_x;
+        let n = final_y.len() as f32;
+        let mut dy = vec![0.0f32; n as usize];
+        for i in 0..final_y.len() {
+            let diff = final_y[i] - target_out[i];
+            dy[i] = 2.0 * diff / n;
+        }
+
+        // CPU backward
+        let t_bwd = Instant::now();
+        let mut grad = dy;
+        for i in (0..layers).rev() {
+            let (dx, dwg, dwu, dwd) = fwd_only_layers[i].backward_cpu(&grad, &layer_inputs[i]);
+            fwd_only_layers[i].sgd_update(&dwg, &dwu, &dwd, lr);
+            grad = dx;
+        }
+        let bwd_t = t_bwd.elapsed().as_secs_f64() * 1000.0;
+        let step_t = t_step.elapsed().as_secs_f64() * 1000.0;
+
+        fwd_only_fwd_times.push(fwd_t);
+        fwd_only_bwd_times.push(bwd_t);
+        fwd_only_step_times.push(step_t);
+    }
+
+    let fwd_only_step = fwd_only_step_times.iter().sum::<f64>() / steps as f64;
+    let fwd_only_fwd = fwd_only_fwd_times.iter().sum::<f64>() / steps as f64;
+    let fwd_only_bwd = fwd_only_bwd_times.iter().sum::<f64>() / steps as f64;
+
     // ── Results ──
     println!("=== Per-Step Timing ({} layers) ===\n", layers);
     println!(
+        "  {:35} {:>10} {:>10} {:>10} {:>10}",
+        "", "ANE Fwd", "Hybrid", "CPU", "Fwd+CPU"
+    );
+    println!(
+        "  {:35} {:>10} {:>10} {:>10} {:>10}",
+        "─".repeat(35),
+        "─".repeat(10),
+        "─".repeat(10),
+        "─".repeat(10),
+        "─".repeat(10)
+    );
+    println!(
+        "  {:35} {:>8}ms {:>8}ms {:>8}ms {:>8}ms",
+        "Forward",
+        format!("{:.2}", fwd_only_fwd),
+        format!("{:.2}", hybrid_fwd),
+        format!("{:.2}", cpu_fwd),
+        format!("{:.2}", fwd_only_fwd + fwd_only_bwd)
+    );
+    println!(
+        "  {:35} {:>8}ms {:>8}ms {:>8}ms",
+        "Backward",
+        "-",
+        format!("{:.2}", hybrid_bwd),
+        format!("{:.2}", cpu_bwd)
+    );
+    println!(
+        "  {:35} {:>8}ms {:>8}ms {:>8}ms",
+        "Total step",
+        format!("{:.2}", fwd_only_step),
+        format!("{:.2}", hybrid_step),
+        format!("{:.2}", cpu_step)
+    );
+    println!();
+    println!("  Speedup vs CPU:");
+    println!(
         "  {:35} {:>10} {:>10} {:>10}",
-        "", "Hybrid", "CPU", "Speedup"
+        "", "ANE Fwd", "Hybrid", "Fwd+CPU"
     );
     println!(
         "  {:35} {:>10} {:>10} {:>10}",
@@ -789,25 +928,25 @@ fn main() {
         "─".repeat(10)
     );
     println!(
-        "  {:35} {:>8}ms {:>8}ms {:>8}x",
+        "  {:35} {:>8}x {:>8}x {:>8}x",
         "Forward",
-        format!("{:.2}", hybrid_fwd),
-        format!("{:.2}", cpu_fwd),
-        format!("{:.2}", cpu_fwd / hybrid_fwd)
+        format!("{:.2}", cpu_fwd / fwd_only_fwd),
+        format!("{:.2}", cpu_fwd / hybrid_fwd),
+        "-"
     );
     println!(
-        "  {:35} {:>8}ms {:>8}ms {:>8}x",
-        "Backward (input + weight grads)",
-        format!("{:.2}", hybrid_bwd),
-        format!("{:.2}", cpu_bwd),
-        format!("{:.2}", cpu_bwd / hybrid_bwd)
+        "  {:35} {:>8}x {:>8}x {:>8}x",
+        "Backward",
+        "-",
+        format!("{:.2}", cpu_bwd / hybrid_bwd),
+        "-"
     );
     println!(
-        "  {:35} {:>8}ms {:>8}ms {:>8}x",
+        "  {:35} {:>8}x {:>8}x {:>8}x",
         "Total step",
-        format!("{:.2}", hybrid_step),
-        format!("{:.2}", cpu_step),
-        format!("{:.2}", cpu_step / hybrid_step)
+        "-",
+        format!("{:.2}", cpu_step / hybrid_step),
+        format!("{:.2}", cpu_step / fwd_only_step)
     );
     println!(
         "\n  Loss: {:.6} (avg over {} steps)",
@@ -815,7 +954,18 @@ fn main() {
         steps
     );
     println!(
-        "\n  ANE compiles: {} per layer ({} forward + {} backward)",
-        3, 1, 2
+        "\n  ANE compiles: {} per layer (forward only) vs {} per layer (hybrid)",
+        1, 3
     );
+
+    // Strategy recommendation
+    let _best_step = hybrid_step.min(fwd_only_step).min(cpu_step);
+    println!("\n  Recommendation: ",);
+    if fwd_only_step <= hybrid_step && fwd_only_step < cpu_step {
+        println!("    → ANE forward + CPU backward (saves compile budget, best total time)");
+    } else if hybrid_step <= fwd_only_step && hybrid_step < cpu_step {
+        println!("    → Full hybrid (ANE forward + backward)");
+    } else {
+        println!("    → Pure CPU (ANE overhead exceeds compute savings)");
+    }
 }
