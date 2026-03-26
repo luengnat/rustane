@@ -331,8 +331,8 @@ struct FfnLayer {
     sp: usize,
     // ANE executors
     fwd: rustane::wrapper::ANEExecutor,
-    bwd_a: rustane::wrapper::ANEExecutor,
-    bwd_b: rustane::wrapper::ANEExecutor,
+    bwd_a: Option<rustane::wrapper::ANEExecutor>,
+    bwd_b: Option<rustane::wrapper::ANEExecutor>,
     // Cached backward intermediates (CPU)
     gate: Vec<f32>,
     up: Vec<f32>,
@@ -360,7 +360,30 @@ struct FfnLayer {
 }
 
 impl FfnLayer {
+    /// Full layer with forward + backward ANE programs (3 compiles)
     fn new(d: usize, inter: usize, sp: usize, seed: u64) -> Self {
+        let (wg, wu, wd, wdi, wdt, rw) = Self::compute_weights(d, inter, seed);
+        let fwd = Self::compile_forward(d, inter, sp, &wg, &wu, &wdi);
+        let bwd_a = Some(Self::compile_bwd_a(d, inter, sp, &wdt));
+        let bwd_b = Some(Self::compile_bwd_b(d, inter, sp, &rw));
+        let mut layer = Self::allocate(d, inter, sp, wg, wu, wd, fwd);
+        layer.bwd_a = bwd_a;
+        layer.bwd_b = bwd_b;
+        layer
+    }
+
+    /// Forward-only layer (1 ANE compile) — backward uses CPU only
+    fn new_forward_only(d: usize, inter: usize, sp: usize, seed: u64) -> Self {
+        let (wg, wu, wd, wdi, _wdt, _rw) = Self::compute_weights(d, inter, seed);
+        let fwd = Self::compile_forward(d, inter, sp, &wg, &wu, &wdi);
+        Self::allocate(d, inter, sp, wg, wu, wd, fwd)
+    }
+
+    fn compute_weights(
+        d: usize,
+        inter: usize,
+        seed: u64,
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
         let wg = rand_m(inter, d, 0.02, seed);
         let wu = rand_m(inter, d, 0.02, seed + 1);
         let wd = rand_m(d, inter, 0.02, seed + 2);
@@ -371,18 +394,16 @@ impl FfnLayer {
             for c in 0..inter {
                 wdi[r * (inter + d) + c] = wd[r * inter + c];
             }
-            wdi[r * (inter + d) + inter + r] = 1.0; // identity at position inter+r
+            wdi[r * (inter + d) + inter + r] = 1.0;
         }
 
         // Backward weights
-        // WdT: [inter, d] for conv1x1(out=inter, in=d)
         let mut wdt = vec![0.0f32; inter * d];
         for i in 0..inter {
             for j in 0..d {
                 wdt[i * d + j] = wd[j * inter + i];
             }
         }
-        // RW = [WgT | WuT]: [d, 2*inter]
         let mut wgt = vec![0.0f32; d * inter];
         for r in 0..d {
             for c in 0..inter {
@@ -405,16 +426,22 @@ impl FfnLayer {
             }
         }
 
-        // Build blobs
-        let blob_wg = build_blob(&wg);
-        let blob_wu = build_blob(&wu);
-        let blob_wdi = build_blob(&wdi);
-        let blob_wdt = build_blob(&wdt);
-        let blob_rw = build_blob(&rw);
+        (wg, wu, wd, wdi, wdt, rw)
+    }
 
-        // Compile forward
+    fn compile_forward(
+        d: usize,
+        inter: usize,
+        sp: usize,
+        wg: &[f32],
+        wu: &[f32],
+        wdi: &[f32],
+    ) -> rustane::wrapper::ANEExecutor {
+        let blob_wg = build_blob(wg);
+        let blob_wu = build_blob(wu);
+        let blob_wdi = build_blob(wdi);
         let mil_fwd = mil_forward(d, inter, sp);
-        let mut fwd = rustane::wrapper::ANECompiler::new()
+        rustane::wrapper::ANECompiler::new()
             .compile_multi(
                 &mil_fwd,
                 &[
@@ -427,11 +454,18 @@ impl FfnLayer {
                 &[d * sp * 2],
                 &[inter * sp * 2, inter * sp * 2, d * sp * 2],
             )
-            .expect("fwd compile");
+            .expect("fwd compile")
+    }
 
-        // Compile backward A: Wd^T @ dy
+    fn compile_bwd_a(
+        d: usize,
+        inter: usize,
+        sp: usize,
+        wdt: &[f32],
+    ) -> rustane::wrapper::ANEExecutor {
+        let blob_wdt = build_blob(wdt);
         let mil_a = mil_bwd_dfused(d, inter, sp);
-        let mut bwd_a = rustane::wrapper::ANECompiler::new()
+        rustane::wrapper::ANECompiler::new()
             .compile_multi(
                 &mil_a,
                 &["@model_path/weights/WdT.bin"],
@@ -440,11 +474,18 @@ impl FfnLayer {
                 &[d * sp * 2],
                 &[inter * sp * 2],
             )
-            .expect("bwd_a compile");
+            .expect("bwd_a compile")
+    }
 
-        // Compile backward B: [WgT|WuT] @ concat(dgate, dup)
+    fn compile_bwd_b(
+        d: usize,
+        inter: usize,
+        sp: usize,
+        rw: &[f32],
+    ) -> rustane::wrapper::ANEExecutor {
+        let blob_rw = build_blob(rw);
         let mil_b = mil_bwd_dx(d, inter, sp);
-        let mut bwd_b = rustane::wrapper::ANECompiler::new()
+        rustane::wrapper::ANECompiler::new()
             .compile_multi(
                 &mil_b,
                 &["@model_path/weights/RW.bin"],
@@ -453,9 +494,18 @@ impl FfnLayer {
                 &[inter * sp * 2, inter * sp * 2],
                 &[d * sp * 2],
             )
-            .expect("bwd_b compile");
+            .expect("bwd_b compile")
+    }
 
-        // Pre-allocate all buffers (sizes known from dimensions)
+    fn allocate(
+        d: usize,
+        inter: usize,
+        sp: usize,
+        wg: Vec<f32>,
+        wu: Vec<f32>,
+        wd: Vec<f32>,
+        fwd: rustane::wrapper::ANEExecutor,
+    ) -> Self {
         let x16_buf = vec![0u8; d * sp * 2];
         let dy16_buf = vec![0u8; d * sp * 2];
         let dgate16_buf = vec![0u8; inter * sp * 2];
@@ -482,8 +532,8 @@ impl FfnLayer {
             inter,
             sp,
             fwd,
-            bwd_a,
-            bwd_b,
+            bwd_a: None,
+            bwd_b: None,
             gate: vec![0.0f32; inter * sp],
             up: vec![0.0f32; inter * sp],
             x16_buf,
@@ -542,6 +592,7 @@ impl FfnLayer {
 
     /// ANE-assisted backward: returns (dx, dL/dWg, dL/dWu, dL/dWd)
     /// Uses pre-allocated buffers to minimize allocation overhead
+    /// Only works if backward executors were compiled (bwd_a/bwd_b = Some)
     fn backward_hybrid(
         &mut self,
         dy: &[f32],
@@ -550,14 +601,20 @@ impl FfnLayer {
         let d = self.d;
         let inter = self.inter;
         let sp = self.sp;
+        let bwd_a = self
+            .bwd_a
+            .as_mut()
+            .expect("backward_hybrid requires compiled backward executors");
+        let bwd_b = self
+            .bwd_b
+            .as_mut()
+            .expect("backward_hybrid requires compiled backward executors");
 
         // Step 1: ANE — dfused = Wd^T @ dy
         to_fp16_inplace(dy, &mut self.dy16_buf);
-        self.bwd_a.write_input(0, &self.dy16_buf).expect("w");
-        self.bwd_a.eval().expect("e");
-        self.bwd_a
-            .read_output(0, &mut self.dfused16_buf)
-            .expect("r");
+        bwd_a.write_input(0, &self.dy16_buf).expect("w");
+        bwd_a.eval().expect("e");
+        bwd_a.read_output(0, &mut self.dfused16_buf).expect("r");
         from_fp16_inplace(&self.dfused16_buf, &mut self.dfused_buf);
 
         // Step 2: CPU — SiLU' + dgate + dup (in-place into pre-allocated buffers)
@@ -585,10 +642,10 @@ impl FfnLayer {
         // Step 3: ANE — dx_partial = [WgT|WuT] @ concat(dgate, dup)
         to_fp16_inplace(&self.dgate_buf, &mut self.dgate16_buf);
         to_fp16_inplace(&self.dup_buf, &mut self.dup16_buf);
-        self.bwd_b.write_input(0, &self.dgate16_buf).expect("w");
-        self.bwd_b.write_input(1, &self.dup16_buf).expect("w");
-        self.bwd_b.eval().expect("e");
-        self.bwd_b.read_output(0, &mut self.dx16_buf).expect("r");
+        bwd_b.write_input(0, &self.dgate16_buf).expect("w");
+        bwd_b.write_input(1, &self.dup16_buf).expect("w");
+        bwd_b.eval().expect("e");
+        bwd_b.read_output(0, &mut self.dx16_buf).expect("r");
         from_fp16_inplace(&self.dx16_buf, &mut self.dx_buf);
 
         // Step 4: CPU — dx = dx_partial + dy
@@ -826,7 +883,7 @@ fn main() {
     // ── Benchmark: ANE Forward Only + CPU Backward ──
     // This avoids the ANE backward overhead while keeping the forward speedup
     let mut fwd_only_layers: Vec<FfnLayer> = (0..layers)
-        .map(|i| FfnLayer::new(d, inter, sp, 42 + i as u64 * 1000))
+        .map(|i| FfnLayer::new_forward_only(d, inter, sp, 42 + i as u64 * 1000))
         .collect();
 
     let mut fwd_only_step_times = Vec::new();
