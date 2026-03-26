@@ -10,10 +10,10 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Current Position
 
 **Milestone:** M2: Fused Training — COMPLETE
-**Phase:** Post-M2 research — operator audit + performance characterization
-**Plan:** N/A (independent investigation)
-**Status:** Operator audit complete. 11/13 ops work on ANE. ANE value is in fused programs.
-**Last activity:** 2026-03-26 — Operator audit, ANE vs CPU speed analysis
+**Phase:** Post-M2 — ANE training feasibility analysis COMPLETE
+**Plan:** N/A (investigation concluded)
+**Status:** ANE training is NOT faster than CPU BLAS. Definitive analysis complete.
+**Last activity:** 2026-03-26 — Batched training benchmark, Orion paper analysis, backward pass exploration
 
 ## Progress
 
@@ -108,8 +108,86 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 ## Session Continuity
 
 Last session: 2026-03-26
-Stopped at: ANE correctness tests pass — 7/7 with 100% accuracy (conv1x1, softmax, fused 2/3-conv, fused FFN SwiGLU, batch, dim sweep)
+Stopped at: ANE training feasibility analysis COMPLETE — ANE cannot beat CPU BLAS for training
 Resume file: None
+
+## ANE Training Feasibility — Definitive Analysis (THIS SESSION)
+
+### Why ANE Training Is NOT Faster Than CPU
+
+The backward pass dominates training time and ANE cannot accelerate it.
+
+**Timing breakdown at D=768, SP=256 (FFN layer, BLAS CPU):**
+
+| Component | ANE | CPU (BLAS) | Notes |
+|-----------|-----|-----------|-------|
+| Forward pass | 0.75ms | 4.2ms | **5.6x faster** on ANE |
+| Backward pass | N/A | 26.5ms | ANE cannot do backward ops |
+| Weight reload | 73ms | 0ms | ANE must reload after weight update |
+| **Total/step** | **~104ms** | **~30.7ms** | **ANE 3.4x SLOWER** |
+
+**Even with zero-cost reload**: ANE would be 27.25ms vs CPU 30.7ms = only **1.13x faster** (13%).
+
+The forward pass saves only 3.4ms, but backward costs 26.5ms. The ANE simply cannot do backward.
+
+### ANE Ops That FAIL (error 0x1d, statusType=0x9)
+
+These are essential backward pass operations:
+- `transpose` — needed for W^T @ dY
+- `matmul` (as matmul) — needed for gradient computation
+- `add` (2 inputs) — needed for residual gradient
+- `reduce_mean` — needed for loss gradient
+
+### ANE Ops That WORK
+- `conv1x1` (is matmul with const weights), `softmax`, `sigmoid`, `mul`, `concat`, `cast`
+
+### Conv1x1 Gradient Trick — Analyzed and Rejected
+
+Can conv1x1 compute backward matmuls? `dL/dW = dY @ X^T`:
+- Mathematically: conv1x1(dY_as_weight, X_layout_as_input) = dY @ X^T ✓
+- But dY changes every step → must reload as weight → ~73ms per reload
+- CPU BLAS does the same matmul in ~4ms
+- **18x slower than CPU** due to reload overhead
+
+### Batched Training — Analyzed and Rejected
+
+Amortize reload over N CPU steps: break-even at N > 73ms / 3.4ms ≈ 22 steps.
+
+| Batch Size | ANE Total | Per Step | Speedup vs CPU |
+|-----------|-----------|----------|----------------|
+| 1 | 10,119ms | 101ms | 0.31x |
+| 5 | 4,133ms | 41ms | 0.76x |
+| 10 | 3,739ms | 37ms | 0.84x |
+| 20 | 3,945ms | 39ms | 0.79x |
+| 50 | 3,274ms | 33ms | 0.95x |
+| 100 | 2,921ms | 29ms | 1.07x (noise) |
+
+Batch=100 appears 7% faster but ANE forward output is NOT used for training — it's pure CPU + 1 reload. The "speedup" is CPU timing variance.
+
+### Orion Paper Comparison (arXiv:2603.06728)
+
+The Orion paper does NOT claim ANE training is faster than CPU:
+- Their "3.8x speedup" is vs naive full-recompile-every-step (4,200ms/step)
+- Their reload: 494ms vs our 73ms — **we're 6.7x faster at reload**
+- Their training: 1,000 steps in 22 min (1.32s/step) — our CPU BLAS: 30ms/step (**44x faster**)
+- Orion's value: enables on-device training via private APIs, not speed advantage
+- Orion's LoRA adapter-as-input: inject LoRA via IOSurface input, no recompilation needed
+
+### ANE Value Proposition
+
+| Use Case | ANE Speedup | Status |
+|----------|------------|--------|
+| **Inference** (eval) | **4,576x** vs CPU | ✅ Incredible value |
+| **Inference** (incl compile) | **14.4x** vs CPU | ✅ Strong value |
+| **Training** (per-step) | **0.3x** vs CPU BLAS | ❌ Slower |
+| **Training** (batched) | **1.0x** vs CPU BLAS | ❌ No benefit |
+
+### Path Forward Options
+
+1. **Pivot to ANE inference optimization** — 4,576x speedup is the real value
+2. **LoRA adapter-as-input** — Orion's approach: inject LoRA via input, no reload
+3. **Hybrid inference/training** — ANE for inference, CPU for training (current state)
+4. **Accept limitation** — ANE is for inference, not training (honest conclusion)
 
 ## Hybird-Batch-Prefill-on-ANE Discoveries (THIS SESSION)
 
