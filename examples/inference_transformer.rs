@@ -82,6 +82,28 @@ fn mm_at(a: &[f32], k: usize, m: usize, b: &[f32], n: usize) -> Vec<f32> {
     }
     c
 }
+fn mm_abt(a: &[f32], m: usize, k: usize, b: &[f32], n: usize) -> Vec<f32> {
+    let mut c = vec![0.0f32; m * n];
+    unsafe {
+        cblas_sgemm(
+            ROW,
+            NOTRANS,
+            TRANS,
+            m as i32,
+            n as i32,
+            k as i32,
+            1.0,
+            a.as_ptr(),
+            k as i32,
+            b.as_ptr(),
+            k as i32,
+            0.0,
+            c.as_mut_ptr(),
+            n as i32,
+        );
+    }
+    c
+}
 
 fn build_blob(weights: &[f32]) -> Vec<u8> {
     let wsize = weights.len() * 2;
@@ -345,8 +367,8 @@ fn cpu_attention(q: &[f32], k: &[f32], v: &[f32], d: usize, sp: usize) -> Vec<f3
         }
     }
 
-    // attn @ V → [SP, D] (then transpose to [D, SP])
-    let av = mm(&attn, sp, sp, v, d); // [SP, D]
+    // attn @ V^T → [SP, D] (then transpose to [D, SP])
+    let av = mm_abt(&attn, sp, sp, v, d); // [SP, D]
     let mut out = vec![0.0f32; d * sp];
     for h in 0..d {
         for i in 0..sp {
