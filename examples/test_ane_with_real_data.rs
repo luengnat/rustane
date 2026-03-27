@@ -32,7 +32,10 @@ fn main() -> rustane::Result<()> {
     let seq: usize = 256; // Use shorter seq for faster testing with real data
 
     eprintln!("=== ANE Backward with Real Parameter-Golf Data ===");
-    eprintln!("Config: dim={} seq={} heads={} head_dim={}", dim, seq, heads, head_dim);
+    eprintln!(
+        "Config: dim={} seq={} heads={} head_dim={}",
+        dim, seq, heads, head_dim
+    );
 
     // Load real data
     let data_dir = std::env::var("PARAMETER_GOLF_DATA")
@@ -57,7 +60,11 @@ fn main() -> rustane::Result<()> {
 
     // Get a batch
     let (input_tokens, target_tokens) = loader.next_batch()?;
-    eprintln!("Batch: input_len={}, target_len={}", input_tokens.len(), target_tokens.len());
+    eprintln!(
+        "Batch: input_len={}, target_len={}",
+        input_tokens.len(),
+        target_tokens.len()
+    );
     eprintln!("First 10 input tokens: {:?}", &input_tokens[..10]);
 
     // Create weight blobs (using deterministic values for reproducibility)
@@ -84,7 +91,10 @@ fn main() -> rustane::Result<()> {
     let mut compiler = ANECompiler::new();
     let exec = compiler.compile_multi(
         &mil,
-        &["@model_path/weights/wot.bin", "@model_path/weights/mask.bin"],
+        &[
+            "@model_path/weights/wot.bin",
+            "@model_path/weights/mask.bin",
+        ],
         &[wot.as_ref(), mask.as_ref()],
         &[wot.len(), mask.len()],
         &req.input_sizes,
@@ -163,7 +173,11 @@ fn main() -> rustane::Result<()> {
             } else {
                 eprintln!(
                     "dvf: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals) - OK",
-                    dvf_vals[0], dvf_vals[1], dvf_vals[2], dvf_vals[3], dvf_vals.len()
+                    dvf_vals[0],
+                    dvf_vals[1],
+                    dvf_vals[2],
+                    dvf_vals[3],
+                    dvf_vals.len()
                 );
             }
 
@@ -183,7 +197,11 @@ fn main() -> rustane::Result<()> {
             } else {
                 eprintln!(
                     "pf:  [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals) - OK",
-                    pf_vals[0], pf_vals[1], pf_vals[2], pf_vals[3], pf_vals.len()
+                    pf_vals[0],
+                    pf_vals[1],
+                    pf_vals[2],
+                    pf_vals[3],
+                    pf_vals.len()
                 );
             }
 
@@ -199,7 +217,11 @@ fn main() -> rustane::Result<()> {
             } else {
                 eprintln!(
                     "dpf: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals) - OK",
-                    dpf_vals[0], dpf_vals[1], dpf_vals[2], dpf_vals[3], dpf_vals.len()
+                    dpf_vals[0],
+                    dpf_vals[1],
+                    dpf_vals[2],
+                    dpf_vals[3],
+                    dpf_vals.len()
                 );
             }
 

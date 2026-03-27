@@ -41,18 +41,25 @@ fn main() {
     let score_ch = heads * seq;
     let out_ch = dim + 2 * score_ch;
 
+    eprintln!("=== Parameter-Golf ANE Backward Test ===");
     eprintln!(
-        "=== Parameter-Golf ANE Backward Test ==="
+        "Config: dim={} seq={} heads={} head_dim={}",
+        dim, seq, heads, head_dim
     );
-    eprintln!("Config: dim={} seq={} heads={} head_dim={}", dim, seq, heads, head_dim);
-    eprintln!("Output: {} channels (dvf={}, pf={}, dpf={})", out_ch, dim, score_ch, score_ch);
-    eprintln!("Output tensor: [1, {}, 1, {}] = {} f32 values = {:.2} MB",
-        out_ch, seq, out_ch * seq, (out_ch * seq * 4) as f64 / 1024.0 / 1024.0);
+    eprintln!(
+        "Output: {} channels (dvf={}, pf={}, dpf={})",
+        out_ch, dim, score_ch, score_ch
+    );
+    eprintln!(
+        "Output tensor: [1, {}, 1, {}] = {} f32 values = {:.2} MB",
+        out_ch,
+        seq,
+        out_ch * seq,
+        (out_ch * seq * 4) as f64 / 1024.0 / 1024.0
+    );
 
     // Create weight blobs matching parameter-golf initialization
-    let wot_data: Vec<f32> = (0..dim * dim)
-        .map(|i| ((i % 100) as f32) * 0.005)
-        .collect();
+    let wot_data: Vec<f32> = (0..dim * dim).map(|i| ((i % 100) as f32) * 0.005).collect();
     let mask_data: Vec<f32> = (0..seq * seq)
         .map(|i| if i % seq >= i / seq { 0.0 } else { -1000.0 })
         .collect();
@@ -71,7 +78,10 @@ fn main() {
     let mut compiler = ANECompiler::new();
     let exec = compiler.compile_multi(
         &mil,
-        &["@model_path/weights/wot.bin", "@model_path/weights/mask.bin"],
+        &[
+            "@model_path/weights/wot.bin",
+            "@model_path/weights/mask.bin",
+        ],
         &[wot.as_ref(), mask.as_ref()],
         &[wot.len(), mask.len()],
         &req.input_sizes,
@@ -94,7 +104,10 @@ fn main() {
                 .flatten()
                 .collect();
 
-            eprintln!("Writing input ({:.2} MB)...", (input.len() as f64) / 1024.0 / 1024.0);
+            eprintln!(
+                "Writing input ({:.2} MB)...",
+                (input.len() as f64) / 1024.0 / 1024.0
+            );
             if let Err(e) = executor.write_input(0, &input) {
                 eprintln!("write_input: {e}");
                 std::process::exit(1);
@@ -110,7 +123,10 @@ fn main() {
 
             // Read concatenated output: [1, DIM+2*SCORE_CH, 1, SEQ]
             let output_bytes = out_ch * seq * 4;
-            eprintln!("Reading output ({:.2} MB)...", (output_bytes as f64) / 1024.0 / 1024.0);
+            eprintln!(
+                "Reading output ({:.2} MB)...",
+                (output_bytes as f64) / 1024.0 / 1024.0
+            );
             let mut buf = vec![0u8; output_bytes];
             if let Err(e) = executor.read_output(0, &mut buf) {
                 eprintln!("read_output FAILED: {e}");
@@ -132,7 +148,10 @@ fn main() {
 
             eprintln!("\n=== Results ===");
             eprintln!("Execution time: {:.3}s", eval_time.as_secs_f64());
-            eprintln!("Throughput: {:.2} tokens/sec", (seq as f64) / eval_time.as_secs_f64());
+            eprintln!(
+                "Throughput: {:.2} tokens/sec",
+                (seq as f64) / eval_time.as_secs_f64()
+            );
 
             // Validate outputs
             let mut all_ok = true;
@@ -149,7 +168,11 @@ fn main() {
             } else {
                 eprintln!(
                     "dvf: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals) - OK",
-                    dvf_vals[0], dvf_vals[1], dvf_vals[2], dvf_vals[3], dvf_vals.len()
+                    dvf_vals[0],
+                    dvf_vals[1],
+                    dvf_vals[2],
+                    dvf_vals[3],
+                    dvf_vals.len()
                 );
             }
 
@@ -165,7 +188,11 @@ fn main() {
             } else {
                 eprintln!(
                     "pf:  [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals) - OK",
-                    pf_vals[0], pf_vals[1], pf_vals[2], pf_vals[3], pf_vals.len()
+                    pf_vals[0],
+                    pf_vals[1],
+                    pf_vals[2],
+                    pf_vals[3],
+                    pf_vals.len()
                 );
             }
 
@@ -181,7 +208,11 @@ fn main() {
             } else {
                 eprintln!(
                     "dpf: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals) - OK",
-                    dpf_vals[0], dpf_vals[1], dpf_vals[2], dpf_vals[3], dpf_vals.len()
+                    dpf_vals[0],
+                    dpf_vals[1],
+                    dpf_vals[2],
+                    dpf_vals[3],
+                    dpf_vals.len()
                 );
             }
 
