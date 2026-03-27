@@ -365,8 +365,8 @@ fn cpu_attention(q: &[f32], k: &[f32], v: &[f32], d: usize, sp: usize) -> (Vec<f
             attn[i * sp + j] /= sm;
         }
     }
-    // attn @ V → [SP, D] → transpose to [D, SP]
-    let av = mm(&attn, sp, sp, v, d);
+    // av = attn @ V^T → [SP, D], then transpose to [D, SP]
+    let av = mm_abt(&attn, sp, sp, v, d);
     let mut out = vec![0.0f32; d * sp];
     for h in 0..d {
         for i in 0..sp {
@@ -400,6 +400,7 @@ struct TransformerLayer {
     // Pre-allocated ANE I/O buffers
     x16: Vec<u8>,
     qkv16: Vec<u8>,
+    qkv_buf: Vec<f32>, // temp for fp16→fp32 conversion of QKV output
     out_in16: Vec<u8>, // 2 inputs for out_proj
     ffn_x16: Vec<u8>,
     gate16: Vec<u8>,
@@ -518,6 +519,7 @@ impl TransformerLayer {
             ane_ffn: Some(ane_ffn),
             x16: vec![0u8; d * sp * 2],
             qkv16: vec![0u8; 3 * d * sp * 2],
+            qkv_buf: vec![0.0f32; 3 * d * sp],
             out_in16: vec![0u8; 2 * d * sp * 2],
             ffn_x16: vec![0u8; d * sp * 2],
             gate16: vec![0u8; inter * sp * 2],
@@ -568,6 +570,7 @@ impl TransformerLayer {
             ane_ffn: None,
             x16: vec![0u8; d * sp * 2],
             qkv16: vec![0u8; 3 * d * sp * 2],
+            qkv_buf: vec![0.0f32; 3 * d * sp],
             out_in16: vec![0u8; 2 * d * sp * 2],
             ffn_x16: vec![0u8; d * sp * 2],
             gate16: vec![0u8; inter * sp * 2],
@@ -610,9 +613,8 @@ impl TransformerLayer {
         ane_qkv.write_input(0, &self.x16).unwrap();
         ane_qkv.eval().unwrap();
         ane_qkv.read_output(0, &mut self.qkv16).unwrap();
-        let mut qkv = vec![0.0f32; 3 * d * sp];
-        from_fp16_inplace(&self.qkv16, &mut qkv);
-        let (q, rest) = qkv.split_at(d * sp);
+        from_fp16_inplace(&self.qkv16, &mut self.qkv_buf);
+        let (q, rest) = self.qkv_buf.split_at(d * sp);
         let (k, v) = rest.split_at(d * sp);
         self.q.copy_from_slice(q);
         self.k.copy_from_slice(k);
@@ -638,16 +640,14 @@ impl TransformerLayer {
             .unwrap();
         ane_out.eval().unwrap();
         ane_out.read_output(0, &mut self.out16).unwrap();
-        let mut ffn_in = vec![0.0f32; d * sp];
-        from_fp16_inplace(&self.out16, &mut ffn_in);
-        self.ffn_in.copy_from_slice(&ffn_in);
+        from_fp16_inplace(&self.out16, &mut self.ffn_in);
 
         // ANE FFN + residual — returns (gate, up, y)
         let ane_ffn = self
             .ane_ffn
             .as_mut()
             .expect("forward_ane requires ANE executors");
-        to_fp16_inplace(&ffn_in, &mut self.ffn_x16);
+        to_fp16_inplace(&self.ffn_in, &mut self.ffn_x16);
         ane_ffn.write_input(0, &self.ffn_x16).unwrap();
         ane_ffn.eval().unwrap();
         // Read gate (output 0), up (output 1), y (output 2)
@@ -656,9 +656,9 @@ impl TransformerLayer {
         ane_ffn.read_output(2, &mut self.ffn16).unwrap();
         from_fp16_inplace(&self.gate16, &mut self.gate);
         from_fp16_inplace(&self.up16, &mut self.up);
-        let mut y = vec![0.0f32; d * sp];
-        from_fp16_inplace(&self.ffn16, &mut y);
-        y
+        // Convert y output into qkv_buf (reuse — forward is done with qkv_buf)
+        from_fp16_inplace(&self.ffn16, &mut self.qkv_buf[..d * sp]);
+        self.qkv_buf[..d * sp].to_vec()
     }
 
     /// Full CPU forward (for baseline benchmark)
@@ -923,15 +923,12 @@ fn main() {
 
     for _step in 0..steps {
         let mut tmp_x = x.clone();
-        let mut layer_inputs: Vec<Vec<f32>> = Vec::new();
-        layer_inputs.push(tmp_x.clone());
 
         let t_step = Instant::now();
         let t_fwd = Instant::now();
 
         for layer in &mut ane_layers {
             tmp_x = layer.forward_ane(&tmp_x);
-            layer_inputs.push(tmp_x.clone());
         }
 
         let fwd_t = t_fwd.elapsed().as_secs_f64() * 1000.0;
@@ -978,8 +975,6 @@ fn main() {
 
     for _step in 0..steps {
         let mut tmp_x = x.clone();
-        let mut layer_inputs: Vec<Vec<f32>> = Vec::new();
-        layer_inputs.push(tmp_x.clone());
 
         let t_step = Instant::now();
         let t_fwd = Instant::now();
@@ -987,7 +982,7 @@ fn main() {
         for layer in &mut cpu_layers {
             let y = layer.forward_cpu(&tmp_x);
             // Manually cache activations for backward
-            layer.attn_in = tmp_x.clone();
+            layer.attn_in.copy_from_slice(&tmp_x);
             let q = mm(&layer.wq, d, d, &tmp_x, sp);
             let k = mm(&layer.wk, d, d, &tmp_x, sp);
             let v = mm(&layer.wv, d, d, &tmp_x, sp);
@@ -997,15 +992,13 @@ fn main() {
             let (ao, aw) = cpu_attention(&layer.q, &layer.k, &layer.v, d, sp);
             layer.attn_out = ao;
             layer.attn = aw;
-            let mut out = mm(&layer.wo, d, d, &layer.attn_out, sp);
-            for j in 0..out.len() {
-                out[j] += tmp_x[j];
+            let out = mm(&layer.wo, d, d, &layer.attn_out, sp);
+            for j in 0..d * sp {
+                layer.ffn_in[j] = out[j] + tmp_x[j];
             }
-            layer.ffn_in = out.clone();
-            layer.gate = mm(&layer.wg, inter, d, &out, sp);
-            layer.up = mm(&layer.wu, inter, d, &out, sp);
+            layer.gate = mm(&layer.wg, inter, d, &layer.ffn_in, sp);
+            layer.up = mm(&layer.wu, inter, d, &layer.ffn_in, sp);
             tmp_x = y;
-            layer_inputs.push(tmp_x.clone());
         }
 
         let fwd_t = t_fwd.elapsed().as_secs_f64() * 1000.0;
