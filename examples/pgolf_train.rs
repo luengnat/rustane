@@ -704,8 +704,19 @@ fn backward(
     // x0 flows through every layer's resid_mix, so we need to sum contributions
     let mut dx0 = vec![0.0f32; n];
 
+    // Accumulate gradients for skip tensors from encoder layers.
+    // Decoder layers consume skips; their gradients need to flow back to encoder outputs.
+    let mut d_skips: Vec<Vec<f32>> = vec![vec![0.0f32; n]; model.n_encoder];
+
     for l in (0..layers).rev() {
         let lc = &cache.layer_caches[l];
+
+        // For encoder layers, add the gradient from decoder skip connections
+        if l < model.n_encoder {
+            for i in 0..n {
+                dx[i] += d_skips[l][i];
+            }
+        }
 
         let wq_data = model.layers[l].wq.data.clone();
         let wk_data = model.layers[l].wk.data.clone();
@@ -941,6 +952,9 @@ fn backward(
                 for d in 0..dim {
                     let idx = pos * dim + d;
                     model.skip_weights.grad[sw_base + d] += d_x_mixed[idx] * lc.skip_added[idx];
+                    // Gradient on the skip tensor flows back to the encoder layer
+                    let enc_idx = model.n_encoder - 1 - skip_idx;
+                    d_skips[enc_idx][idx] += model.skip_weights.data[sw_base + d] * d_x_mixed[idx];
                 }
             }
         }
@@ -957,9 +971,6 @@ fn backward(
         // d(x0) = mix[1] * d(x_mixed) accumulates.
         // For layer 0: x_pre = x0, so d(x0) also gets dx_out.
         dx = dx_out;
-
-        // We need to accumulate dx0 contributions. For now just set dx = dx_out.
-        // dx0 will be handled separately through the x0 chain.
 
         {
             let layer = &mut model.layers[l];
@@ -984,12 +995,13 @@ fn backward(
         }
     }
 
-    // Total gradient for x0: dx (from layer 0's x_pre path) + dx0 (from all layers' resid_mix[1])
+    // Total gradient for x0: the layer-0 input is shared with the initial normalized
+    // embedding leaf, so its residual path needs to be accumulated alongside the
+    // explicit x0 skips from every layer.
     let mut dx0_total = vec![0.0f32; n];
     for i in 0..n {
         dx0_total[i] = dx[i] + dx0[i];
     }
-
     // Backprop through initial per-position RMSNorm: x0 = rms_norm_per_pos(wte_embed)
     let x_embed: Vec<f32> = {
         let mut xe = vec![0.0f32; n];
@@ -1058,7 +1070,7 @@ fn main() {
     let nlayers = 4;
     let mlp_dim = dim * mlp_mult;
     let sp = 256;
-    let steps = 30;
+    let steps = 100;
     let batch_tokens = 2048;
     let seqs_per_step = batch_tokens / sp;
     let logit_softcap = 30.0f32;
@@ -1640,6 +1652,7 @@ mod tests {
             ("attn_scale", 0usize, model.layers[0].attn_scale.grad[0]),
             ("mlp_scale", 0usize, model.layers[0].mlp_scale.grad[0]),
             ("q_gain", 0usize, model.layers[0].q_gain.grad[0]),
+            ("resid_mix", 0usize, model.layers[0].resid_mix.grad[0]),
         ];
 
         for (name, idx, analytic) in checks {
@@ -1682,48 +1695,307 @@ mod tests {
             );
         }
 
-        // wte gradient check skipped (2x mismatch, under investigation)
-        /*
         // wte check (tied embedding has two gradient paths: logit projection + embedding scatter)
         {
-            let wte_idx = 0;
-            let analytic = model.wte.grad[wte_idx];
-            let original = model.wte.data[wte_idx];
-            model.wte.data[wte_idx] = original + eps;
-            let plus = forward(
-                &tokens,
-                &model,
-                dim,
-                heads,
-                kv_heads,
-                mlp_dim,
-                vocab,
-                sp,
-                logit_softcap,
-            )
-            .0;
-            model.wte.data[wte_idx] = original - eps;
-            let minus = forward(
-                &tokens,
-                &model,
-                dim,
-                heads,
-                kv_heads,
-                mlp_dim,
-                vocab,
-                sp,
-                logit_softcap,
-            )
-            .0;
-            model.wte.data[wte_idx] = original;
-            let numeric = (plus - minus) / (2.0 * eps);
+            let mut mismatches = Vec::new();
+            for &(wte_idx, label) in &[(0usize, "present"), (16usize, "absent")] {
+                let analytic = model.wte.grad[wte_idx];
+                let original = model.wte.data[wte_idx];
+                model.wte.data[wte_idx] = original + eps;
+                let plus = forward(
+                    &tokens,
+                    &model,
+                    dim,
+                    heads,
+                    kv_heads,
+                    mlp_dim,
+                    vocab,
+                    sp,
+                    logit_softcap,
+                )
+                .0;
+                model.wte.data[wte_idx] = original - eps;
+                let minus = forward(
+                    &tokens,
+                    &model,
+                    dim,
+                    heads,
+                    kv_heads,
+                    mlp_dim,
+                    vocab,
+                    sp,
+                    logit_softcap,
+                )
+                .0;
+                model.wte.data[wte_idx] = original;
+                let numeric = (plus - minus) / (2.0 * eps);
+                if (analytic - numeric).abs() >= 5e-2 {
+                    mismatches.push((wte_idx, label, analytic, numeric));
+                }
+            }
             assert!(
-                (analytic - numeric).abs() < 5e-2,
-                "wte gradient mismatch: analytic={} numeric={}",
-                analytic,
-                numeric
+                mismatches.is_empty(),
+                "wte gradient mismatches: {:?}",
+                mismatches
             );
         }
-        */
+    }
+
+    #[test]
+    fn test_resid_mix_gradient_isolated() {
+        let dim = 4;
+        let heads = 2;
+        let kv_heads = 2;
+        let mlp_dim = 8;
+        let vocab = 6;
+        let n_encoder = 1;
+        let n_decoder = 1;
+        let n_skip = 1;
+
+        let mut wte = Param::new(rng_matrix(vocab, dim, 0.05, 42));
+        fill_small_weights(&mut wte.data, 0.03, 7);
+        let skip_weights = Param::new(vec![1.0f32; n_skip * dim]);
+
+        let mut make_layer = |seed: u64| {
+            let mut resid_mix = vec![0.0f32; 2 * dim];
+            for d in 0..dim {
+                resid_mix[d] = 1.0;
+                resid_mix[dim + d] = 0.3;
+            }
+            LayerParams {
+                wq: Param::with_shape(rng_matrix(dim, dim, 0.05, 100 + seed), dim, dim),
+                wk: Param::with_shape(rng_matrix(dim, dim, 0.05, 200 + seed), dim, dim),
+                wv: Param::with_shape(rng_matrix(dim, dim, 0.05, 300 + seed), dim, dim),
+                wo: Param::with_shape(vec![0.0f32; dim * dim], dim, dim),
+                w_up: Param::with_shape(rng_matrix(mlp_dim, dim, 0.05, 500 + seed), mlp_dim, dim),
+                w_down: Param::with_shape(vec![0.0f32; dim * mlp_dim], dim, mlp_dim),
+                q_gain: Param::new(vec![1.5f32; heads]),
+                attn_scale: Param::new(vec![1.0f32; dim]),
+                mlp_scale: Param::new(vec![1.0f32; dim]),
+                resid_mix: Param::new(resid_mix),
+            }
+        };
+
+        let mut layer0 = make_layer(0);
+        fill_small_weights(&mut layer0.wq.data, 0.02, 1);
+        fill_small_weights(&mut layer0.wk.data, 0.02, 2);
+        fill_small_weights(&mut layer0.wv.data, 0.02, 3);
+        let mut layer1 = make_layer(100);
+        fill_small_weights(&mut layer1.wq.data, 0.02, 4);
+        fill_small_weights(&mut layer1.wk.data, 0.02, 5);
+        fill_small_weights(&mut layer1.wv.data, 0.02, 6);
+
+        let mut model = Model {
+            wte,
+            skip_weights,
+            n_encoder,
+            n_decoder,
+            layers: vec![layer0, layer1],
+        };
+
+        let tokens = vec![0u16, 1, 2, 3];
+        let sp = tokens.len() - 1;
+        let logit_softcap = 30.0f32;
+        let eps = 1e-3f32;
+
+        let (loss, cache) = forward(
+            &tokens,
+            &model,
+            dim,
+            heads,
+            kv_heads,
+            mlp_dim,
+            vocab,
+            sp,
+            logit_softcap,
+        );
+        backward(
+            &tokens,
+            &mut model,
+            &cache,
+            dim,
+            heads,
+            kv_heads,
+            mlp_dim,
+            vocab,
+            sp,
+            logit_softcap,
+        );
+
+        // Check all resid_mix gradients (both layers, both mix[0] and mix[1])
+        for l in 0..2 {
+            for &(mix_idx, label) in &[(0usize, "mix[0]"), (dim, "mix[1]")] {
+                let analytic = model.layers[l].resid_mix.grad[mix_idx];
+                let original = model.layers[l].resid_mix.data[mix_idx];
+                model.layers[l].resid_mix.data[mix_idx] = original + eps;
+                let plus = forward(
+                    &tokens,
+                    &model,
+                    dim,
+                    heads,
+                    kv_heads,
+                    mlp_dim,
+                    vocab,
+                    sp,
+                    logit_softcap,
+                )
+                .0;
+                model.layers[l].resid_mix.data[mix_idx] = original - eps;
+                let minus = forward(
+                    &tokens,
+                    &model,
+                    dim,
+                    heads,
+                    kv_heads,
+                    mlp_dim,
+                    vocab,
+                    sp,
+                    logit_softcap,
+                )
+                .0;
+                model.layers[l].resid_mix.data[mix_idx] = original;
+                let numeric = (plus - minus) / (2.0 * eps);
+                assert!(
+                    (analytic - numeric).abs() < 5e-2,
+                    "layer{} {} gradient mismatch: analytic={} numeric={}",
+                    l,
+                    label,
+                    analytic,
+                    numeric
+                );
+            }
+        }
+
+        // Check wte gradient
+        let analytic = model.wte.grad[0];
+        let original = model.wte.data[0];
+        model.wte.data[0] = original + eps;
+        let plus = forward(
+            &tokens,
+            &model,
+            dim,
+            heads,
+            kv_heads,
+            mlp_dim,
+            vocab,
+            sp,
+            logit_softcap,
+        )
+        .0;
+        model.wte.data[0] = original - eps;
+        let minus = forward(
+            &tokens,
+            &model,
+            dim,
+            heads,
+            kv_heads,
+            mlp_dim,
+            vocab,
+            sp,
+            logit_softcap,
+        )
+        .0;
+        model.wte.data[0] = original;
+        let numeric = (plus - minus) / (2.0 * eps);
+        assert!(
+            (analytic - numeric).abs() < 5e-2,
+            "wte[0] gradient mismatch: analytic={} numeric={}",
+            analytic,
+            numeric
+        );
+    }
+
+    #[test]
+    fn test_muon_adam_training_loss_decreases() {
+        let (mut model, dim, heads, kv_heads, mlp_dim, vocab) = build_test_model();
+        let tokens = vec![0u16, 1, 2, 3, 4, 5, 0, 2, 4, 1, 3, 5, 0];
+        let sp = 4usize;
+        let logit_softcap = 30.0f32;
+        let embed_lr = 0.05f32;
+        let matrix_lr = 0.04f32;
+        let scalar_lr = 0.05f32;
+        let max_grad_norm = 1.0f32;
+        let steps = 30usize;
+
+        let mut losses = Vec::with_capacity(steps);
+        for step in 0..steps {
+            let seq_start = (step * sp) % (tokens.len() - (sp + 1));
+            let seq = &tokens[seq_start..seq_start + sp + 1];
+            let (loss, cache) = forward(
+                seq,
+                &model,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
+            );
+            losses.push(loss);
+            backward(
+                seq,
+                &mut model,
+                &cache,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
+            );
+
+            let clip = |p: &mut Param| {
+                let norm: f32 = p.grad.iter().map(|&g| g * g).sum::<f32>().sqrt();
+                if norm > max_grad_norm {
+                    let s = max_grad_norm / norm;
+                    for g in p.grad.iter_mut() {
+                        *g *= s;
+                    }
+                }
+            };
+
+            clip(&mut model.wte);
+            model.wte.adam(embed_lr, step);
+
+            clip(&mut model.skip_weights);
+            model.skip_weights.adam(scalar_lr, step);
+
+            for l in 0..model.layers.len() {
+                clip(&mut model.layers[l].wq);
+                model.layers[l].wq.muon(matrix_lr, step);
+
+                clip(&mut model.layers[l].wk);
+                model.layers[l].wk.muon(matrix_lr, step);
+
+                clip(&mut model.layers[l].wv);
+                model.layers[l].wv.muon(matrix_lr, step);
+
+                clip(&mut model.layers[l].wo);
+                model.layers[l].wo.muon(matrix_lr, step);
+
+                clip(&mut model.layers[l].w_up);
+                model.layers[l].w_up.muon(matrix_lr, step);
+
+                clip(&mut model.layers[l].w_down);
+                model.layers[l].w_down.muon(matrix_lr, step);
+
+                model.layers[l].q_gain.adam(scalar_lr, step);
+                model.layers[l].attn_scale.adam(scalar_lr, step);
+                model.layers[l].mlp_scale.adam(scalar_lr, step);
+                model.layers[l].resid_mix.adam(scalar_lr, step);
+            }
+        }
+
+        let first = losses.first().copied().unwrap();
+        let last = losses.last().copied().unwrap();
+        assert!(
+            last < first - 0.5,
+            "training loss did not decrease enough: first={} last={} losses={:?}",
+            first,
+            last,
+            losses
+        );
     }
 }
