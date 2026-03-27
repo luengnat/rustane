@@ -87,3 +87,7 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 | 2026-03-27 | dpf compilation issue solved via combined output pattern |
 | 2026-03-27 | Real token data test passes (fineweb10B_sp1024) |
 | 2026-03-27 | Parameter-golf training: backward bugs fixed, loss decreasing (Adam, CPU/BLAS) |
+| 2026-03-27 | Full MLX architecture implemented (encoder-decoder, skip connections, zeroed wo/w_down, learned scales, q_gain, logit softcap, per-pos RMSNorm) |
+| 2026-03-27 | Fixed skip gradient backprop bug (missing d_skip propagation from decoder to encoder layers) — all 12/12 gradient checks now pass |
+| 2026-03-27 | Training converges: 6.93 → 1.55 in 100 steps (4L, 256D, 4H, 2KVH, Muon+Adam optimizer) |
+| 2026-03-27 | All 9 tests pass (0 ignored), forward cache test updated for 2-layer MLX architecture |

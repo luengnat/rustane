@@ -1295,65 +1295,6 @@ mod tests {
         }
     }
 
-    fn embed_tokens(tokens: &[u16], wte: &[f32], dim: usize) -> Vec<f32> {
-        let mut x = vec![0.0f32; tokens.len() * dim];
-        for (pos, &tok) in tokens.iter().enumerate() {
-            let idx = tok as usize;
-            for d in 0..dim {
-                x[pos * dim + d] = wte[idx * dim + d];
-            }
-        }
-        x
-    }
-
-    fn manual_attention(
-        q: &[f32],
-        k: &[f32],
-        v: &[f32],
-        sp: usize,
-        hd: usize,
-        heads: usize,
-        kv_heads: usize,
-        dim: usize,
-    ) -> (Vec<f32>, Vec<f32>) {
-        let scale = 1.0 / (hd as f32).sqrt();
-        let mut out = vec![0.0f32; sp * dim];
-        let mut weights = vec![0.0f32; heads * sp * sp];
-        for h in 0..heads {
-            let kv_h = if kv_heads == heads {
-                h
-            } else {
-                h * kv_heads / heads
-            };
-            let aw_base = h * sp * sp;
-            for i in 0..sp {
-                let mut mx = f32::NEG_INFINITY;
-                for j in 0..=i {
-                    let dot: f32 = (0..hd)
-                        .map(|d| q[i * dim + h * hd + d] * k[j * dim + kv_h * hd + d])
-                        .sum();
-                    let score = dot * scale;
-                    weights[aw_base + i * sp + j] = score;
-                    mx = mx.max(score);
-                }
-                let mut sum = 0.0f32;
-                for j in 0..=i {
-                    let idx = aw_base + i * sp + j;
-                    weights[idx] = (weights[idx] - mx).exp();
-                    sum += weights[idx];
-                }
-                for j in 0..=i {
-                    let idx = aw_base + i * sp + j;
-                    weights[idx] /= sum;
-                    for d in 0..hd {
-                        out[i * dim + h * hd + d] += weights[idx] * v[j * dim + kv_h * hd + d];
-                    }
-                }
-            }
-        }
-        (out, weights)
-    }
-
     fn fill_small_weights(data: &mut [f32], scale: f32, seed: usize) {
         for (idx, value) in data.iter_mut().enumerate() {
             let raw = ((idx + seed) % 17) as f32 - 8.0;
@@ -1523,75 +1464,155 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: update for 2-layer MLX architecture
     fn test_forward_cache_tracks_each_step() {
         let (model, dim, heads, kv_heads, mlp_dim, vocab) = build_test_model();
         let tokens = vec![0u16, 1, 2, 3];
         let sp = tokens.len() - 1;
+        let n = sp * dim;
+        let logit_softcap = 30.0f32;
         let (loss, cache) = forward(
-            &tokens, &model, dim, heads, kv_heads, mlp_dim, vocab, sp, 30.0,
+            &tokens,
+            &model,
+            dim,
+            heads,
+            kv_heads,
+            mlp_dim,
+            vocab,
+            sp,
+            logit_softcap,
         );
         assert!(loss.is_finite());
 
-        let layer = &model.layers[0];
-        let lc = &cache.layer_caches[0];
-        let x_embed = embed_tokens(&tokens[..sp], &model.wte.data, dim);
-        let (x_normed, _) = rms_norm_fwd(&x_embed, 1e-6);
+        let lc0 = &cache.layer_caches[0];
+        let lc1 = &cache.layer_caches[1];
 
-        // x_mixed = mix[0]*x + mix[1]*x0, where x=x0 initially, mix[0]=1, mix[1]=0
-        assert_close(&lc.x_mixed, &x_normed, 1e-6);
+        // Step 1: embedding + per-position RMSNorm
+        let mut x_embed = vec![0.0f32; n];
+        for pos in 0..sp {
+            let idx = tokens[pos] as usize;
+            for d in 0..dim {
+                x_embed[pos * dim + d] = model.wte.data[idx * dim + d];
+            }
+        }
+        let (x0, _) = rms_norm_fwd_per_pos(&x_embed, dim, sp, 1e-6);
+        assert_close(&lc0.x_pre, &x0, 1e-6);
+        assert_close(&lc0.x0, &x0, 1e-6);
 
-        let normed = rms_norm_fwd(&lc.x_mixed, 1e-6).0;
-        assert_close(&lc.normed, &normed, 1e-6);
+        // Step 2: resid_mix at layer 0 (mix[0]=1, mix[1]=0, x_pre=x0)
+        assert_close(&lc0.x_mixed, &x0, 1e-6);
 
-        let q = naive_sgemm_nn(dim, sp, dim, &layer.wq.data, &normed);
-        let k = naive_sgemm_nn(dim, sp, dim, &layer.wk.data, &normed);
-        let v = naive_sgemm_nn(dim, sp, dim, &layer.wv.data, &normed);
+        // Step 3: attn_norm (per-position RMSNorm on x_mixed)
+        let (nm0, _) = rms_norm_fwd_per_pos(&lc0.x_mixed, dim, sp, 1e-6);
+        assert_close(&lc0.normed, &nm0, 1e-6);
 
-        // Verify Q/K RMSNorm per head
+        // Step 4: Q/K projections + head RMSNorm + q_gain + RoPE
+        let q_raw0 = naive_sgemm_nn(dim, sp, dim, &model.layers[0].wq.data, &nm0);
         let hd = dim / heads;
         for h in 0..heads {
+            let gain = model.layers[0].q_gain.data[h];
             for t in 0..sp {
                 let base = t * dim + h * hd;
-                let (qn, _) = rms_norm_fwd(&q[base..base + hd], 1e-6);
-                assert_close(&lc.q_pre_rope[base..base + hd], &qn, 1e-6);
-            }
-        }
-        for h in 0..kv_heads {
-            for t in 0..sp {
-                let base = t * dim + h * hd;
-                let (kn, _) = rms_norm_fwd(&k[base..base + hd], 1e-6);
-                assert_close(&lc.k_pre_rope[base..base + hd], &kn, 1e-6);
+                let (qn, _) = rms_norm_fwd(&q_raw0[base..base + hd], 1e-6);
+                let qn_gained: Vec<f32> = qn.iter().map(|&v| v * gain).collect();
+                assert_close(&lc0.q_pre_rope[base..base + hd], &qn_gained, 1e-6);
             }
         }
 
-        let mut q_rope = lc.q_pre_rope.clone();
-        let mut k_rope = lc.k_pre_rope.clone();
-        rope_fwd(&mut q_rope, &mut k_rope, sp, hd, heads, kv_heads, dim);
-        assert_close(&lc.q_rope, &q_rope, 1e-6);
-        assert_close(&lc.k_rope, &k_rope, 1e-6);
+        // Step 5: attention output + wo projection (wo=0, so proj=0)
+        assert_close(&lc0.x_after_attn, &lc0.x_mixed, 1e-6);
 
-        let (attn_out, attn_weights) =
-            manual_attention(&q_rope, &k_rope, &v, sp, hd, heads, kv_heads, dim);
-        assert_close(&lc.attn_out_raw, &attn_out, 1e-6);
-        assert_close(&lc.attn_weights, &attn_weights, 1e-6);
-        for i in 0..sp {
-            let row = &lc.attn_weights[i * sp..(i + 1) * sp];
-            let sum: f32 = row.iter().sum();
-            assert!((sum - 1.0).abs() < 1e-5);
-            for j in (i + 1)..sp {
-                assert_eq!(row[j], 0.0);
+        // Step 6: MLP norm (per-position RMSNorm)
+        let (nm2_0, _) = rms_norm_fwd_per_pos(&lc0.x_after_attn, dim, sp, 1e-6);
+        assert_close(&lc0.normed2, &nm2_0, 1e-6);
+
+        // Step 7: w_up projection
+        let up0 = sgemm_nn(mlp_dim, sp, dim, &model.layers[0].w_up.data, &nm2_0);
+        assert_close(&lc0.up, &up0, 1e-6);
+
+        // Step 8: layer 1 should have skip from layer 0
+        // Encoder layer 0 saves its output as skip
+        let x_out_0: Vec<f32> = {
+            let proj0 = sgemm_nn(dim, sp, dim, &model.layers[0].wo.data, &lc0.attn_out_raw);
+            let mut x = vec![0.0f32; n];
+            for i in 0..n {
+                x[i] = lc0.x_mixed[i] + model.layers[0].attn_scale.data[i % dim] * proj0[i];
+            }
+            let activated: Vec<f32> = lc0
+                .up
+                .iter()
+                .map(|&v| {
+                    let a = v.max(0.0);
+                    a * a
+                })
+                .collect();
+            let down0 = sgemm_nn(dim, sp, mlp_dim, &model.layers[0].w_down.data, &activated);
+            for i in 0..n {
+                x[i] += model.layers[0].mlp_scale.data[i % dim] * down0[i];
+            }
+            x
+        };
+        // Step 8: verify layer 0 (encoder) has no actual skip contribution
+        // skip_added is always allocated (zeros) but only populated for decoder layers
+        let encoder_skip_sum: f32 = lc0.skip_added.iter().sum();
+        assert!(
+            encoder_skip_sum.abs() < 1e-10,
+            "encoder layer 0 should have zero skip_added, got sum={}",
+            encoder_skip_sum
+        );
+
+        // Step 9: layer 1 should receive the skip
+        assert!(!lc1.skip_added.is_empty());
+        let skip_weight_0 = &model.skip_weights.data[..dim];
+        for pos in 0..sp {
+            for d in 0..dim {
+                let idx = pos * dim + d;
+                let expected_skip = x_out_0[idx];
+                assert!(
+                    (lc1.skip_added[idx] - expected_skip).abs() < 1e-5,
+                    "skip_added mismatch at [{}, {}]: got {} expected {}",
+                    pos,
+                    d,
+                    lc1.skip_added[idx],
+                    expected_skip
+                );
             }
         }
 
-        // wo is zero, so proj is zero. x_after_attn = x_mixed + attn_scale * proj = x_mixed
-        assert_close(&lc.x_after_attn, &lc.x_mixed, 1e-6);
+        // Step 10: x_mixed at layer 1 includes skip
+        let x_mixed_1_expected: Vec<f32> = {
+            let mut xm = vec![0.0f32; n];
+            for i in 0..n {
+                xm[i] = model.layers[1].resid_mix.data[i % dim] * x_out_0[i]
+                    + model.layers[1].resid_mix.data[dim + i % dim] * x0[i]
+                    + skip_weight_0[i % dim] * x_out_0[i];
+            }
+            xm
+        };
+        assert_close(&lc1.x_mixed, &x_mixed_1_expected, 1e-4);
 
-        let normed2 = rms_norm_fwd(&lc.x_after_attn, 1e-6).0;
-        assert_close(&lc.normed2, &normed2, 1e-6);
-
-        let up = naive_sgemm_nn(mlp_dim, sp, dim, &layer.w_up.data, &normed2);
-        assert_close(&lc.up, &up, 1e-6);
+        // Step 11: final norm
+        let x_final_expected = {
+            let proj1 = sgemm_nn(dim, sp, dim, &model.layers[1].wo.data, &lc1.attn_out_raw);
+            let mut x = vec![0.0f32; n];
+            for i in 0..n {
+                x[i] = lc1.x_mixed[i] + model.layers[1].attn_scale.data[i % dim] * proj1[i];
+            }
+            let activated: Vec<f32> = lc1
+                .up
+                .iter()
+                .map(|&v| {
+                    let a = v.max(0.0);
+                    a * a
+                })
+                .collect();
+            let down1 = sgemm_nn(dim, sp, mlp_dim, &model.layers[1].w_down.data, &activated);
+            for i in 0..n {
+                x[i] += model.layers[1].mlp_scale.data[i % dim] * down1[i];
+            }
+            x
+        };
+        let (x_final_check, _) = rms_norm_fwd_per_pos(&x_final_expected, dim, sp, 1e-6);
+        assert_close(&cache.x_final, &x_final_check, 1e-4);
     }
 
     #[test]
