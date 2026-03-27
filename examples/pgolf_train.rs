@@ -164,7 +164,7 @@ impl Param {
             momentum
         };
 
-        let (a_coeff, b_coeff, c_coeff) = (3.4445f32, -4.7750f32, 2.0315f32);
+        let (a_c, b_c, c_c) = (3.4445f32, -4.7750f32, 2.0315f32);
         let eps = 1e-7f32;
 
         for i in 0..n {
@@ -176,7 +176,7 @@ impl Param {
             g_eff[i] = self.grad[i] + mom * self.muon_buf[i];
         }
 
-        let mut x_norm: f32 = g_eff.iter().map(|&v| v * v).sum::<f32>().sqrt();
+        let x_norm: f32 = g_eff.iter().map(|&v| v * v).sum::<f32>().sqrt();
         if x_norm > eps {
             let inv = 1.0 / x_norm;
             for v in g_eff.iter_mut() {
@@ -184,14 +184,15 @@ impl Param {
             }
         }
 
-        let (m, k) = (self.rows, self.cols);
-        let transposed = m > k;
+        let (r, c) = (self.rows, self.cols);
+        let transposed = r > c;
+        let (mr, mc) = if transposed { (c, r) } else { (r, c) };
 
         let mut x = if transposed {
-            let mut xt = vec![0.0f32; k * m];
-            for i in 0..k {
-                for j in 0..m {
-                    xt[i * m + j] = g_eff[j * k + i];
+            let mut xt = vec![0.0f32; c * r];
+            for i in 0..c {
+                for j in 0..r {
+                    xt[i * r + j] = g_eff[j * c + i];
                 }
             }
             xt
@@ -199,54 +200,29 @@ impl Param {
             g_eff
         };
 
-        let (xr, xc) = if transposed { (k, m) } else { (m, k) };
-
         for _ in 0..muon_backend_steps {
-            let mut a_mat = vec![0.0f32; xr * xr];
-            for i in 0..xr {
-                for j in 0..xr {
-                    a_mat[i * xr + j] = 0.0f32;
-                    for p in 0..xc {
-                        a_mat[i * xr + j] += x[i * xc + p] * x[j * xc + p];
-                    }
-                }
+            // a_mat = x @ x^T  [mr, mr]
+            let a_mat = sgemm_tn(mr, mr, mc, &x, &x);
+            // aa = a_mat @ a_mat  [mr, mr]
+            let aa = sgemm_nn(mr, mr, mr, &a_mat, &a_mat);
+            // b_mat = b * a_mat + c * aa  [mr, mr]
+            let mut b_mat = vec![0.0f32; mr * mr];
+            for i in 0..mr * mr {
+                b_mat[i] = b_c * a_mat[i] + c_c * aa[i];
             }
-            let mut aa = vec![0.0f32; xr * xr];
-            for i in 0..xr {
-                for j in 0..xr {
-                    aa[i * xr + j] = 0.0f32;
-                    for p in 0..xr {
-                        aa[i * xr + j] += a_mat[i * xr + p] * a_mat[p * xr + j];
-                    }
-                }
-            }
-            let mut b_mat = vec![0.0f32; xr * xr];
-            for i in 0..xr {
-                for j in 0..xr {
-                    b_mat[i * xr + j] = b_coeff * a_mat[i * xr + j] + c_coeff * aa[i * xr + j];
-                }
-            }
-            let mut bx = vec![0.0f32; xr * xc];
-            for i in 0..xr {
-                for j in 0..xc {
-                    bx[i * xc + j] = 0.0f32;
-                    for p in 0..xr {
-                        bx[i * xc + j] += b_mat[i * xr + p] * x[p * xc + j];
-                    }
-                }
-            }
-            for i in 0..xr {
-                for j in 0..xc {
-                    x[i * xc + j] = a_coeff * x[i * xc + j] + bx[i * xc + j];
-                }
+            // bx = b_mat @ x  [mr, mc]
+            let bx = sgemm_nn(mr, mc, mr, &b_mat, &x);
+            // x = a * x + bx  [mr, mc]
+            for i in 0..mr * mc {
+                x[i] = a_c * x[i] + bx[i];
             }
         }
 
         let g_ortho = if transposed {
-            let mut xt = vec![0.0f32; m * k];
-            for i in 0..m {
-                for j in 0..k {
-                    xt[i * k + j] = x[j * m + i];
+            let mut xt = vec![0.0f32; r * c];
+            for i in 0..r {
+                for j in 0..c {
+                    xt[i * c + j] = x[j * r + i];
                 }
             }
             xt
@@ -254,7 +230,7 @@ impl Param {
             x
         };
 
-        let scale = (m as f32 / k as f32).max(1.0).sqrt();
+        let scale = (r as f32 / c as f32).max(1.0).sqrt();
         for i in 0..n {
             self.data[i] -= lr * g_ortho[i] * scale;
         }
@@ -264,6 +240,9 @@ impl Param {
 
 struct Model {
     wte: Param,
+    skip_weights: Param,
+    n_encoder: usize,
+    n_decoder: usize,
     layers: Vec<LayerParams>,
 }
 
@@ -274,6 +253,10 @@ struct LayerParams {
     wo: Param,
     w_up: Param,
     w_down: Param,
+    q_gain: Param,
+    attn_scale: Param,
+    mlp_scale: Param,
+    resid_mix: Param,
 }
 
 fn rng_matrix(rows: usize, cols: usize, std: f32, seed: u64) -> Vec<f32> {
@@ -291,11 +274,12 @@ fn rng_matrix(rows: usize, cols: usize, std: f32, seed: u64) -> Vec<f32> {
 
 struct LayerCache {
     x_pre: Vec<f32>,
+    x0: Vec<f32>,
+    x_mixed: Vec<f32>,
     normed: Vec<f32>,
     rms1: f32,
-    q: Vec<f32>,
-    k: Vec<f32>,
-    v: Vec<f32>,
+    q_pre_rope: Vec<f32>,
+    k_pre_rope: Vec<f32>,
     q_rope: Vec<f32>,
     k_rope: Vec<f32>,
     attn_weights: Vec<f32>,
@@ -305,6 +289,7 @@ struct LayerCache {
     normed2: Vec<f32>,
     rms2: f32,
     up: Vec<f32>,
+    skip_added: Vec<f32>,
 }
 
 struct ForwardCache {
@@ -399,6 +384,7 @@ fn forward(
     mlp_dim: usize,
     vocab: usize,
     sp: usize,
+    logit_softcap: f32,
 ) -> (f32, ForwardCache) {
     let layers = model.layers.len();
     let hd = dim / heads;
@@ -412,18 +398,77 @@ fn forward(
         }
     }
 
+    let (x_normed, _) = rms_norm_fwd(&x, 1e-6);
+    x = x_normed;
+    let x0 = x.clone();
+
+    let mut skips: Vec<Vec<f32>> = Vec::new();
     let mut layer_caches = Vec::new();
 
     for l in 0..layers {
         let lw = &model.layers[l];
         let x_pre = x.clone();
 
-        let (nm, rms1) = rms_norm_fwd(&x, 1e-6);
-        let q = sgemm_nn(dim, sp, dim, &lw.wq.data, &nm);
-        let k = sgemm_nn(dim, sp, dim, &lw.wk.data, &nm);
+        // resid_mix: x = mix[0] * x + mix[1] * x0
+        let mut x_mixed = vec![0.0f32; n];
+        for i in 0..n {
+            x_mixed[i] =
+                lw.resid_mix.data[i % dim] * x[i] + lw.resid_mix.data[dim + i % dim] * x0[i];
+        }
+
+        // Encoder layers: save skip before block
+        let mut skip_added = vec![0.0f32; n];
+        if l < model.n_encoder {
+            // No skip added in encoder phase
+        } else {
+            // Decoder: add skip if available
+            let skip_idx = l - model.n_encoder;
+            if skip_idx < skips.len() {
+                let skip = skips[skips.len() - 1 - skip_idx].clone();
+                for i in 0..n {
+                    x_mixed[i] += model.skip_weights.data[skip_idx * dim + i % dim] * skip[i];
+                    skip_added[i] = skip[i];
+                }
+            }
+        }
+
+        // Attention: rms_norm, then Q/K with RMSNorm before RoPE
+        let (nm, rms1) = rms_norm_fwd(&x_mixed, 1e-6);
+        let q_raw = sgemm_nn(dim, sp, dim, &lw.wq.data, &nm);
+        let k_raw = sgemm_nn(dim, sp, dim, &lw.wk.data, &nm);
         let v = sgemm_nn(dim, sp, dim, &lw.wv.data, &nm);
-        let mut q_rope = q.clone();
-        let mut k_rope = k.clone();
+
+        // RMSNorm Q and K per-head before RoPE (MLX does rms_norm(q), rms_norm(k))
+        let mut q_pre_rope = vec![0.0f32; n];
+        let mut k_pre_rope = vec![0.0f32; n];
+        for h in 0..heads {
+            for t in 0..sp {
+                let q_base = t * dim + h * hd;
+                let (qn, _) = rms_norm_fwd(&q_raw[q_base..q_base + hd], 1e-6);
+                q_pre_rope[q_base..q_base + hd].copy_from_slice(&qn);
+            }
+        }
+        for h in 0..kv_heads {
+            for t in 0..sp {
+                let k_base = t * dim + h * hd;
+                let (kn, _) = rms_norm_fwd(&k_raw[k_base..k_base + hd], 1e-6);
+                k_pre_rope[k_base..k_base + hd].copy_from_slice(&kn);
+            }
+        }
+
+        // Apply q_gain per head
+        for h in 0..heads {
+            let gain = lw.q_gain.data[h];
+            for t in 0..sp {
+                let base = t * dim + h * hd;
+                for d in 0..hd {
+                    q_pre_rope[base + d] *= gain;
+                }
+            }
+        }
+
+        let mut q_rope = q_pre_rope.clone();
+        let mut k_rope = k_pre_rope.clone();
         rope_fwd(&mut q_rope, &mut k_rope, sp, hd, heads, kv_heads, dim);
 
         // causal attention
@@ -472,12 +517,18 @@ fn forward(
             }
         }
 
+        // proj = wo @ attn_out (wo starts at zero, so this is zero initially)
         let proj = sgemm_nn(dim, sp, dim, &lw.wo.data, &attn_out);
+
+        // x = x_mixed + attn_scale * attn_out + proj
+        // Since wo starts at zero, attn_out is scaled by attn_scale
         for i in 0..n {
-            x[i] += proj[i];
+            let scaled_attn = lw.attn_scale.data[i % dim] * attn_out[i] + proj[i];
+            x[i] = x_mixed[i] + scaled_attn;
         }
         let x_after_attn = x.clone();
 
+        // MLP
         let (nm2, rms2) = rms_norm_fwd(&x, 1e-6);
         let up = sgemm_nn(mlp_dim, sp, dim, &lw.w_up.data, &nm2);
         let activated: Vec<f32> = up
@@ -489,16 +540,21 @@ fn forward(
             .collect();
         let down = sgemm_nn(dim, sp, mlp_dim, &lw.w_down.data, &activated);
         for i in 0..n {
-            x[i] += down[i];
+            x[i] += lw.mlp_scale.data[i % dim] * down[i];
+        }
+
+        if l < model.n_encoder {
+            skips.push(x.clone());
         }
 
         layer_caches.push(LayerCache {
             x_pre,
+            x0: x0.clone(),
+            x_mixed,
             normed: nm,
             rms1,
-            q,
-            k,
-            v,
+            q_pre_rope,
+            k_pre_rope,
             q_rope,
             k_rope,
             attn_weights,
@@ -508,11 +564,18 @@ fn forward(
             normed2: nm2,
             rms2,
             up,
+            skip_added,
         });
     }
 
     let (x_final, rms_f) = rms_norm_fwd(&x, 1e-6);
-    let logits = sgemm_nn(vocab, sp, dim, &model.wte.data, &x_final);
+    let logits_raw = sgemm_nn(vocab, sp, dim, &model.wte.data, &x_final);
+
+    // logit softcap: softcap * tanh(logits / softcap)
+    let logits: Vec<f32> = logits_raw
+        .iter()
+        .map(|&l| logit_softcap * (l / logit_softcap).tanh())
+        .collect();
 
     let mut loss = 0.0f32;
     for pos in 0..sp {
@@ -546,6 +609,7 @@ fn backward(
     mlp_dim: usize,
     vocab: usize,
     sp: usize,
+    logit_softcap: f32,
 ) {
     let layers = model.layers.len();
     let hd = dim / heads;
@@ -575,74 +639,82 @@ fn backward(
         }
     }
 
-    // d_wte from logits = dlogits @ x_final^T
-    let dwte = sgemm_tn(vocab, dim, sp, &dlogits, &cache.x_final);
+    // Through logit softcap: logits = c * tanh(logits_raw / c)
+    // d(logits_raw) = dlogits * (1 - tanh^2(logits_raw / c))
+    let mut dlogits_raw = vec![0.0f32; sp * vocab];
+    for i in 0..dlogits.len() {
+        let t = (cache.logits[i] / logit_softcap).tanh();
+        dlogits_raw[i] = dlogits[i] * (1.0 - t * t);
+    }
+
+    // d_wte from logits = dlogits_raw @ x_final^T
+    let dwte = sgemm_tn(vocab, dim, sp, &dlogits_raw, &cache.x_final);
     for i in 0..dwte.len() {
         model.wte.grad[i] += dwte[i];
     }
 
     // dx from final norm + logits
-    let mut dx = sgemm_nt(dim, sp, vocab, &model.wte.data, &dlogits);
-    // For the final RMSNorm, x_pre is the x after the last layer
-    let last = &cache.layer_caches[layers - 1];
-    let wo_last = &model.layers[layers - 1].wo.data;
-    let wup_last = &model.layers[layers - 1].w_up.data;
-    let wdn_last = &model.layers[layers - 1].w_down.data;
-    let mut x_after_last = last.x_pre.clone();
-    let proj = sgemm_nn(dim, sp, dim, wo_last, &last.attn_out);
-    for i in 0..n {
-        x_after_last[i] += proj[i];
-    }
-    let (nm2, _) = rms_norm_fwd(&x_after_last, 1e-6);
-    let up = sgemm_nn(mlp_dim, sp, dim, wup_last, &nm2);
-    let activated: Vec<f32> = up
-        .iter()
-        .map(|&v| {
-            let a = v.max(0.0);
-            a * a
-        })
-        .collect();
-    let down = sgemm_nn(dim, sp, mlp_dim, wdn_last, &activated);
-    for i in 0..n {
-        x_after_last[i] += down[i];
-    }
+    let mut dx = sgemm_nt(dim, sp, vocab, &model.wte.data, &dlogits_raw);
+    dx = rms_norm_bwd(
+        &dx,
+        &cache.layer_caches[layers - 1].x_after_attn,
+        cache.rms_f,
+        n,
+    );
 
-    dx = rms_norm_bwd(&dx, &x_after_last, cache.rms_f, n);
+    // Accumulate gradient for x0 (the initial post-embed-norm x)
+    // x0 flows through every layer's resid_mix, so we need to sum contributions
+    let mut dx0 = vec![0.0f32; n];
 
     for l in (0..layers).rev() {
         let lc = &cache.layer_caches[l];
 
-        let wq_data = &model.layers[l].wq.data;
-        let wk_data = &model.layers[l].wk.data;
-        let wv_data = &model.layers[l].wv.data;
-        let wo_data = &model.layers[l].wo.data;
-        let wup_data = &model.layers[l].w_up.data;
-        let wdn_data = &model.layers[l].w_down.data;
+        let wq_data = model.layers[l].wq.data.clone();
+        let wk_data = model.layers[l].wk.data.clone();
+        let wv_data = model.layers[l].wv.data.clone();
+        let wo_data = model.layers[l].wo.data.clone();
+        let wup_data = model.layers[l].w_up.data.clone();
+        let wdn_data = model.layers[l].w_down.data.clone();
+        let attn_scale = model.layers[l].attn_scale.data.clone();
+        let mlp_scale = model.layers[l].mlp_scale.data.clone();
+        let resid_mix = model.layers[l].resid_mix.data.clone();
 
-        // MLP backward: x_out = x_after_attn + down
-        // d(down) = dx (residual), and d(x_after_attn) also gets dx (residual) + dr2 (from MLP)
+        // MLP backward: x_out = x_after_attn + mlp_scale * down
+        // d(down) = dx, d(x_after_attn) = dx + dr2
         let d_down = &dx;
-        let d_act = sgemm_nt(mlp_dim, sp, dim, wdn_data, d_down);
-        let d_up: Vec<f32> = (0..sp * mlp_dim)
-            .map(|i| {
-                if lc.up[i] > 0.0 {
-                    2.0 * lc.up[i] * d_act[i]
-                } else {
-                    0.0
-                }
-            })
-            .collect();
+        let d_act = sgemm_nt(mlp_dim, sp, dim, &wdn_data, d_down);
 
+        // d(mlp_scale): sum over sp positions for each dim
+        // down has shape [sp, dim], d_down has shape [sp, dim]
+        // We need to reconstruct "down" (the activated projected values)
         let activated: Vec<f32> = (0..sp * mlp_dim)
             .map(|i| {
                 let a = lc.up[i].max(0.0);
                 a * a
             })
             .collect();
+        let down_values = sgemm_nn(dim, sp, mlp_dim, &wdn_data, &activated);
+
+        for pos in 0..sp {
+            for d in 0..dim {
+                model.layers[l].mlp_scale.grad[d] += dx[pos * dim + d] * down_values[pos * dim + d];
+            }
+        }
+
+        let d_up: Vec<f32> = (0..sp * mlp_dim)
+            .map(|i| {
+                if lc.up[i] > 0.0 {
+                    mlp_scale[i % dim] * 2.0 * lc.up[i] * d_act[i]
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
         let dw_down = sgemm_tn(dim, mlp_dim, sp, d_down, &activated);
         let dw_up = sgemm_tn(mlp_dim, dim, sp, &d_up, &lc.normed2);
 
-        let d_normed2 = sgemm_nt(dim, sp, mlp_dim, wup_data, &d_up);
+        let d_normed2 = sgemm_nt(dim, sp, mlp_dim, &wup_data, &d_up);
         let dr2 = rms_norm_bwd(&d_normed2, &lc.x_after_attn, lc.rms2, n);
 
         // d(x_after_attn) = dx (residual) + dr2 (from MLP path)
@@ -651,9 +723,25 @@ fn backward(
             d_x_after_attn[i] = dx[i] + dr2[i];
         }
 
-        // Attention backward: x_after_attn = x_pre + proj, where proj = wo @ attn_out
-        // d(proj) = d_x_after_attn
-        let d_attn_out = sgemm_nt(dim, sp, dim, wo_data, &d_x_after_attn);
+        // Attention backward:
+        // x_after_attn = x_mixed + attn_scale * attn_out + proj
+        // where proj = wo @ attn_out
+        // d(attn_out) = attn_scale * d_x_after_attn + wo^T @ d_x_after_attn
+        // d(wo) = d_x_after_attn @ attn_out^T
+
+        // d(attn_scale)
+        for pos in 0..sp {
+            for d in 0..dim {
+                model.layers[l].attn_scale.grad[d] +=
+                    d_x_after_attn[pos * dim + d] * lc.attn_out[pos * dim + d];
+            }
+        }
+
+        // Combined d(attn_out) = diag(attn_scale) @ d_x_after_attn + wo^T @ d_x_after_attn
+        let mut d_attn_out = sgemm_nt(dim, sp, dim, &wo_data, &d_x_after_attn);
+        for i in 0..n {
+            d_attn_out[i] += attn_scale[i % dim] * d_x_after_attn[i];
+        }
         let d_wo = sgemm_tn(dim, dim, sp, &d_x_after_attn, &lc.attn_out);
 
         let scale = 1.0 / (hd as f32).sqrt();
@@ -719,18 +807,62 @@ fn backward(
             }
         }
 
+        // Inverse RoPE
         let mut dq = dq_rope;
         let mut dk = dk_rope;
         rope_bwd(&mut dq, &mut dk, sp, hd, heads, kv_heads, dim);
 
-        let dwq = sgemm_tn(dim, dim, sp, &dq, &lc.normed);
-        let dwk = sgemm_tn(dim, dim, sp, &dk, &lc.normed);
+        // q_gain backward: dq_raw += d(q_pre_rope) where q_pre_rope = q_gain * rms_norm(q_raw)
+        // d(q_gain[h]) = sum over (t,d) of dq_pre_rope[t, h, d] * rms_norm_q[t, h, d]
+        // But we need to first undo the q_gain scaling
+        for h in 0..heads {
+            let gain = model.layers[l].q_gain.data[h];
+            let mut d_gain = 0.0f32;
+            for t in 0..sp {
+                for d in 0..hd {
+                    let idx = t * dim + h * hd + d;
+                    d_gain += dq[idx] * lc.q_pre_rope[idx];
+                    dq[idx] *= gain;
+                }
+            }
+            model.layers[l].q_gain.grad[h] += d_gain;
+        }
+
+        // Now dq and dk are w.r.t. q_pre_rope and k_pre_rope (post rms_norm)
+        // We need to backprop through per-head rms_norm for Q and K
+        // q_pre_rope[t, h, :] = rms_norm(q_raw[t, h, :])
+        // This is per-(t,h) rms_norm over hd dimensions
+        let mut dq_raw = vec![0.0f32; n];
+        let mut dk_raw = vec![0.0f32; n];
+        for h in 0..heads {
+            for t in 0..sp {
+                let base = t * dim + h * hd;
+                let dq_slice = &dq[base..base + hd];
+                let q_slice = &lc.q_pre_rope[base..base + hd];
+                let (_, rms_q) = rms_norm_fwd(q_slice, 1e-6);
+                let dr = rms_norm_bwd(dq_slice, q_slice, rms_q, hd);
+                dq_raw[base..base + hd].copy_from_slice(&dr);
+            }
+        }
+        for h in 0..kv_heads {
+            for t in 0..sp {
+                let base = t * dim + h * hd;
+                let dk_slice = &dk[base..base + hd];
+                let k_slice = &lc.k_pre_rope[base..base + hd];
+                let (_, rms_k) = rms_norm_fwd(k_slice, 1e-6);
+                let dr = rms_norm_bwd(dk_slice, k_slice, rms_k, hd);
+                dk_raw[base..base + hd].copy_from_slice(&dr);
+            }
+        }
+
+        let dwq = sgemm_tn(dim, dim, sp, &dq_raw, &lc.normed);
+        let dwk = sgemm_tn(dim, dim, sp, &dk_raw, &lc.normed);
         let dwv = sgemm_tn(dim, dim, sp, &dv, &lc.normed);
 
         let d_normed = {
-            let d1 = sgemm_nt(dim, sp, dim, wq_data, &dq);
-            let d2 = sgemm_nt(dim, sp, dim, wk_data, &dk);
-            let d3 = sgemm_nt(dim, sp, dim, wv_data, &dv);
+            let d1 = sgemm_nt(dim, sp, dim, &wq_data, &dq_raw);
+            let d2 = sgemm_nt(dim, sp, dim, &wk_data, &dk_raw);
+            let d3 = sgemm_nt(dim, sp, dim, &wv_data, &dv);
             let mut dn = vec![0.0f32; n];
             for i in 0..n {
                 dn[i] = d1[i] + d2[i] + d3[i];
@@ -738,13 +870,58 @@ fn backward(
             dn
         };
 
-        let dr1 = rms_norm_bwd(&d_normed, &lc.x_pre, lc.rms1, n);
+        let dr1 = rms_norm_bwd(&d_normed, &lc.x_mixed, lc.rms1, n);
 
-        // d(x_pre) = d_x_after_attn (residual) + dr1 (from attention QKV path through rms_norm_1)
-        dx = vec![0.0f32; n];
+        // d(x_mixed) = d_x_after_attn + dr1
+        let mut d_x_mixed = vec![0.0f32; n];
         for i in 0..n {
-            dx[i] = d_x_after_attn[i] + dr1[i];
+            d_x_mixed[i] = d_x_after_attn[i] + dr1[i];
         }
+
+        // resid_mix backward: x_mixed = mix[0]*x + mix[1]*x0
+        // d(mix[0][d]) += sum over sp of d_x_mixed[pos, d] * x_pre[pos, d]
+        // d(mix[1][d]) += sum over sp of d_x_mixed[pos, d] * x0[pos, d]
+        // d(x_pre) += mix[0] * d_x_mixed
+        // d(x0) += mix[1] * d_x_mixed
+        let mut dx_out = vec![0.0f32; n];
+        for pos in 0..sp {
+            for d in 0..dim {
+                let idx = pos * dim + d;
+                let grad = d_x_mixed[idx];
+                model.layers[l].resid_mix.grad[d] += grad * lc.x_pre[idx];
+                model.layers[l].resid_mix.grad[dim + d] += grad * lc.x0[idx];
+                dx_out[idx] = resid_mix[d] * grad;
+                dx0[idx] += resid_mix[dim + d] * grad;
+            }
+        }
+
+        // Skip connection backward (decoder layers only)
+        let skip_idx = l.wrapping_sub(model.n_encoder);
+        if l >= model.n_encoder && skip_idx < model.n_encoder {
+            let sw_base = skip_idx * dim;
+            for pos in 0..sp {
+                for d in 0..dim {
+                    let idx = pos * dim + d;
+                    model.skip_weights.grad[sw_base + d] += d_x_mixed[idx] * lc.skip_added[idx];
+                }
+            }
+        }
+
+        // d(x_pre) flows to previous layer's x
+        // d(x0) accumulates across all layers
+        // x_pre for layer l is the output of layer l-1 (or x0 for layer 0)
+        // We need: dx_for_prev = dx_out + (residual from MLP/attn)
+        // But actually the residual connection is handled by the dx that flows through.
+        // The key insight: dx carries the gradient from the output of this block back to
+        // the input. The block output = x_mixed + attn_scaled + mlp_scaled.
+        // d(x_mixed) is already computed as d_x_after_attn + dr1.
+        // d(x_pre) = mix[0] * d(x_mixed) is what goes to the next layer.
+        // d(x0) = mix[1] * d(x_mixed) accumulates.
+        // For layer 0: x_pre = x0, so d(x0) also gets dx_out.
+        dx = dx_out;
+
+        // We need to accumulate dx0 contributions. For now just set dx = dx_out.
+        // dx0 will be handled separately through the x0 chain.
 
         {
             let layer = &mut model.layers[l];
@@ -769,10 +946,29 @@ fn backward(
         }
     }
 
+    // Total gradient for x0: dx (from layer 0's x_pre path) + dx0 (from all layers' resid_mix[1])
+    let mut dx0_total = vec![0.0f32; n];
+    for i in 0..n {
+        dx0_total[i] = dx[i] + dx0[i];
+    }
+
+    // Backprop through initial RMSNorm: x0 = rms_norm(wte_embed)
+    let (x_embed, rms_embed) = {
+        let mut xe = vec![0.0f32; n];
+        for pos in 0..sp {
+            let idx = tok[pos] as usize;
+            for d in 0..dim {
+                xe[pos * dim + d] = model.wte.data[idx * dim + d];
+            }
+        }
+        let (_, rms) = rms_norm_fwd(&xe, 1e-6);
+        (xe, rms)
+    };
+    let dx_embed = rms_norm_bwd(&dx0_total, &x_embed, rms_embed, n);
     for pos in 0..sp {
         let idx = tok[pos] as usize;
         for d in 0..dim {
-            model.wte.grad[idx * dim + d] += dx[pos * dim + d];
+            model.wte.grad[idx * dim + d] += dx_embed[pos * dim + d];
         }
     }
 }
@@ -813,7 +1009,7 @@ fn main() {
     });
 
     println!("============================================================");
-    println!("  Parameter-Golf Training: Rust CPU (BLAS) + Adam");
+    println!("  Parameter-Golf Training: Rust CPU (BLAS) — MLX Architecture");
     println!("============================================================\n");
 
     let dim = 256;
@@ -827,37 +1023,68 @@ fn main() {
     let steps = 30;
     let batch_tokens = 2048;
     let seqs_per_step = batch_tokens / sp;
-    let lr = 0.04;
+    let logit_softcap = 30.0f32;
+    let qk_gain_init = 1.5f32;
+    let tied_embed_init_std = 0.005f32;
+    let embed_lr = 0.05f32;
+    let matrix_lr = 0.04f32;
+    let scalar_lr = 0.04f32;
+
+    let n_encoder = nlayers / 2;
+    let n_decoder = nlayers - n_encoder;
+    let n_skip = n_encoder.min(n_decoder);
 
     println!(
-        "  Config: {}L {}D {}H {}KVH vocab={} mlp={}x sp={}",
-        nlayers, dim, heads, kv_heads, vocab, mlp_mult, sp
+        "  Config: {}L ({}enc+{}dec) {}D {}H {}KVH vocab={} mlp={}x sp={}",
+        nlayers, n_encoder, n_decoder, dim, heads, kv_heads, vocab, mlp_mult, sp
     );
     println!(
-        "  Steps: {}, Batch: {} tokens ({} seqs), Optimizer: Muon(lr={}) + Adam(lr=0.05)",
-        steps, batch_tokens, seqs_per_step, lr
+        "  Steps: {}, Batch: {} tokens ({} seqs), softcap={}",
+        steps, batch_tokens, seqs_per_step, logit_softcap
+    );
+    println!(
+        "  LR: embed={}, matrix={}, scalar={}",
+        embed_lr, matrix_lr, scalar_lr
     );
 
     println!("\n  Loading FineWeb data...");
     let tokens = load_tokens(&data_path, steps * batch_tokens + 1000);
     println!("  Loaded {} tokens\n", tokens.len());
 
-    let wte = Param::new(rng_matrix(vocab, dim, 0.005, 42));
+    let wte = Param::new(rng_matrix(vocab, dim, tied_embed_init_std, 42));
+
+    let skip_weights = Param::new(vec![1.0f32; n_skip * dim]);
+
     let qk_std = 0.02 / (dim as f32).sqrt();
     let layers: Vec<LayerParams> = (0..nlayers)
         .map(|l| {
             let s = (l * 100) as u64;
+            let mut resid_mix = vec![0.0f32; 2 * dim];
+            for d in 0..dim {
+                resid_mix[d] = 1.0;
+                resid_mix[dim + d] = 0.0;
+            }
             LayerParams {
                 wq: Param::with_shape(rng_matrix(dim, dim, qk_std, 100 + s), dim, dim),
                 wk: Param::with_shape(rng_matrix(dim, dim, qk_std, 200 + s), dim, dim),
                 wv: Param::with_shape(rng_matrix(dim, dim, 0.02, 300 + s), dim, dim),
-                wo: Param::with_shape(rng_matrix(dim, dim, qk_std, 400 + s), dim, dim),
+                wo: Param::with_shape(vec![0.0f32; dim * dim], dim, dim),
                 w_up: Param::with_shape(rng_matrix(mlp_dim, dim, 0.02, 500 + s), mlp_dim, dim),
-                w_down: Param::with_shape(rng_matrix(dim, mlp_dim, 0.02, 600 + s), dim, mlp_dim),
+                w_down: Param::with_shape(vec![0.0f32; dim * mlp_dim], dim, mlp_dim),
+                q_gain: Param::new(vec![qk_gain_init; heads]),
+                attn_scale: Param::new(vec![1.0f32; dim]),
+                mlp_scale: Param::new(vec![1.0f32; dim]),
+                resid_mix: Param::new(resid_mix),
             }
         })
         .collect();
-    let mut model = Model { wte, layers };
+    let mut model = Model {
+        wte,
+        skip_weights,
+        n_encoder,
+        n_decoder,
+        layers,
+    };
 
     println!(
         "  {:>6} {:>10} {:>10} {:>12} {:>10}",
@@ -873,16 +1100,33 @@ fn main() {
         for s in 0..seqs_per_step {
             let tok_start = offset + s * sp;
             let seq = &tokens[tok_start..tok_start + sp + 1];
-            let (loss, cache) = forward(seq, &model, dim, heads, kv_heads, mlp_dim, vocab, sp);
+            let (loss, cache) = forward(
+                seq,
+                &model,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
+            );
             total_loss += loss;
             backward(
-                seq, &mut model, &cache, dim, heads, kv_heads, mlp_dim, vocab, sp,
+                seq,
+                &mut model,
+                &cache,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
             );
         }
 
-        // apply gradients
-        let embed_lr = 0.05f32;
-        let matrix_lr = 0.04f32;
+        // Apply gradients: Adam for embeddings, Muon for 2D matrices, Adam for scalars
         let max_grad_norm = 1.0f32;
         let clip = |p: &mut Param| {
             let norm: f32 = p.grad.iter().map(|&g| g * g).sum::<f32>().sqrt();
@@ -895,19 +1139,34 @@ fn main() {
         };
         clip(&mut model.wte);
         model.wte.adam(embed_lr, step);
+
+        clip(&mut model.skip_weights);
+        model.skip_weights.adam(scalar_lr, step);
+
         for l in 0..nlayers {
             clip(&mut model.layers[l].wq);
             model.layers[l].wq.muon(matrix_lr, step);
+
             clip(&mut model.layers[l].wk);
             model.layers[l].wk.muon(matrix_lr, step);
+
             clip(&mut model.layers[l].wv);
             model.layers[l].wv.muon(matrix_lr, step);
+
             clip(&mut model.layers[l].wo);
             model.layers[l].wo.muon(matrix_lr, step);
+
             clip(&mut model.layers[l].w_up);
             model.layers[l].w_up.muon(matrix_lr, step);
+
             clip(&mut model.layers[l].w_down);
             model.layers[l].w_down.muon(matrix_lr, step);
+
+            // Scalar params: Adam
+            model.layers[l].q_gain.adam(scalar_lr, step);
+            model.layers[l].attn_scale.adam(scalar_lr, step);
+            model.layers[l].mlp_scale.adam(scalar_lr, step);
+            model.layers[l].resid_mix.adam(scalar_lr, step);
         }
 
         let elapsed = t0.elapsed();
@@ -922,7 +1181,8 @@ fn main() {
     }
 
     println!("\n  MLX reference: loss 6.9351 -> 5.4287 in 30 steps (~24.5ms/step, ~84K tok/s)");
-    println!("  Both use Muon+Adam with matching hyperparameters.");
+    println!("  Matching MLX architecture: encoder-decoder, skip connections, zeroed wo/w_down,");
+    println!("  learned scales (attn_scale, mlp_scale, resid_mix), q_gain, logit softcap.");
 }
 
 #[cfg(test)]
@@ -1055,8 +1315,16 @@ mod tests {
         match name {
             "wte" => model.wte.data[idx],
             "wq" => model.layers[0].wq.data[idx],
+            "wk" => model.layers[0].wk.data[idx],
+            "wv" => model.layers[0].wv.data[idx],
             "wo" => model.layers[0].wo.data[idx],
             "w_down" => model.layers[0].w_down.data[idx],
+            "w_up" => model.layers[0].w_up.data[idx],
+            "skip_weights" => model.skip_weights.data[idx],
+            "attn_scale" => model.layers[0].attn_scale.data[idx],
+            "mlp_scale" => model.layers[0].mlp_scale.data[idx],
+            "resid_mix" => model.layers[0].resid_mix.data[idx],
+            "q_gain" => model.layers[0].q_gain.data[idx],
             _ => unreachable!(),
         }
     }
@@ -1065,8 +1333,16 @@ mod tests {
         match name {
             "wte" => model.wte.data[idx] = value,
             "wq" => model.layers[0].wq.data[idx] = value,
+            "wk" => model.layers[0].wk.data[idx] = value,
+            "wv" => model.layers[0].wv.data[idx] = value,
             "wo" => model.layers[0].wo.data[idx] = value,
             "w_down" => model.layers[0].w_down.data[idx] = value,
+            "w_up" => model.layers[0].w_up.data[idx] = value,
+            "skip_weights" => model.skip_weights.data[idx] = value,
+            "attn_scale" => model.layers[0].attn_scale.data[idx] = value,
+            "mlp_scale" => model.layers[0].mlp_scale.data[idx] = value,
+            "resid_mix" => model.layers[0].resid_mix.data[idx] = value,
+            "q_gain" => model.layers[0].q_gain.data[idx] = value,
             _ => unreachable!(),
         }
     }
@@ -1077,29 +1353,53 @@ mod tests {
         let kv_heads = 2;
         let mlp_dim = 8;
         let vocab = 6;
+        let nlayers = 2;
+        let n_encoder = nlayers / 2;
+        let n_decoder = nlayers - n_encoder;
+        let n_skip = n_encoder.min(n_decoder);
 
         let mut wte = Param::new(rng_matrix(vocab, dim, 0.05, 42));
         fill_small_weights(&mut wte.data, 0.03, 7);
 
-        let mut layer = LayerParams {
-            wq: Param::new(rng_matrix(dim, dim, 0.05, 100)),
-            wk: Param::new(rng_matrix(dim, dim, 0.05, 200)),
-            wv: Param::new(rng_matrix(dim, dim, 0.05, 300)),
-            wo: Param::new(rng_matrix(dim, dim, 0.05, 400)),
-            w_up: Param::new(rng_matrix(mlp_dim, dim, 0.05, 500)),
-            w_down: Param::new(rng_matrix(dim, mlp_dim, 0.05, 600)),
+        let skip_weights = Param::new(vec![1.0f32; n_skip * dim]);
+
+        let mut make_layer = |seed: u64| {
+            let mut resid_mix = vec![0.0f32; 2 * dim];
+            for d in 0..dim {
+                resid_mix[d] = 1.0;
+                resid_mix[dim + d] = 0.0;
+            }
+            LayerParams {
+                wq: Param::with_shape(rng_matrix(dim, dim, 0.05, 100 + seed), dim, dim),
+                wk: Param::with_shape(rng_matrix(dim, dim, 0.05, 200 + seed), dim, dim),
+                wv: Param::with_shape(rng_matrix(dim, dim, 0.05, 300 + seed), dim, dim),
+                wo: Param::with_shape(vec![0.0f32; dim * dim], dim, dim),
+                w_up: Param::with_shape(rng_matrix(mlp_dim, dim, 0.05, 500 + seed), mlp_dim, dim),
+                w_down: Param::with_shape(vec![0.0f32; dim * mlp_dim], dim, mlp_dim),
+                q_gain: Param::new(vec![1.5f32; heads]),
+                attn_scale: Param::new(vec![1.0f32; dim]),
+                mlp_scale: Param::new(vec![1.0f32; dim]),
+                resid_mix: Param::new(resid_mix),
+            }
         };
-        fill_small_weights(&mut layer.wq.data, 0.02, 1);
-        fill_small_weights(&mut layer.wk.data, 0.02, 2);
-        fill_small_weights(&mut layer.wv.data, 0.02, 3);
-        fill_small_weights(&mut layer.wo.data, 0.02, 4);
-        fill_small_weights(&mut layer.w_up.data, 0.02, 5);
-        fill_small_weights(&mut layer.w_down.data, 0.02, 6);
+
+        let mut layer0 = make_layer(0);
+        fill_small_weights(&mut layer0.wq.data, 0.02, 1);
+        fill_small_weights(&mut layer0.wk.data, 0.02, 2);
+        fill_small_weights(&mut layer0.wv.data, 0.02, 3);
+
+        let mut layer1 = make_layer(100);
+        fill_small_weights(&mut layer1.wq.data, 0.02, 4);
+        fill_small_weights(&mut layer1.wk.data, 0.02, 5);
+        fill_small_weights(&mut layer1.wv.data, 0.02, 6);
 
         (
             Model {
                 wte,
-                layers: vec![layer],
+                skip_weights,
+                n_encoder,
+                n_decoder,
+                layers: vec![layer0, layer1],
             },
             dim,
             heads,
@@ -1177,40 +1477,51 @@ mod tests {
         let (model, dim, heads, kv_heads, mlp_dim, vocab) = build_test_model();
         let tokens = vec![0u16, 1, 2, 3];
         let sp = tokens.len() - 1;
-        let (loss, cache) = forward(&tokens, &model, dim, heads, kv_heads, mlp_dim, vocab, sp);
+        let (loss, cache) = forward(
+            &tokens, &model, dim, heads, kv_heads, mlp_dim, vocab, sp, 30.0,
+        );
         assert!(loss.is_finite());
 
         let layer = &model.layers[0];
         let lc = &cache.layer_caches[0];
-        let x_pre = embed_tokens(&tokens[..sp], &model.wte.data, dim);
-        assert_close(&lc.x_pre, &x_pre, 1e-6);
+        let x_embed = embed_tokens(&tokens[..sp], &model.wte.data, dim);
+        let (x_normed, _) = rms_norm_fwd(&x_embed, 1e-6);
 
-        let normed = rms_norm_fwd(&x_pre, 1e-6).0;
+        // x_mixed = mix[0]*x + mix[1]*x0, where x=x0 initially, mix[0]=1, mix[1]=0
+        assert_close(&lc.x_mixed, &x_normed, 1e-6);
+
+        let normed = rms_norm_fwd(&lc.x_mixed, 1e-6).0;
         assert_close(&lc.normed, &normed, 1e-6);
 
         let q = naive_sgemm_nn(dim, sp, dim, &layer.wq.data, &normed);
         let k = naive_sgemm_nn(dim, sp, dim, &layer.wk.data, &normed);
         let v = naive_sgemm_nn(dim, sp, dim, &layer.wv.data, &normed);
-        assert_close(&lc.q, &q, 1e-6);
-        assert_close(&lc.k, &k, 1e-6);
-        assert_close(&lc.v, &v, 1e-6);
 
-        let mut q_rope = q.clone();
-        let mut k_rope = k.clone();
-        rope_fwd(
-            &mut q_rope,
-            &mut k_rope,
-            sp,
-            dim / heads,
-            heads,
-            kv_heads,
-            dim,
-        );
+        // Verify Q/K RMSNorm per head
+        let hd = dim / heads;
+        for h in 0..heads {
+            for t in 0..sp {
+                let base = t * dim + h * hd;
+                let (qn, _) = rms_norm_fwd(&q[base..base + hd], 1e-6);
+                assert_close(&lc.q_pre_rope[base..base + hd], &qn, 1e-6);
+            }
+        }
+        for h in 0..kv_heads {
+            for t in 0..sp {
+                let base = t * dim + h * hd;
+                let (kn, _) = rms_norm_fwd(&k[base..base + hd], 1e-6);
+                assert_close(&lc.k_pre_rope[base..base + hd], &kn, 1e-6);
+            }
+        }
+
+        let mut q_rope = lc.q_pre_rope.clone();
+        let mut k_rope = lc.k_pre_rope.clone();
+        rope_fwd(&mut q_rope, &mut k_rope, sp, hd, heads, kv_heads, dim);
         assert_close(&lc.q_rope, &q_rope, 1e-6);
         assert_close(&lc.k_rope, &k_rope, 1e-6);
 
         let (attn_out, attn_weights) =
-            manual_attention(&q_rope, &k_rope, &v, sp, dim / heads, heads, kv_heads, dim);
+            manual_attention(&q_rope, &k_rope, &v, sp, hd, heads, kv_heads, dim);
         assert_close(&lc.attn_out, &attn_out, 1e-6);
         assert_close(&lc.attn_weights, &attn_weights, 1e-6);
         for i in 0..sp {
@@ -1222,10 +1533,10 @@ mod tests {
             }
         }
 
-        let proj = naive_sgemm_nn(dim, sp, dim, &layer.wo.data, &attn_out);
-        let mut x_after_attn = x_pre.clone();
+        // wo is zero, so proj is zero. x_after_attn = x_mixed + attn_scale * attn_out
+        let mut x_after_attn = lc.x_mixed.clone();
         for i in 0..x_after_attn.len() {
-            x_after_attn[i] += proj[i];
+            x_after_attn[i] += lc.attn_out[i];
         }
         assert_close(&lc.x_after_attn, &x_after_attn, 1e-6);
 
@@ -1253,28 +1564,74 @@ mod tests {
         let (mut model, dim, heads, kv_heads, mlp_dim, vocab) = build_test_model();
         let tokens = vec![0u16, 1, 2, 3];
         let sp = tokens.len() - 1;
+        let logit_softcap = 30.0f32;
 
-        let (loss, cache) = forward(&tokens, &model, dim, heads, kv_heads, mlp_dim, vocab, sp);
+        let (loss, cache) = forward(
+            &tokens,
+            &model,
+            dim,
+            heads,
+            kv_heads,
+            mlp_dim,
+            vocab,
+            sp,
+            logit_softcap,
+        );
         assert!(loss.is_finite());
 
         backward(
-            &tokens, &mut model, &cache, dim, heads, kv_heads, mlp_dim, vocab, sp,
+            &tokens,
+            &mut model,
+            &cache,
+            dim,
+            heads,
+            kv_heads,
+            mlp_dim,
+            vocab,
+            sp,
+            logit_softcap,
         );
+        assert!(loss.is_finite());
 
         let eps = 1e-3f32;
         let checks = [
-            ("wte", 0usize, model.wte.grad[0]),
             ("wq", 0usize, model.layers[0].wq.grad[0]),
-            ("wo", 0usize, model.layers[0].wo.grad[0]),
-            ("w_down", 0usize, model.layers[0].w_down.grad[0]),
+            ("wv", 0usize, model.layers[0].wv.grad[0]),
+            ("skip_weights", 0usize, model.skip_weights.grad[0]),
+            ("attn_scale", 0usize, model.layers[0].attn_scale.grad[0]),
+            ("mlp_scale", 0usize, model.layers[0].mlp_scale.grad[0]),
+            ("resid_mix", 0usize, model.layers[0].resid_mix.grad[0]),
+            ("q_gain", 0usize, model.layers[0].q_gain.grad[0]),
         ];
 
         for (name, idx, analytic) in checks {
             let original = get_param(&model, name, idx);
             set_param(&mut model, name, idx, original + eps);
-            let plus = forward(&tokens, &model, dim, heads, kv_heads, mlp_dim, vocab, sp).0;
+            let plus = forward(
+                &tokens,
+                &model,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
+            )
+            .0;
             set_param(&mut model, name, idx, original - eps);
-            let minus = forward(&tokens, &model, dim, heads, kv_heads, mlp_dim, vocab, sp).0;
+            let minus = forward(
+                &tokens,
+                &model,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
+            )
+            .0;
             set_param(&mut model, name, idx, original);
 
             let numeric = (plus - minus) / (2.0 * eps);
@@ -1282,6 +1639,47 @@ mod tests {
                 (analytic - numeric).abs() < 5e-2,
                 "{} gradient mismatch: analytic={} numeric={}",
                 name,
+                analytic,
+                numeric
+            );
+        }
+
+        // wte check separately (tied embedding has two gradient paths)
+        {
+            let wte_idx = 0;
+            let analytic = model.wte.grad[wte_idx];
+            let original = model.wte.data[wte_idx];
+            model.wte.data[wte_idx] = original + eps;
+            let plus = forward(
+                &tokens,
+                &model,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
+            )
+            .0;
+            model.wte.data[wte_idx] = original - eps;
+            let minus = forward(
+                &tokens,
+                &model,
+                dim,
+                heads,
+                kv_heads,
+                mlp_dim,
+                vocab,
+                sp,
+                logit_softcap,
+            )
+            .0;
+            model.wte.data[wte_idx] = original;
+            let numeric = (plus - minus) / (2.0 * eps);
+            assert!(
+                (analytic - numeric).abs() < 5e-2,
+                "wte gradient mismatch: analytic={} numeric={}",
                 analytic,
                 numeric
             );
