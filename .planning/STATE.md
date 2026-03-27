@@ -63,6 +63,19 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 
 **Solution:** `bwd_sdpa_bwd1_combined_mil` concatenates dvf+pf+dpf outputs to work around ANE compiler limitation with standalone `matmul->reshape` pattern.
 
+### ANE Matmul for pgolf: NOT VIABLE (2026-03-27)
+
+Comprehensive sweep of ANE vs CPU (Apple Accelerate BLAS) for pgolf training matmul shapes:
+
+| Dim | ANE ms | CPU ms | Ratio |
+|-----|--------|--------|-------|
+| 128 | 0.07 | 0.01 | 0.2x |
+| 256 | 0.15 | 0.02 | 0.2x |
+| 512 | 0.37 | 0.09 | 0.2x |
+| 1024 | 0.99 | 0.32 | 0.3x |
+
+**No crossover found up to 4096×1024.** ANE dispatch overhead (IOSurface I/O, fp32↔fp16 conversion, tiled compilation) dominates at all practical training sizes. Apple's Accelerate BLAS is too fast on Apple Silicon to beat with ANE for per-step matmuls. ANE only helps for batched inference at large scale.
+
 ## Key Bugs Found and Fixed
 
 1. MIL_HEADER `{{`/`}}` buildInfo syntax (Phase 1)
@@ -93,3 +106,5 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 | 2026-03-27 | All 9 tests pass (0 ignored), forward cache test updated for 2-layer MLX architecture |
 | 2026-03-27 | Repository pushed: 29 commits, all milestones M1+M2+M3 complete |
 | 2026-03-27 | Bug fixes: ANE gradient buffer fp16 size calculation, 11 SIGSEGV tests ignored |
+| 2026-03-27 | ANE matmul benchmark for pgolf: tiled layout [ic, seq+oc], sweep dim=128..1024 |
+| 2026-03-27 | ANE matmul NOT viable for pgolf: 3-10x slower than CPU BLAS at all sizes tested |
