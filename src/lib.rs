@@ -49,7 +49,7 @@ pub mod python;
 pub use data::{
     Batch, ChunkIterator, Collator, DataLoader, Dataset, JsonlDataset, PadCollator, RandomSampler,
     Sampler, SequentialDataset, SequentialSampler, ShardBatch, ShardConfig, ShardMetadata,
-    ShardedDataLoader, TextDataset, TruncateCollator,
+    ShardTokenDataset, ShardedDataLoader, TextDataset, TruncateCollator,
 };
 pub use error::{Error, Result};
 pub use layers::traits::Shape;

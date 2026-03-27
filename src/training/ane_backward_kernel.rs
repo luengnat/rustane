@@ -246,7 +246,11 @@ mod tests {
         let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
         let mil_code = RMSNormBackwardGen::new().generate(&config).unwrap();
 
-        if std::env::var("RUSTANE_RUN_ANE_KERNEL_TESTS").ok().as_deref() != Some("1") {
+        if std::env::var("RUSTANE_RUN_ANE_KERNEL_TESTS")
+            .ok()
+            .as_deref()
+            != Some("1")
+        {
             return;
         }
 

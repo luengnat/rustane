@@ -493,20 +493,20 @@ fn forward(
             }
         }
 
-        // Apply q_gain per head
+        let mut q_rope = q_pre_rope.clone();
+        let mut k_rope = k_pre_rope.clone();
+        rope_fwd(&mut q_rope, &mut k_rope, sp, hd, heads, kv_heads, dim);
+
+        let mut q_attn = q_rope.clone();
         for h in 0..heads {
             let gain = lw.q_gain.data[h];
             for t in 0..sp {
                 let base = t * dim + h * hd;
                 for d in 0..hd {
-                    q_pre_rope[base + d] *= gain;
+                    q_attn[base + d] *= gain;
                 }
             }
         }
-
-        let mut q_rope = q_pre_rope.clone();
-        let mut k_rope = k_pre_rope.clone();
-        rope_fwd(&mut q_rope, &mut k_rope, sp, hd, heads, kv_heads, dim);
 
         // causal attention
         let scale = 1.0 / (hd as f32).sqrt();
@@ -531,7 +531,7 @@ fn forward(
                 let mut mx = f32::NEG_INFINITY;
                 for j in 0..=i {
                     let dot: f32 = (0..hd)
-                        .map(|d| q_rope[i * dim + h * hd + d] * k_rope[j * dim + kv_h * hd + d])
+                        .map(|d| q_attn[i * dim + h * hd + d] * k_rope[j * dim + kv_h * hd + d])
                         .sum();
                     attn_weights[aw_i + j] = dot * scale;
                     mx = mx.max(attn_weights[aw_i + j]);
@@ -856,26 +856,26 @@ fn backward(
             }
         }
 
-        // Inverse RoPE
-        let mut dq = dq_rope;
-        let mut dk = dk_rope;
-        rope_bwd(&mut dq, &mut dk, sp, hd, heads, kv_heads, dim);
-
-        // q_gain backward: dq_raw += d(q_pre_rope) where q_pre_rope = q_gain * rms_norm(q_raw)
-        // d(q_gain[h]) = sum over (t,d) of dq_pre_rope[t, h, d] * rms_norm_q[t, h, d]
-        // But we need to first undo the q_gain scaling
+        // q_gain backward: MLX applies the gain after RoPE, so accumulate the gain
+        // gradient against the post-RoPE activations, then scale the incoming
+        // gradient before undoing RoPE.
         for h in 0..heads {
             let gain = model.layers[l].q_gain.data[h];
             let mut d_gain = 0.0f32;
             for t in 0..sp {
                 for d in 0..hd {
                     let idx = t * dim + h * hd + d;
-                    d_gain += dq[idx] * lc.q_pre_rope[idx];
-                    dq[idx] *= gain;
+                    d_gain += dq_rope[idx] * lc.q_rope[idx];
+                    dq_rope[idx] *= gain;
                 }
             }
             model.layers[l].q_gain.grad[h] += d_gain;
         }
+
+        // Inverse RoPE after the gain scaling.
+        let mut dq = dq_rope;
+        let mut dk = dk_rope;
+        rope_bwd(&mut dq, &mut dk, sp, hd, heads, kv_heads, dim);
 
         // Now dq and dk are w.r.t. q_pre_rope and k_pre_rope (post rms_norm)
         // We need to backprop through per-head rms_norm for Q and K
@@ -1070,7 +1070,10 @@ fn main() {
     let nlayers = 4;
     let mlp_dim = dim * mlp_mult;
     let sp = 256;
-    let steps = 100;
+    let steps = env::var("STEPS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(100);
     let batch_tokens = 2048;
     let seqs_per_step = batch_tokens / sp;
     let logit_softcap = 30.0f32;
@@ -1176,40 +1179,85 @@ fn main() {
             );
         }
 
-        // Apply gradients: Adam for embeddings, Muon for 2D matrices, Adam for scalars
-        let max_grad_norm = 1.0f32;
-        let clip = |p: &mut Param| {
-            let norm: f32 = p.grad.iter().map(|&g| g * g).sum::<f32>().sqrt();
-            if norm > max_grad_norm {
-                let s = max_grad_norm / norm;
-                for g in p.grad.iter_mut() {
-                    *g *= s;
-                }
+        // Match the MLX reference: the batch loss is the mean over all tokens in the
+        // step, so gradients accumulated across sequence chunks need to be averaged too.
+        let grad_scale = 1.0f32 / seqs_per_step as f32;
+        let scale_grads = |p: &mut Param| {
+            for g in p.grad.iter_mut() {
+                *g *= grad_scale;
             }
         };
-        clip(&mut model.wte);
-        model.wte.adam(embed_lr, step);
+        scale_grads(&mut model.wte);
+        scale_grads(&mut model.skip_weights);
+        for l in 0..nlayers {
+            scale_grads(&mut model.layers[l].wq);
+            scale_grads(&mut model.layers[l].wk);
+            scale_grads(&mut model.layers[l].wv);
+            scale_grads(&mut model.layers[l].wo);
+            scale_grads(&mut model.layers[l].w_up);
+            scale_grads(&mut model.layers[l].w_down);
+            scale_grads(&mut model.layers[l].q_gain);
+            scale_grads(&mut model.layers[l].attn_scale);
+            scale_grads(&mut model.layers[l].mlp_scale);
+            scale_grads(&mut model.layers[l].resid_mix);
+        }
 
-        clip(&mut model.skip_weights);
+        // Apply gradients: match MLX's global gradient clipping, then Adam for
+        // embeddings/scalars and Muon for 2D matrices.
+        let max_grad_norm = 1.0f32;
+        let mut total_sq = 0.0f32;
+        let mut accumulate_norm = |p: &Param| {
+            total_sq += p.grad.iter().map(|&g| g * g).sum::<f32>();
+        };
+        accumulate_norm(&model.wte);
+        accumulate_norm(&model.skip_weights);
+        for l in 0..nlayers {
+            accumulate_norm(&model.layers[l].wq);
+            accumulate_norm(&model.layers[l].wk);
+            accumulate_norm(&model.layers[l].wv);
+            accumulate_norm(&model.layers[l].wo);
+            accumulate_norm(&model.layers[l].w_up);
+            accumulate_norm(&model.layers[l].w_down);
+            accumulate_norm(&model.layers[l].q_gain);
+            accumulate_norm(&model.layers[l].attn_scale);
+            accumulate_norm(&model.layers[l].mlp_scale);
+            accumulate_norm(&model.layers[l].resid_mix);
+        }
+        if total_sq > 0.0 {
+            let total_norm = total_sq.sqrt();
+            if total_norm > max_grad_norm {
+                let s = max_grad_norm / total_norm;
+                let mut scale_param = |p: &mut Param| {
+                    for g in p.grad.iter_mut() {
+                        *g *= s;
+                    }
+                };
+                scale_param(&mut model.wte);
+                scale_param(&mut model.skip_weights);
+                for l in 0..nlayers {
+                    scale_param(&mut model.layers[l].wq);
+                    scale_param(&mut model.layers[l].wk);
+                    scale_param(&mut model.layers[l].wv);
+                    scale_param(&mut model.layers[l].wo);
+                    scale_param(&mut model.layers[l].w_up);
+                    scale_param(&mut model.layers[l].w_down);
+                    scale_param(&mut model.layers[l].q_gain);
+                    scale_param(&mut model.layers[l].attn_scale);
+                    scale_param(&mut model.layers[l].mlp_scale);
+                    scale_param(&mut model.layers[l].resid_mix);
+                }
+            }
+        }
+
+        model.wte.adam(embed_lr, step);
         model.skip_weights.adam(scalar_lr, step);
 
         for l in 0..nlayers {
-            clip(&mut model.layers[l].wq);
             model.layers[l].wq.muon(matrix_lr, step);
-
-            clip(&mut model.layers[l].wk);
             model.layers[l].wk.muon(matrix_lr, step);
-
-            clip(&mut model.layers[l].wv);
             model.layers[l].wv.muon(matrix_lr, step);
-
-            clip(&mut model.layers[l].wo);
             model.layers[l].wo.muon(matrix_lr, step);
-
-            clip(&mut model.layers[l].w_up);
             model.layers[l].w_up.muon(matrix_lr, step);
-
-            clip(&mut model.layers[l].w_down);
             model.layers[l].w_down.muon(matrix_lr, step);
 
             // Scalar params: Adam

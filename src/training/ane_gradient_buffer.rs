@@ -94,7 +94,8 @@ impl ANEGradientBuffer {
     /// are in device-accessible memory.
     pub fn accumulate_surface(&mut self, other: &IOSurface) -> Result<()> {
         // Validate size compatibility
-        let other_floats = other.capacity() / 4;
+        // IOSurface stores fp16 (2 bytes per float), so divide by 2 to get float count
+        let other_floats = other.capacity() / 2;
         if other_floats != self.num_params {
             return Err(Error::InvalidParameter(format!(
                 "surface size mismatch: expected {} params, got {}",

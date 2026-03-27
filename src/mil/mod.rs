@@ -24,7 +24,9 @@ pub use programs::{
     bwd_sdpa_bwd1_dpf_compile_request, bwd_sdpa_bwd1_dpf_mil, bwd_sdpa_bwd1_dvf_compile_request,
     bwd_sdpa_bwd1_dvf_mil, bwd_sdpa_bwd1_pf_compile_request, bwd_sdpa_bwd1_pf_mil,
     bwd_sdpa_bwd2_dkf_compile_request, bwd_sdpa_bwd2_dkf_mil, bwd_sdpa_bwd2_dqf_compile_request,
-    bwd_sdpa_bwd2_dqf_mil, conv1x1_compile_request, conv1x1_mil, linear_matmul_compile_request,
-    rmsnorm_compile_request, rmsnorm_mil, LinearLayer,
+    bwd_sdpa_bwd2_dqf_mil, conv1x1_compile_request, conv1x1_mil, dynamic_matmul_rect_input_bytes,
+    dynamic_matmul_rect_mil, dynamic_matmul_rect_output_bytes, linear_matmul_compile_request,
+    pack_dynamic_matmul_rect_input, pack_rect_weights_into, rmsnorm_compile_request, rmsnorm_mil,
+    LinearLayer,
 };
 pub use util::{generate_rope_blobs, generate_rope_tables, total_leaked_bytes, WeightBlob};

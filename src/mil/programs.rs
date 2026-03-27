@@ -2300,3 +2300,198 @@ pub fn pack_dynamic_matmul_input_f32(
     // Copy weights
     pack_weights_into(buffer, weights, dim, seq_len);
 }
+
+/// Generalized dynamic matmul MIL program for non-square weight matrices.
+///
+/// Computes: `output = weight @ input` where `weight` is `[out_dim, in_dim]`
+/// and `input` is `[in_dim, S]`, producing `[out_dim, S]`.
+///
+/// Input shape: `[1, in_dim + out_dim*in_dim, 1, S]` fp32
+/// - Channels 0..in_dim: activation `[in_dim, S]` (broadcast from spatial to channel layout)
+/// - Channels in_dim..in_dim+out_dim*in_dim: weight `[out_dim, in_dim]` (broadcast across spatial)
+///
+/// Output shape: `[1, out_dim, 1, S]` fp32
+///
+/// Weight matrix is stored as: W[r][c] at position `(in_dim + r*in_dim + c) * S + 0`
+pub fn dynamic_matmul_rect_mil(seq_len: usize, in_dim: usize, out_dim: usize) -> String {
+    let total_ch = in_dim + out_dim * in_dim;
+    let mut mil = String::new();
+
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+
+    // Input: [1, in_dim + out_dim*in_dim, 1, S] fp32
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        total_ch, seq_len
+    ));
+
+    // Cast input to fp16
+    mil.push_str(
+        "        string to16 = const()[name = string(\"to16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> xh = cast(dtype = to16, x = x)[name = string(\"cin\")];\n",
+        total_ch, seq_len
+    ));
+
+    // Slice activations: [1, in_dim, 1, S] from channels 0..in_dim
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name = string(\"b0\"), val = tensor<int32, [4]>([0, 0, 0, 0])];\n");
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sa = const()[name = string(\"sa\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n",
+        in_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> act = slice_by_size(x = xh, begin = b0, size = sa)[name = string(\"act\")];\n",
+        in_dim, seq_len
+    ));
+
+    // Slice weight region: [1, out_dim*in_dim, 1, S] from channels in_dim..in_dim+out_dim*in_dim
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> bw = const()[name = string(\"bw\"), val = tensor<int32, [4]>([0, {}, 0, 0])];\n",
+        in_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sw = const()[name = string(\"sw\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n",
+        out_dim * in_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> wf = slice_by_size(x = xh, begin = bw, size = sw)[name = string(\"wf\")];\n",
+        out_dim * in_dim, seq_len
+    ));
+
+    // Reshape weight to [1, 1, out_dim, in_dim]
+    // Declaration order matters: ws must be declared before sw1
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> ws = const()[name = string(\"ws\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n",
+        out_dim, in_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sw1 = const()[name = string(\"sw1\"), val = tensor<int32, [4]>([1, {}, 1, 1])];\n",
+        out_dim * in_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, 1]> wf1 = slice_by_size(x = wf, begin = b0, size = sw1)[name = string(\"wf1\")];\n",
+        out_dim * in_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> W = reshape(shape = ws, x = wf1)[name = string(\"W\")];\n",
+        out_dim, in_dim
+    ));
+
+    // Reshape activations to [1, 1, in_dim, S] then transpose to [1, 1, S, in_dim]
+    // matmul expects: x=[1,1,M,K] @ y=[1,1,K,N] -> [1,1,M,N]
+    // We want: W[out_dim, in_dim] @ act[in_dim, S] -> [out_dim, S]
+    // So x=W=[1,1,out_dim,in_dim], y=act_t=[1,1,S,in_dim]... no wait
+    // matmul: [1,1,M,K] @ [1,1,K,N] -> [1,1,M,N]
+    // We want: [out_dim, S] = [out_dim, in_dim] @ [in_dim, S]
+    // So M=out_dim, K=in_dim, N=S
+    // x = W reshaped to [1,1,out_dim,in_dim], y = act reshaped to [1,1,in_dim,S]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> as2 = const()[name = string(\"as2\"), val = tensor<int32, [4]>([1, 1, {}, {}])];\n",
+        in_dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name = string(\"pm\"), val = tensor<int32, [4]>([0, 1, 3, 2])];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> a2 = reshape(shape = as2, x = act)[name = string(\"a2\")];\n",
+        in_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> a3 = transpose(perm = pm, x = a2)[name = string(\"a3\")];\n",
+        seq_len, in_dim
+    ));
+
+    // matmul: [1,1,out_dim,in_dim] @ [1,1,in_dim,S] -> [1,1,out_dim,S]
+    mil.push_str("        bool bF = const()[name = string(\"bF\"), val = bool(false)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> yh = matmul(transpose_x = bF, transpose_y = bF, x = W, y = a3)[name = string(\"mm\")];\n",
+        out_dim, seq_len
+    ));
+
+    // Transpose back: [1,1,out_dim,S] -> [1,1,S,out_dim] then reshape to [1, out_dim, 1, S]
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, 1, {}, {}]> yt = transpose(perm = pm, x = yh)[name = string(\"yt\")];\n",
+        out_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> os = const()[name = string(\"os\"), val = tensor<int32, [4]>([1, {}, 1, {}])];\n",
+        out_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> yr = reshape(shape = os, x = yt)[name = string(\"yr\")];\n",
+        out_dim, seq_len
+    ));
+
+    // Cast output to fp32
+    mil.push_str(
+        "        string to32 = const()[name = string(\"to32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1, {}, 1, {}]> y = cast(dtype = to32, x = yr)[name = string(\"cout\")];\n",
+        out_dim, seq_len
+    ));
+
+    mil.push_str("    } -> (y);\n");
+    mil.push_str("}\n");
+    mil
+}
+
+/// Input byte size for `dynamic_matmul_rect_mil`.
+pub fn dynamic_matmul_rect_input_bytes(in_dim: usize, out_dim: usize, seq_len: usize) -> usize {
+    (in_dim + out_dim * in_dim) * seq_len * 4
+}
+
+/// Output byte size for `dynamic_matmul_rect_mil`.
+pub fn dynamic_matmul_rect_output_bytes(out_dim: usize, seq_len: usize) -> usize {
+    out_dim * seq_len * 4
+}
+
+/// Pack activations and weights for `dynamic_matmul_rect_mil`.
+///
+/// Computes `output = weight @ input` where weight is `[out_dim, in_dim]`
+/// and input is `[in_dim, seq_len]`.
+pub fn pack_dynamic_matmul_rect_input(
+    activations: &[f32],
+    weights: &[f32],
+    in_dim: usize,
+    out_dim: usize,
+    seq_len: usize,
+) -> Vec<u8> {
+    let total_ch = in_dim + out_dim * in_dim;
+    let mut input = vec![0.0f32; total_ch * seq_len];
+
+    // Copy activations to channels 0..in_dim
+    input[..in_dim * seq_len].copy_from_slice(activations);
+
+    // Copy weights to channels in_dim..in_dim+out_dim*in_dim
+    // W[r][c] at position (in_dim + r*in_dim + c) * S + 0
+    let w_base = in_dim * seq_len;
+    for r in 0..out_dim {
+        for c in 0..in_dim {
+            input[w_base + (r * in_dim + c) * seq_len] = weights[r * in_dim + c];
+        }
+    }
+
+    input.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// Pack weights into existing buffer for `dynamic_matmul_rect_mil`.
+/// Buffer must be `[in_dim + out_dim*in_dim, seq_len]` in f32.
+pub fn pack_rect_weights_into(
+    buffer: &mut [f32],
+    weights: &[f32],
+    in_dim: usize,
+    out_dim: usize,
+    seq_len: usize,
+) {
+    assert_eq!(weights.len(), out_dim * in_dim);
+    let w_base = in_dim * seq_len;
+    let w_region_len = out_dim * in_dim * seq_len;
+    buffer[w_base..w_base + w_region_len].fill(0.0);
+    for r in 0..out_dim {
+        for c in 0..in_dim {
+            buffer[w_base + (r * in_dim + c) * seq_len] = weights[r * in_dim + c];
+        }
+    }
+}
