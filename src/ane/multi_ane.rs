@@ -167,6 +167,11 @@ pub fn validate_device_count(num_devices: usize) -> Result<(), ANEError> {
 
 /// Calculate per-device batch size
 pub fn per_device_batch_size(total_batch: usize, num_devices: usize) -> Result<usize, ANEError> {
+    if num_devices == 0 {
+        return Err(ANEError::ConfigError(
+            "num_devices cannot be zero".to_string(),
+        ));
+    }
     if total_batch % num_devices != 0 {
         return Err(ANEError::ConfigError(format!(
             "Batch size {} must be divisible by number of devices {}",

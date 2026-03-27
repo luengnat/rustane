@@ -73,6 +73,10 @@ fn compute_chunk_sizes(total_tokens: usize, seq_len: usize, max_chunk_tokens: us
 pub use self::collate::{Collator, PadCollator, TruncateCollator};
 pub use self::dataset::{Dataset, SequentialDataset};
 pub use self::filesystem::{JsonlDataset, TextDataset};
+pub use self::loader::{
+    count_special_tokens, find_boundaries, load_shard, load_shard_range, BatchConfig,
+    DistributedTokenLoader, ShardHeader, TokenStream, SHARD_MAGIC, SHARD_VERSION,
+};
 pub use self::sampler::{RandomSampler, Sampler, SequentialSampler};
 pub use self::sharded_loader::{ShardBatch, ShardConfig, ShardMetadata, ShardedDataLoader};
 
@@ -81,6 +85,7 @@ pub use self::sharded_loader::{ShardBatch, ShardConfig, ShardMetadata, ShardedDa
 mod collate;
 mod dataset;
 mod filesystem;
+pub mod loader;
 mod sampler;
 mod sharded_loader;
 

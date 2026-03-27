@@ -157,9 +157,9 @@ impl WarmupCosineScheduler {
 impl LRScheduler for WarmupCosineScheduler {
     fn get_lr(&self, step: u32) -> f32 {
         if step < self.warmup_steps {
-            // Linear warmup: 0 -> peak_lr
-            let progress = step as f32 / self.warmup_steps as f32;
-            self.peak_lr * progress
+            // Linear warmup: 0 -> peak_lr (use step+1 to avoid zero LR at step 0)
+            let progress = (step + 1) as f32 / (self.warmup_steps + 1) as f32;
+            (self.peak_lr * progress).min(self.peak_lr)
         } else {
             // Cosine decay: peak_lr -> min_lr
             let progress =

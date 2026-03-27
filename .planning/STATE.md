@@ -86,3 +86,4 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 | 2026-03-27 | ANE backward pass verified with parameter-golf config (dim=416, heads=8) |
 | 2026-03-27 | dpf compilation issue solved via combined output pattern |
 | 2026-03-27 | Real token data test passes (fineweb10B_sp1024) |
+| 2026-03-27 | Parameter-golf training: backward bugs fixed, loss decreasing (Adam, CPU/BLAS) |

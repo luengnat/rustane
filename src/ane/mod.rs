@@ -216,16 +216,8 @@ pub(crate) mod mil_generator;
 pub mod multi_ane;
 /// Operator fusion for performance optimization
 pub mod operator_fusion;
-// NOTE: The following modules have pre-existing compile errors and are commented out:
-// - pipeline (E0599: num_layers method missing, E0061: wrong arg count)
-// - profiler (pre-existing)
-// - program_cache (pre-existing)
-// - tiling (E0432: unresolved import super::mil_generator)
-// - trainer (E0432: unresolved import super::mil_generator)
-// - training_architecture (E0432: unresolved import super::mil_generator)
-// pub mod pipeline;
-// pub mod profiler;
-// pub mod program_cache;
+/// Pipeline parallelism for large models
+pub mod pipeline;
 pub mod retry_policy;
 /// Low-level runtime and compile/load/eval support for the private ANE APIs.
 pub mod runtime;
@@ -249,9 +241,10 @@ pub use multi_ane::{
     ANEDeviceInfo, MultiANEConfig,
 };
 pub use operator_fusion::{ActivationType, FusedKernelRegistry, FusedKernelType};
-// pub use pipeline::{ ... };
-// pub use profiler::{ ... };
-// pub use program_cache::{ ... };
+pub use pipeline::{
+    ModelWithLayers, PipelineConfig, PipelineParallelModel, PipelineStage, PipelineStats,
+    StageStats,
+};
 pub use retry_policy::{
     execute_with_retry, RetryConfig, RetryPolicy, RetryResult, RetryableOperation,
 };

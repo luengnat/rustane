@@ -63,6 +63,12 @@ impl Collator for PadCollator {
             ));
         }
 
+        if self.max_len == 0 {
+            return Err(crate::Error::InvalidParameter(
+                "max_len must be > 0".to_string(),
+            ));
+        }
+
         // Check that no sample exceeds max_len
         for (idx, sample) in samples.iter().enumerate() {
             if sample.len() > self.max_len {
@@ -133,6 +139,12 @@ impl Collator for TruncateCollator {
             ));
         }
 
+        if self.max_len == 0 {
+            return Err(crate::Error::InvalidParameter(
+                "max_len must be > 0".to_string(),
+            ));
+        }
+
         let batch_size = samples.len();
         let mut tokens = Vec::with_capacity(batch_size * self.max_len);
 
@@ -194,6 +206,14 @@ mod tests {
     }
 
     #[test]
+    fn test_pad_collator_rejects_zero_max_len() {
+        let collator = PadCollator::new(0, 0);
+        let result = collator.collate(vec![vec![1]]);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("max_len must be > 0"));
+    }
+
+    #[test]
     fn test_truncate_collator_basic() {
         let collator = TruncateCollator::new(3, 0);
         let samples = vec![vec![1, 2, 3, 4, 5], vec![6]];
@@ -222,6 +242,14 @@ mod tests {
         let samples = vec![vec![1]];
         let batch = collator.collate(samples).unwrap();
         assert_eq!(batch.tokens(), &[1, 99, 99, 99]);
+    }
+
+    #[test]
+    fn test_truncate_collator_rejects_zero_max_len() {
+        let collator = TruncateCollator::new(0, 0);
+        let result = collator.collate(vec![vec![1]]);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("max_len must be > 0"));
     }
 
     #[test]

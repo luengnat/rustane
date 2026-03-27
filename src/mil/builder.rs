@@ -3,6 +3,7 @@
 //! Provides a fluent interface for constructing MIL programs.
 //! Generates program(1.3) format with proper function signatures.
 
+use crate::mil::cpu_fallback::{should_use_ane, ExecutionTarget};
 use std::collections::HashMap;
 
 /// MIL program builder
@@ -323,6 +324,76 @@ impl Default for MILBuilder {
     }
 }
 
+/// Result type for operations that may fail size validation
+#[derive(Debug, Clone)]
+pub struct SizeValidationResult {
+    /// true if ANE should be used based on operation type and size
+    pub should_use_ane: bool,
+    /// Total number of elements in the tensor
+    pub num_elements: usize,
+    /// Human-readable recommendation for execution target
+    pub recommendation: &'static str,
+}
+
+impl MILBuilder {
+    /// Check if a tensor shape meets ANE minimum size requirements
+    ///
+    /// # Arguments
+    ///
+    /// * `shape` - Tensor shape [N, C, H, W]
+    ///
+    /// # Returns
+    ///
+    /// true if tensor has >= 1024 elements (ANE_MIN_ELEMENTS)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rustane::mil::MILBuilder;
+    /// let builder = MILBuilder::new();
+    /// assert!(!builder.check_size(&[1, 1, 16, 16])); // 256 elems - too small
+    /// assert!(builder.check_size(&[1, 768, 1, 256])); // 196608 elems - OK
+    /// ```
+    pub fn check_size(&self, shape: &[usize]) -> bool {
+        let num_elements: usize = shape.iter().product();
+        should_use_ane(num_elements)
+    }
+
+    /// Validate operation size and return recommendation
+    ///
+    /// # Arguments
+    ///
+    /// * `op_name` - Operation name (e.g., "matmul", "add")
+    /// * `shape` - Tensor shape
+    ///
+    /// # Returns
+    ///
+    /// SizeValidationResult with ANE recommendation
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rustane::mil::MILBuilder;
+    /// let builder = MILBuilder::new();
+    /// let result = builder.validate_op_size("matmul", &[1, 768, 1, 256]);
+    /// assert!(result.should_use_ane);
+    /// ```
+    pub fn validate_op_size(&self, op_name: &str, shape: &[usize]) -> SizeValidationResult {
+        let num_elements: usize = shape.iter().product();
+        let target = ExecutionTarget::for_size(op_name, num_elements);
+
+        SizeValidationResult {
+            should_use_ane: matches!(target, ExecutionTarget::Ane),
+            num_elements,
+            recommendation: if matches!(target, ExecutionTarget::Cpu) {
+                "CPU fallback recommended - operation too small or unsupported on ANE"
+            } else {
+                "ANE acceleration enabled"
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +506,46 @@ mod tests {
         assert!(mil.contains("author"));
         assert!(mil.contains("rustane"));
         assert!(mil.contains("version"));
+    }
+
+    #[test]
+    fn test_check_size_small_tensor() {
+        let builder = MILBuilder::new();
+        // 16x16 = 256 elements - below ANE_MIN_ELEMENTS (1024)
+        assert!(!builder.check_size(&[1, 1, 16, 16]));
+    }
+
+    #[test]
+    fn test_check_size_large_tensor() {
+        let builder = MILBuilder::new();
+        // 768x256 = 196608 elements - well above ANE_MIN_ELEMENTS
+        assert!(builder.check_size(&[1, 768, 1, 256]));
+    }
+
+    #[test]
+    fn test_validate_op_size_unsupported_op() {
+        let builder = MILBuilder::new();
+        // reduce_mean is never supported on ANE
+        let result = builder.validate_op_size("reduce_mean", &[1, 768, 1, 256]);
+        assert!(!result.should_use_ane);
+        assert!(result.recommendation.contains("CPU fallback"));
+    }
+
+    #[test]
+    fn test_validate_op_size_small_matmul() {
+        let builder = MILBuilder::new();
+        // 16x16 = 256 elements - too small for ANE
+        let result = builder.validate_op_size("matmul", &[1, 16, 1, 16]);
+        assert!(!result.should_use_ane);
+        assert!(result.recommendation.contains("CPU fallback"));
+    }
+
+    #[test]
+    fn test_validate_op_size_large_matmul() {
+        let builder = MILBuilder::new();
+        // 768x256 = 196608 elements - good for ANE
+        let result = builder.validate_op_size("matmul", &[1, 768, 1, 256]);
+        assert!(result.should_use_ane);
+        assert!(result.recommendation.contains("ANE acceleration"));
     }
 }

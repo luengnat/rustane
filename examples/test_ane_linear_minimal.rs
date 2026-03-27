@@ -225,7 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🍎 ANE Linear Compilation Test");
     println!("==============================\n");
 
-    let avail = rustane::ANEAvailability::check();
+    let avail = rustane::HardwareAvailability::check();
     println!("Platform: {}", avail.describe());
     if !avail.is_available() {
         println!("❌ ANE not available");

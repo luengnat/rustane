@@ -48,7 +48,10 @@ fn gen_mil(channels: usize, spatial: usize, depth: usize) -> String {
     mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
     mil.push_str("{\n");
     // Use FP16 input directly (like test_residual_ffn.rs)
-    mil.push_str(&format!("    func main<ios16>(tensor<fp16, [1, {}, 1, {}]> x) {{\n", channels, spatial));
+    mil.push_str(&format!(
+        "    func main<ios16>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        channels, spatial
+    ));
 
     // Conv config constants
     mil.push_str("        tensor<string, []> pt = const()[name = tensor<string, []>(\"pt\"), val = tensor<string, []>(\"valid\")];\n");
@@ -77,7 +80,12 @@ fn gen_mil(channels: usize, spatial: usize, depth: usize) -> String {
     mil
 }
 
-fn benchmark(channels: usize, spatial: usize, depth: usize, _debug: bool) -> Option<(f64, f64, bool)> {
+fn benchmark(
+    channels: usize,
+    spatial: usize,
+    depth: usize,
+    _debug: bool,
+) -> Option<(f64, f64, bool)> {
     let mil = gen_mil(channels, spatial, depth);
     let weight_blobs = build_weight_blobs(channels, depth);
 
@@ -111,8 +119,13 @@ fn benchmark(channels: usize, spatial: usize, depth: usize, _debug: bool) -> Opt
             // Warmup
             for _ in 0..5 {
                 // Use input=1.0 for better signal propagation
-                let input: Vec<f16> = (0..channels * spatial).map(|_| f16::from_f32(1.0)).collect();
-                let input_bytes: Vec<u8> = input.iter().flat_map(|f| f.to_bits().to_le_bytes()).collect();
+                let input: Vec<f16> = (0..channels * spatial)
+                    .map(|_| f16::from_f32(1.0))
+                    .collect();
+                let input_bytes: Vec<u8> = input
+                    .iter()
+                    .flat_map(|f| f.to_bits().to_le_bytes())
+                    .collect();
                 let _ = kernel.write_input(0, &input_bytes);
                 let _ = kernel.eval();
             }
@@ -121,8 +134,13 @@ fn benchmark(channels: usize, spatial: usize, depth: usize, _debug: bool) -> Opt
             let iterations = 50;
             let exec_start = Instant::now();
             for _ in 0..iterations {
-                let input: Vec<f16> = (0..channels * spatial).map(|_| f16::from_f32(1.0)).collect();
-                let input_bytes: Vec<u8> = input.iter().flat_map(|f| f.to_bits().to_le_bytes()).collect();
+                let input: Vec<f16> = (0..channels * spatial)
+                    .map(|_| f16::from_f32(1.0))
+                    .collect();
+                let input_bytes: Vec<u8> = input
+                    .iter()
+                    .flat_map(|f| f.to_bits().to_le_bytes())
+                    .collect();
                 let _ = kernel.write_input(0, &input_bytes);
                 let _ = kernel.eval();
             }
@@ -147,7 +165,8 @@ fn benchmark(channels: usize, spatial: usize, depth: usize, _debug: bool) -> Opt
             // Calculate GFLOPS for deep conv graph
             // Each conv: 2 * channels * channels * spatial FLOPs
             // Total: depth * 2 * channels^2 * spatial
-            let gflops = 2.0 * channels as f64 * channels as f64 * spatial as f64 * depth as f64 / 1e9;
+            let gflops =
+                2.0 * channels as f64 * channels as f64 * spatial as f64 * depth as f64 / 1e9;
             let ms = exec_time.as_secs_f64() * 1000.0;
             let tflops = gflops / ms;
 
@@ -165,19 +184,21 @@ fn main() {
 
     println!("=== ANE Peak Throughput Benchmark ===\n");
     println!("Based on inmem_peak.m from 'Inside the M4 Apple Neural Engine'\n");
-    println!("{:<28} {:>7} {:>9} {:>10} {:>8} {:>8}",
-             "Config", "W(MB)", "GFLOP", "ms/eval", "TFLOPS", "%peak");
+    println!(
+        "{:<28} {:>7} {:>9} {:>10} {:>8} {:>8}",
+        "Config", "W(MB)", "GFLOP", "ms/eval", "TFLOPS", "%peak"
+    );
     println!("{}", "-".repeat(80));
 
     // Test configurations - verified working patterns for multi-layer conv
     // ANE compiler limit: programs with 20+ layers fail with InvalidMILProgram
     let configs = [
-        (64, 32, 4),      // Baseline: minimal depth
-        (64, 32, 8),      // Moderate depth
-        (64, 32, 12),     // Deeper graph
-        (64, 32, 16),     // Max working depth for 64ch
-        (128, 32, 8),     // Larger channels, moderate depth
-        (256, 32, 4),     // Max channels, shallow depth
+        (64, 32, 4),  // Baseline: minimal depth
+        (64, 32, 8),  // Moderate depth
+        (64, 32, 12), // Deeper graph
+        (64, 32, 16), // Max working depth for 64ch
+        (128, 32, 8), // Larger channels, moderate depth
+        (256, 32, 4), // Max channels, shallow depth
     ];
 
     let peak_tflops = 19.0; // M4 ANE peak FP16
@@ -194,10 +215,15 @@ fn main() {
             let pct_peak = tflops / peak_tflops * 100.0;
             let ms = gflops / tflops;
             let status = if verified { "✓" } else { "✗ INVALID" };
-            println!("{:<28} {:>7.1} {:>9.2} {:>10.3} ms {:>8.2} {:>7.1}% {} (compile: {:.1} ms)",
-                     config_str, weight_mb, gflops, ms, tflops, pct_peak, status, compile_ms);
+            println!(
+                "{:<28} {:>7.1} {:>9.2} {:>10.3} ms {:>8.2} {:>7.1}% {} (compile: {:.1} ms)",
+                config_str, weight_mb, gflops, ms, tflops, pct_peak, status, compile_ms
+            );
         } else {
-            println!("{:<28} {:>7.1} {:>9.2} FAILED", config_str, weight_mb, gflops);
+            println!(
+                "{:<28} {:>7.1} {:>9.2} FAILED",
+                config_str, weight_mb, gflops
+            );
         }
     }
 

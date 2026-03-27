@@ -50,16 +50,16 @@ fn main() {
     };
     let compile_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-    // Create input: pack [dq, dk, dv] as fp16
-    let input_f16: Vec<u8> = (0..3 * dim * seq)
+    // Create input: pack [dq, dk, dv] as fp32
+    let input: Vec<u8> = (0..3 * dim * seq)
         .map(|i| {
             let v: f32 = ((i % 100) as f32) * 0.01;
-            half::f16::from_f32(v).to_le_bytes()
+            v.to_le_bytes()
         })
         .flatten()
         .collect();
 
-    if let Err(e) = executor.write_input(0, &input_f16) {
+    if let Err(e) = executor.write_input(0, &input) {
         eprintln!("write_input: {e}");
         std::process::exit(3);
     }
@@ -71,17 +71,16 @@ fn main() {
     }
     let eval_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
-    // Read output: dx
-    let mut buf = vec![0u8; dim * seq * 2];
+    // Read output: dx (FP32)
+    let mut buf = vec![0u8; dim * seq * 4];
     if let Err(e) = executor.read_output(0, &mut buf) {
         eprintln!("read_output: {e}");
         std::process::exit(5);
     }
-    let fp16_vals: Vec<half::f16> = buf
-        .chunks_exact(2)
-        .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
+    let f32_vals: Vec<f32> = buf
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
-    let f32_vals: Vec<f32> = fp16_vals.iter().map(|h| h.to_f32()).collect();
 
     let all_zero = f32_vals.iter().all(|&x| x == 0.0);
     let has_nan = f32_vals.iter().any(|x| x.is_nan() || x.is_infinite());

@@ -14,7 +14,7 @@ fn test_io_surface_creation() {
 fn test_io_surface_write_read_roundtrip() {
     use rustane::ane::IOSurface;
 
-    let mut io = match IOSurface::new(64) {
+    let io = match IOSurface::new(64) {
         Ok(io) => io,
         Err(_) => {
             println!("IOSurface not available, skipping test");
@@ -24,12 +24,12 @@ fn test_io_surface_write_read_roundtrip() {
 
     let data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
     let _ = io.write(&data);
-    let result = io.read();
+
+    let mut read_data = vec![0u8; 64];
+    let result = io.read(&mut read_data);
 
     match result {
-        Ok(read_data) => {
-            // IOSurface is a fixed-size buffer, read() returns full buffer
-            assert_eq!(read_data.len(), 64);
+        Ok(()) => {
             // Verify the written data is at the beginning
             assert_eq!(&read_data[..data.len()], data.as_slice());
         }
@@ -41,7 +41,7 @@ fn test_io_surface_write_read_roundtrip() {
 fn test_io_surface_write_exceeds_capacity() {
     use rustane::ane::IOSurface;
 
-    let mut io = match IOSurface::new(10) {
+    let io = match IOSurface::new(10) {
         Ok(io) => io,
         Err(_) => {
             println!("IOSurface not available, skipping test");
@@ -57,10 +57,10 @@ fn test_io_surface_write_exceeds_capacity() {
 }
 
 #[test]
-fn test_io_surface_with_lock() {
+fn test_io_surface_lock_read() {
     use rustane::ane::IOSurface;
 
-    let mut io = match IOSurface::new(64) {
+    let io = match IOSurface::new(64) {
         Ok(io) => io,
         Err(_) => {
             println!("IOSurface not available, skipping test");
@@ -68,14 +68,14 @@ fn test_io_surface_with_lock() {
         }
     };
 
-    // Test that with_lock allows direct pointer access
-    let result = io.with_lock(|ptr| {
-        // Verify we got a non-null pointer
-        !ptr.is_null()
-    });
+    // Test that lock_read allows direct pointer access
+    let result = io.lock_read();
 
     match result {
-        Ok(is_valid) => assert!(is_valid),
-        Err(_) => println!("with_lock failed (expected on some systems)"),
+        Ok(ptr) => {
+            // Verify we got a non-null pointer
+            assert!(!ptr.is_null());
+        }
+        Err(_) => println!("lock_read failed (expected on some systems)"),
     }
 }

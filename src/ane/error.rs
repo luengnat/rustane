@@ -30,6 +30,15 @@ pub enum ANEError {
 
     /// Invalid model configuration (e.g. dim not divisible by head_dim)
     ConfigError(String),
+
+    /// HWX file not found in search paths
+    HWXNotFound(String),
+
+    /// Invalid HWX file format
+    InvalidHWX(String),
+
+    /// IO operation failed
+    IOError(String),
 }
 
 impl fmt::Display for ANEError {
@@ -44,6 +53,9 @@ impl fmt::Display for ANEError {
             }
             ANEError::WeightBlobError(msg) => write!(f, "Weight blob error: {}", msg),
             ANEError::ConfigError(msg) => write!(f, "Config error: {}", msg),
+            ANEError::HWXNotFound(msg) => write!(f, "HWX not found: {}", msg),
+            ANEError::InvalidHWX(msg) => write!(f, "Invalid HWX: {}", msg),
+            ANEError::IOError(msg) => write!(f, "IO error: {}", msg),
         }
     }
 }

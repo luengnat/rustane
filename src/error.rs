@@ -35,6 +35,9 @@ pub enum Error {
     /// Feature or method is not implemented yet
     NotImplemented(String),
 
+    /// Graph IR error
+    GraphError(String),
+
     /// Other error
     Other(String),
 }
@@ -51,12 +54,24 @@ impl fmt::Display for Error {
             Error::HardwareUnavailable(msg) => write!(f, "ANE hardware unavailable: {}", msg),
             Error::LibraryError(msg) => write!(f, "Library error: {}", msg),
             Error::NotImplemented(msg) => write!(f, "Not implemented: {}", msg),
+            Error::GraphError(msg) => write!(f, "Graph error: {}", msg),
             Error::Other(msg) => write!(f, "Error: {}", msg),
         }
     }
 }
 
+/// Data loader error type
+/// Re-exported from data::loader for convenience
+pub use crate::data::loader::DataLoaderError;
+
 impl std::error::Error for Error {}
+
+// Implement From for DataLoaderError
+impl From<DataLoaderError> for Error {
+    fn from(err: DataLoaderError) -> Self {
+        Error::Io(err.to_string())
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -164,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🍎 Rustane - ANE Dynamic Matmul Benchmark");
     println!("=========================================\n");
 
-    let avail = rustane::ANEAvailability::check();
+    let avail = rustane::HardwareAvailability::check();
     println!("Platform: {}", avail.describe());
     if !avail.is_available() {
         println!("❌ ANE not available");

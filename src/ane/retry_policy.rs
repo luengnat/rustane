@@ -207,6 +207,13 @@ pub struct RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// Get the configuration
+    pub fn config(&self) -> &RetryConfig {
+        &self.config
+    }
+}
+
+impl RetryPolicy {
     /// Create new retry policy with default config
     pub fn new() -> Self {
         Self {

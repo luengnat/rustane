@@ -1214,6 +1214,7 @@ impl TransformerANE {
 
 impl TransformerANE {
     #[cfg(target_vendor = "apple")]
+    #[allow(dead_code)]
     fn forward_final_norm_with_ane(&self, final_in: &[f32], positions: usize) -> Result<Vec<f32>> {
         use crate::ane::WeightBlob;
 
@@ -1272,6 +1273,7 @@ impl TransformerANE {
     }
 
     #[cfg(target_vendor = "apple")]
+    #[allow(dead_code)]
     fn forward_logits_with_ane(&self, final_norm: &[f32], positions: usize) -> Result<Vec<f32>> {
         use crate::ane::WeightBlob;
 

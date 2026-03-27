@@ -345,6 +345,7 @@ pub enum InitializationStrategy {
 
 /// Large model initializer
 pub struct LargeModelInitializer {
+    #[allow(dead_code)]
     config: LargeModelConfig,
     strategy: InitializationStrategy,
 }
@@ -449,6 +450,7 @@ impl LargeModelInitializer {
 /// Progressive initialization state
 #[derive(Debug, Clone)]
 pub struct ProgressiveInitialization {
+    #[allow(dead_code)]
     config: LargeModelConfig,
     current_layer: usize,
     total_layers: usize,

@@ -1,10 +1,6 @@
 # Cargo configuration for Rustane
 # This file configures build and test behavior for the project
 
-[build]
-# Use fewer codegen units to reduce memory during compilation
-# Trade-off: slower compilation, but uses less RAM
-codegen-units = 16
 
 [env]
 # Default test thread limit to prevent OOM

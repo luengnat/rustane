@@ -213,6 +213,141 @@ impl WeightBlob {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Build a multi-layer weight blob for deep conv graphs
+    ///
+    /// This creates a weight blob with multiple layers, each with its own 128-byte header.
+    /// Used for achieving peak ANE throughput by chaining conv operations.
+    ///
+    /// Format (compatible with our ANE bridge):
+    /// - 128 bytes: global header (matches fill_fp16_header format)
+    /// - For each layer: 128 bytes chunk header + channels*channels*2 bytes FP16 weights
+    ///
+    /// # Arguments
+    ///
+    /// * `channels` - Number of channels (in/out channels are the same for conv 1x1)
+    /// * `depth` - Number of convolution layers
+    /// * `weights_fn` - Function that generates weights for each layer (layer_index, out_channels, in_channels) -> Vec<f32>
+    ///
+    /// # Returns
+    ///
+    /// A WeightBlob containing all layers
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use rustane::ane::WeightBlob;
+    /// let blob = WeightBlob::multi_layer_conv(512, 32, |i, out_ch, in_ch| {
+    ///     vec![0.1f32; out_ch * in_ch]
+    /// })?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn multi_layer_conv<F>(channels: usize, depth: usize, mut weights_fn: F) -> Result<Self>
+    where
+        F: FnMut(usize, usize, usize) -> Vec<f32>,
+    {
+        const HEADER_SIZE: usize = 128; // Our ANE bridge header size
+        let wsize = channels * channels * 2; // FP16 weights per layer
+        let chunk_size = HEADER_SIZE + wsize; // 128-byte header + weights
+        let total = HEADER_SIZE + chunk_size * depth; // global header + all chunks
+
+        let mut buf = vec![0u8; total];
+
+        // Global header (128 bytes) - matches fill_fp16_header format
+        buf[0] = 0x01;
+        buf[4] = 0x02;
+        buf[64] = 0xEF;
+        buf[65] = 0xBE;
+        buf[66] = 0xAD;
+        buf[67] = 0xDE;
+        buf[68] = 0x01;
+        buf[80..84].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+
+        // Each layer chunk - 128-byte header matching fill_fp16_header format
+        for i in 0..depth {
+            let chunk_offset = HEADER_SIZE + i * chunk_size;
+            let payload_size = wsize; // FP16 weight data size
+
+            // Chunk header - exact copy of fill_fp16_header
+            buf[chunk_offset] = 0x01;
+            buf[chunk_offset + 4] = 0x02;
+            buf[chunk_offset + 64] = 0xEF;
+            buf[chunk_offset + 65] = 0xBE;
+            buf[chunk_offset + 66] = 0xAD;
+            buf[chunk_offset + 67] = 0xDE;
+            buf[chunk_offset + 68] = 0x01;
+            buf[chunk_offset + 72..chunk_offset + 76]
+                .copy_from_slice(&(payload_size as u32).to_le_bytes());
+            buf[chunk_offset + 80..chunk_offset + 84]
+                .copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+
+            // Generate and encode FP16 weights
+            let weights = weights_fn(i, channels, channels);
+            let weight_offset = chunk_offset + HEADER_SIZE;
+            for (j, &w) in weights.iter().enumerate() {
+                let h = half::f16::from_f32(w).to_bits();
+                buf[weight_offset + j * 2] = (h & 0xFF) as u8;
+                buf[weight_offset + j * 2 + 1] = (h >> 8) as u8;
+            }
+        }
+
+        Ok(WeightBlob(buf))
+    }
+
+    /// Build a multi-layer weight blob with custom FP16 bit patterns
+    ///
+    /// This allows direct control over FP16 bit patterns, matching the reference
+    /// implementation exactly: fp16[j] = (arc4random()&0x03FF)|0x2000
+    ///
+    /// # Arguments
+    ///
+    /// * `channels` - Number of channels
+    /// * `depth` - Number of layers
+    /// * `pattern_fn` - Function that generates FP16 bits for each weight (layer, index) -> u16
+    ///
+    /// # Returns
+    ///
+    /// A WeightBlob containing all layers
+    pub fn multi_layer_fp16_bits<F>(
+        channels: usize,
+        depth: usize,
+        mut pattern_fn: F,
+    ) -> Result<Self>
+    where
+        F: FnMut(usize, usize) -> u16,
+    {
+        let wsize = channels * channels * 2; // FP16 weights per layer
+        let chunk_size = 64 + wsize;
+        let total = 64 + chunk_size * depth;
+        let mut buf = vec![0u8; total];
+
+        // Global header
+        buf[0] = 0x01;
+        buf[4] = 0x02;
+
+        for i in 0..depth {
+            let chunk_offset = 64 + i * chunk_size;
+
+            // Chunk header
+            buf[chunk_offset] = 0xEF;
+            buf[chunk_offset + 1] = 0xBE;
+            buf[chunk_offset + 2] = 0xAD;
+            buf[chunk_offset + 3] = 0xDE;
+            buf[chunk_offset + 4] = 0x01;
+            buf[chunk_offset + 10] = 0x08;
+
+            // Generate FP16 bits
+            let weight_offset = chunk_offset + 64;
+            let num_weights = channels * channels;
+            for j in 0..num_weights {
+                let fp16_bits = pattern_fn(i, j);
+                buf[weight_offset + j * 2] = (fp16_bits & 0xFF) as u8;
+                buf[weight_offset + j * 2 + 1] = (fp16_bits >> 8) as u8;
+            }
+        }
+
+        Ok(WeightBlob(buf))
+    }
 }
 
 impl AsRef<[u8]> for WeightBlob {
@@ -406,5 +541,88 @@ mod tests {
 
         assert!((scales[0] - expected_scale0).abs() < 1e-5);
         assert!((scales[1] - expected_scale1).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_weight_blob_multi_layer_conv_basic() {
+        let blob =
+            WeightBlob::multi_layer_conv(64, 2, |_i, out_ch, in_ch| vec![1.0f32; out_ch * in_ch])
+                .unwrap();
+
+        let bytes = blob.as_ref();
+        // Global header (128) + 2 * (chunk header (128) + weights (64*64*2))
+        let expected_size = 128 + 2 * (128 + 64 * 64 * 2);
+        assert_eq!(bytes.len(), expected_size);
+    }
+
+    #[test]
+    fn test_weight_blob_multi_layer_conv_header_format() {
+        let blob =
+            WeightBlob::multi_layer_conv(8, 3, |_i, out_ch, in_ch| vec![0.5f32; out_ch * in_ch])
+                .unwrap();
+
+        let bytes = blob.as_ref();
+
+        // Check global header
+        assert_eq!(bytes[0], 0x01);
+        assert_eq!(bytes[4], 0x02);
+
+        // Check chunk headers
+        let wsize = 8 * 8 * 2; // FP16 weights
+        let chunk_size = 128 + wsize;
+
+        for i in 0..3 {
+            let chunk_offset = 128 + i * chunk_size;
+            assert_eq!(bytes[chunk_offset], 0x01);
+            assert_eq!(bytes[chunk_offset + 4], 0x02);
+            assert_eq!(bytes[chunk_offset + 64], 0xEF);
+            assert_eq!(bytes[chunk_offset + 65], 0xBE);
+            assert_eq!(bytes[chunk_offset + 66], 0xAD);
+            assert_eq!(bytes[chunk_offset + 67], 0xDE);
+            assert_eq!(bytes[chunk_offset + 68], 0x01);
+            assert_eq!(
+                u32::from_le_bytes([
+                    bytes[chunk_offset + 72],
+                    bytes[chunk_offset + 73],
+                    bytes[chunk_offset + 74],
+                    bytes[chunk_offset + 75],
+                ]),
+                wsize as u32
+            );
+            assert_eq!(
+                u32::from_le_bytes([
+                    bytes[chunk_offset + 80],
+                    bytes[chunk_offset + 81],
+                    bytes[chunk_offset + 82],
+                    bytes[chunk_offset + 83],
+                ]),
+                128
+            );
+        }
+    }
+
+    #[test]
+    fn test_weight_blob_multi_layer_conv_data_integrity() {
+        let test_values: Vec<f32> = (0..64).map(|i| i as f32 / 64.0).collect();
+
+        let blob =
+            WeightBlob::multi_layer_conv(8, 1, |_i, _out_ch, _in_ch| test_values.clone()).unwrap();
+
+        let bytes = blob.as_ref();
+
+        // Verify we can read back the FP16 values (with some precision loss)
+        let weight_offset = 128 + 128; // global header + chunk header
+        for (i, &expected) in test_values.iter().enumerate() {
+            let h = u16::from_le_bytes([
+                bytes[weight_offset + i * 2],
+                bytes[weight_offset + i * 2 + 1],
+            ]);
+            let actual = half::f16::from_bits(h).to_f32();
+            assert!(
+                (actual - expected).abs() < 0.01,
+                "Value mismatch at index {}",
+                i
+            );
+        }
     }
 }

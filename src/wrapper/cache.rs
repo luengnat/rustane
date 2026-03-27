@@ -2,36 +2,37 @@
 //!
 //! Reduces recompilation overhead during training by caching compiled kernels.
 //! Prevents memory exhaustion by respecting the ~119 kernel limit with LRU eviction.
+//!
+//! ## Ownership Model
+//!
+//! Since `ANEExecutor` now owns its kernel handle, the cache only needs to
+//! store executors (no need to keep compilers alive).
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
-use crate::wrapper::{ANECompiler, ANEExecutor};
+use crate::wrapper::executor::ANEExecutor;
+use crate::wrapper::ANECompiler;
 use crate::Result;
 
-/// Single cache entry holding both compiler and executor
+/// Single cache entry holding an executor
 ///
-/// We store the compiler to keep the kernel handle alive.
-/// The executor holds a dangling pointer to the kernel, so we
-/// must keep the compiler around for the lifetime of the executor.
+/// The executor owns the kernel handle, so we only store the executor.
 struct CacheEntry {
-    _compiler: ANECompiler, // Owns kernel; must not be dropped
-    executor: ANEExecutor,  // Borrows from compiler
-    hits: u64,              // Statistics
+    executor: ANEExecutor, // Owns kernel handle
+    hits: u64,             // Statistics
 }
 
 /// Kernel compilation cache with LRU eviction
 ///
 /// Caches compiled ANE kernels by MIL text + optional weight data.
-/// Keeps both ANECompiler and ANEExecutor together to prevent dangling pointers.
 ///
 /// # Architecture
 ///
 /// ```text
 /// HashMap<hash> -> CacheEntry
-///   |_ ANECompiler (owns kernel handle)
-///   |_ ANEExecutor (uses kernel handle)
+///   |_ ANEExecutor (owns kernel handle)
 /// VecDeque<hash> -> LRU order (oldest first)
 /// ```
 ///
@@ -170,14 +171,7 @@ impl KernelCache {
         let executor = compiler.compile_single(mil_text, weight_data, input_sizes, output_sizes)?;
 
         // Insert into cache
-        self.entries.insert(
-            key,
-            CacheEntry {
-                _compiler: compiler,
-                executor,
-                hits: 1,
-            },
-        );
+        self.entries.insert(key, CacheEntry { executor, hits: 1 });
         self.lru.push_back(key);
 
         // SAFETY: We just inserted the key
@@ -227,14 +221,7 @@ impl KernelCache {
             output_sizes,
         )?;
 
-        self.entries.insert(
-            key,
-            CacheEntry {
-                _compiler: compiler,
-                executor,
-                hits: 1,
-            },
-        );
+        self.entries.insert(key, CacheEntry { executor, hits: 1 });
         self.lru.push_back(key);
         Ok(&mut self.entries.get_mut(&key).unwrap().executor)
     }

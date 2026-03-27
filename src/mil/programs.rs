@@ -442,177 +442,380 @@ pub fn pg_attention_mil(
 }
 
 /// CONV_CONST string used by backward MIL programs (from stories_mil.h)
-const CONV_CONST_STR: &str = "        string pt = const()[name=string(\"pt\"), val=string(\"valid\")];\n        tensor<int32, [2]> st = const()[name=string(\"st\"), val=tensor<int32, [2]>([1,1])];\n        tensor<int32, [4]> pd = const()[name=string(\"pd\"), val=tensor<int32, [4]>([0,0,0,0])];\n        tensor<int32, [2]> dl = const()[name=string(\"dl\"), val=tensor<int32, [2]>([1,1])];\n        int32 gr = const()[name=string(\"gr\"), val=int32(1)];\n";
+const CONV_CONST_STR: &str = "        string pt = const()[name = string(\"pt\"), val = string(\"valid\")];\n        tensor<int32, [2]> st = const()[name = string(\"st\"), val = tensor<int32, [2]>([1,1])];\n        tensor<int32, [4]> pd = const()[name = string(\"pd\"), val = tensor<int32, [4]>([0,0,0,0])];\n        tensor<int32, [2]> dl = const()[name = string(\"dl\"), val = tensor<int32, [2]>([1,1])];\n        int32 gr = const()[name = string(\"gr\"), val = int32(1)];\n";
 
-/// FFN (SwiGLU) backward pass MIL program (program 1.3 format)
+/// FFN (SwiGLU) backward pass - computes dh1 gradient only (program 1.3 format)
 ///
-/// Ported from `gen_ffn_bwd()` in stories_mil.h. Computes gradients for the
-/// SwiGLU FFN block: backward through W2, sigmoid-gating, and W1/W3 projections.
-///
-/// ANE adaptations vs reference:
-/// - `sub(x, y)` → `add(x, mul(y, const(-1.0)))` (sub is rejected)
-/// - `concat(dx, dh1, dh3)` → multi-output return (concat is rejected)
-///
-/// Input shape: `[1, DIM+2*HIDDEN, 1, SEQ]` fp16 (packed: dffn, h1, h3)
-/// Output shapes: `[1, DIM, 1, SEQ]` (dx), `[1, HIDDEN, 1, SEQ]` (dh1, dh3) fp16
-pub fn bwd_ffn_mil(seq_len: usize, dim: usize, hidden_dim: usize) -> String {
+/// Input shape: `[1, DIM+2*HIDDEN, 1, SEQ]` fp32 (packed: dffn, h1, h3)
+/// Output shape: `[1, HIDDEN, 1, SEQ]` fp32 (dh1)
+pub fn bwd_ffn_dh1_mil(seq_len: usize, dim: usize, hidden_dim: usize) -> String {
     let in_ch = dim + 2 * hidden_dim;
     let mut mil = String::new();
     mil.push_str("program(1.3)\n");
     mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
     mil.push_str("{\n");
     mil.push_str(&format!(
-        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        in_ch, seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
         in_ch, seq_len
     ));
     mil.push_str(CONV_CONST_STR);
-    mil.push_str("        tensor<int32, [4]> bd = const()[name=string(\"bd\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
+    // Slice inputs
+    mil.push_str("        tensor<int32, [4]> bd = const()[name = string(\"bd\"), val = tensor<int32, [4]>([0,0,0,0])];\n");
     mil.push_str(&format!(
-        "        tensor<int32, [4]> sd = const()[name=string(\"sd\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        "        tensor<int32, [4]> sd = const()[name = string(\"sd\"), val = tensor<int32, [4]>([1,{},1,{}])];\n",
         dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dffn = slice_by_size(x=x,begin=bd,size=sd)[name=string(\"s0\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dffn = slice_by_size(x=x16,begin=bd,size=sd)[name = string(\"s0\")];\n",
         dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<int32, [4]> b1 = const()[name=string(\"b1\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        "        tensor<int32, [4]> b1 = const()[name = string(\"b1\"), val = tensor<int32, [4]>([0,{},0,0])];\n",
         dim
     ));
     mil.push_str(&format!(
-        "        tensor<int32, [4]> s1 = const()[name=string(\"s1\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        "        tensor<int32, [4]> s1 = const()[name = string(\"s1\"), val = tensor<int32, [4]>([1,{},1,{}])];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> h1 = slice_by_size(x=x,begin=b1,size=s1)[name=string(\"s1x\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> h1 = slice_by_size(x=x16,begin=b1,size=s1)[name = string(\"s1x\")];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<int32, [4]> b3 = const()[name=string(\"b3\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        "        tensor<int32, [4]> b3 = const()[name = string(\"b3\"), val = tensor<int32, [4]>([0,{},0,0])];\n",
         dim + hidden_dim
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> h3 = slice_by_size(x=x,begin=b3,size=s1)[name=string(\"s3x\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> h3 = slice_by_size(x=x16,begin=b3,size=s1)[name = string(\"s3x\")];\n",
         hidden_dim, seq_len
     ));
     // W2t and dsilu
     mil.push_str(&format!(
-        "        tensor<fp16, [{},{},1,1]> W2t = const()[name=string(\"W2t\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/w2t.bin\"), offset=uint64(64)))];\n",
+        "        tensor<fp16, [{},{},1,1]> W2t = const()[name = string(\"W2t\"), val = tensor<fp16, [{},{},1,1]>(BLOBFILE(path = string(\"@model_path/weights/w2t.bin\"), offset = uint64(64)))];\n",
         hidden_dim, dim, hidden_dim, dim
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dsilu = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W2t,x=dffn)[name=string(\"cw2\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dsilu = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W2t,x=dffn)[name = string(\"cw2\")];\n",
         hidden_dim, seq_len
     ));
     // sigmoid
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> sig = sigmoid(x=h1)[name=string(\"sg\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> sig = sigmoid(x=h1)[name = string(\"sg\")];\n",
         hidden_dim, seq_len
     ));
-    // sub decomposition: oms = 1 - sig → add(1, mul(sig, -1))
-    mil.push_str("        fp16 one = const()[name=string(\"one\"), val=fp16(1.0)];\n");
-    mil.push_str("        fp16 nm1 = const()[name=string(\"nm1\"), val=fp16(-1.0)];\n");
+    // sub decomposition: oms = 1 - sig
+    mil.push_str("        fp16 one = const()[name = string(\"one\"), val = fp16(1.0)];\n");
+    mil.push_str("        fp16 nm1 = const()[name = string(\"nm1\"), val = fp16(-1.0)];\n");
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> sneg = mul(x=sig,y=nm1)[name=string(\"msn\")];\n",
-        hidden_dim, seq_len
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> oms = add(x=one,y=sneg)[name=string(\"oms\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> sneg = mul(x=sig,y=nm1)[name = string(\"msn\")];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> homs = mul(x=h1,y=oms)[name=string(\"homs\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> oms = add(x=one,y=sneg)[name = string(\"oms\")];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> brk = add(x=one,y=homs)[name=string(\"brk\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> homs = mul(x=h1,y=oms)[name = string(\"homs\")];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dsd = mul(x=sig,y=brk)[name=string(\"dsd\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> brk = add(x=one,y=homs)[name = string(\"brk\")];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> t1 = mul(x=dsilu,y=h3)[name=string(\"t1\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dsd = mul(x=sig,y=brk)[name = string(\"dsd\")];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dh1 = mul(x=t1,y=dsd)[name=string(\"dh1\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> t1 = mul(x=dsilu,y=h3)[name = string(\"t1\")];\n",
         hidden_dim, seq_len
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> slh = mul(x=h1,y=sig)[name=string(\"slh\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dh1 = mul(x=t1,y=dsd)[name = string(\"dh1\")];\n",
         hidden_dim, seq_len
     ));
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dh3 = mul(x=dsilu,y=slh)[name=string(\"dh3\")];\n",
+        "        tensor<fp32, [1,{},1,{}]> dh1_out = cast(dtype = to_fp32, x = dh1)[name = string(\"cast_out\")];\n",
         hidden_dim, seq_len
     ));
-    // W1t, W3t, dx
-    mil.push_str(&format!(
-        "        tensor<fp16, [{},{},1,1]> W1t = const()[name=string(\"W1t\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/w1t.bin\"), offset=uint64(64)))];\n",
-        dim, hidden_dim, dim, hidden_dim
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dx1 = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W1t,x=dh1)[name=string(\"cw1\")];\n",
-        dim, seq_len
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [{},{},1,1]> W3t = const()[name=string(\"W3t\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/w3t.bin\"), offset=uint64(64)))];\n",
-        dim, hidden_dim, dim, hidden_dim
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dx3 = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W3t,x=dh3)[name=string(\"cw3\")];\n",
-        dim, seq_len
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dx = add(x=dx1,y=dx3)[name=string(\"adx\")];\n",
-        dim, seq_len
-    ));
-    // Multi-output return (alphabetical order): dh1, dh3, dx
-    mil.push_str("    } -> (dh1, dh3, dx);\n}\n");
+    mil.push_str("    } -> (dh1_out);\n}\n");
     mil
 }
 
-/// Build a compile request for the `bwd_ffn_mil` template.
-pub fn bwd_ffn_compile_request(
+/// FFN (SwiGLU) backward pass - computes dh3 gradient only (program 1.3 format)
+///
+/// Input shape: `[1, DIM+2*HIDDEN, 1, SEQ]` fp32 (packed: dffn, h1, h3)
+/// Output shape: `[1, HIDDEN, 1, SEQ]` fp32 (dh3)
+pub fn bwd_ffn_dh3_mil(seq_len: usize, dim: usize, hidden_dim: usize) -> String {
+    let in_ch = dim + 2 * hidden_dim;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        in_ch, seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        in_ch, seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    // Slice inputs
+    mil.push_str("        tensor<int32, [4]> bd = const()[name = string(\"bd\"), val = tensor<int32, [4]>([0,0,0,0])];\n");
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sd = const()[name = string(\"sd\"), val = tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dffn = slice_by_size(x=x16,begin=bd,size=sd)[name = string(\"s0\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b1 = const()[name = string(\"b1\"), val = tensor<int32, [4]>([0,{},0,0])];\n",
+        dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> s1 = const()[name = string(\"s1\"), val = tensor<int32, [4]>([1,{},1,{}])];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> h1 = slice_by_size(x=x16,begin=b1,size=s1)[name = string(\"s1x\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b3 = const()[name = string(\"b3\"), val = tensor<int32, [4]>([0,{},0,0])];\n",
+        dim + hidden_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> h3 = slice_by_size(x=x16,begin=b3,size=s1)[name = string(\"s3x\")];\n",
+        hidden_dim, seq_len
+    ));
+    // W2t and dsilu
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> W2t = const()[name = string(\"W2t\"), val = tensor<fp16, [{},{},1,1]>(BLOBFILE(path = string(\"@model_path/weights/w2t.bin\"), offset = uint64(64)))];\n",
+        hidden_dim, dim, hidden_dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dsilu = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W2t,x=dffn)[name = string(\"cw2\")];\n",
+        hidden_dim, seq_len
+    ));
+    // sigmoid
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> sig = sigmoid(x=h1)[name = string(\"sg\")];\n",
+        hidden_dim, seq_len
+    ));
+    // dh3 = dsilu * (h1 * sig)
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> slh = mul(x=h1,y=sig)[name = string(\"slh\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dh3 = mul(x=dsilu,y=slh)[name = string(\"dh3\")];\n",
+        hidden_dim, seq_len
+    ));
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> dh3_out = cast(dtype = to_fp32, x = dh3)[name = string(\"cast_out\")];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str("    } -> (dh3_out);\n}\n");
+    mil
+}
+
+/// FFN (SwiGLU) backward pass - computes dx gradient only (program 1.3 format)
+///
+/// Input shape: `[1, 2*HIDDEN, 1, SEQ]` fp32 (packed: dh1, dh3)
+/// Output shape: `[1, DIM, 1, SEQ]` fp32 (dx)
+pub fn bwd_ffn_dx_mil(seq_len: usize, dim: usize, hidden_dim: usize) -> String {
+    let in_ch = 2 * hidden_dim;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        in_ch, seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        in_ch, seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    // Slice dh1
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name = string(\"b0\"), val = tensor<int32, [4]>([0,0,0,0])];\n");
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> s0 = const()[name = string(\"s0\"), val = tensor<int32, [4]>([1,{},1,{}])];\n",
+        hidden_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dh1 = slice_by_size(x=x16,begin=b0,size=s0)[name = string(\"s1\")];\n",
+        hidden_dim, seq_len
+    ));
+    // Slice dh3
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b2 = const()[name = string(\"b2\"), val = tensor<int32, [4]>([0,{},0,0])];\n",
+        hidden_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dh3 = slice_by_size(x=x16,begin=b2,size=s0)[name = string(\"s3\")];\n",
+        hidden_dim, seq_len
+    ));
+    // W1t, dx1
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> W1t = const()[name = string(\"W1t\"), val = tensor<fp16, [{},{},1,1]>(BLOBFILE(path = string(\"@model_path/weights/w1t.bin\"), offset = uint64(64)))];\n",
+        dim, hidden_dim, dim, hidden_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dx1 = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W1t,x=dh1)[name = string(\"cw1\")];\n",
+        dim, seq_len
+    ));
+    // W3t, dx3
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> W3t = const()[name = string(\"W3t\"), val = tensor<fp16, [{},{},1,1]>(BLOBFILE(path = string(\"@model_path/weights/w3t.bin\"), offset = uint64(64)))];\n",
+        dim, hidden_dim, dim, hidden_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dx3 = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=W3t,x=dh3)[name = string(\"cw3\")];\n",
+        dim, seq_len
+    ));
+    // dx = dx1 + dx3
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dx = add(x=dx1,y=dx3)[name = string(\"adx\")];\n",
+        dim, seq_len
+    ));
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> dx_out = cast(dtype = to_fp32, x = dx)[name = string(\"cast_out\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("    } -> (dx_out);\n}\n");
+    mil
+}
+
+/// FFN (SwiGLU) backward pass MIL program - legacy multi-output version (DO NOT USE - ANE doesn't support multi-output)
+/// Kept for reference only. Use bwd_ffn_dh1_mil, bwd_ffn_dh3_mil, bwd_ffn_dx_mil instead.
+#[deprecated(
+    note = "Multi-output return not supported on ANE. Use bwd_ffn_dh1_mil, bwd_ffn_dh3_mil, bwd_ffn_dx_mil instead."
+)]
+pub fn bwd_ffn_mil(_seq_len: usize, _dim: usize, _hidden_dim: usize) -> String {
+    "// DEPRECATED - Multi-output not supported on ANE\n".to_string()
+}
+
+/// Build a compile request for the `bwd_ffn_dh1_mil` template.
+pub fn bwd_ffn_dh1_compile_request(
+    seq_len: usize,
+    dim: usize,
+    hidden_dim: usize,
+    w2t: &ANEWeightBlob,
+) -> ANECompileRequest {
+    let in_ch = dim + 2 * hidden_dim;
+    ANECompileRequest::new(
+        bwd_ffn_dh1_mil(seq_len, dim, hidden_dim),
+        vec![in_ch * seq_len * 2],
+        vec![hidden_dim * seq_len * 2],
+    )
+    .with_weight_blob("@model_path/weights/w2t.bin", w2t)
+}
+
+/// Build a compile request for the `bwd_ffn_dh3_mil` template.
+pub fn bwd_ffn_dh3_compile_request(
+    seq_len: usize,
+    dim: usize,
+    hidden_dim: usize,
+    w2t: &ANEWeightBlob,
+) -> ANECompileRequest {
+    let in_ch = dim + 2 * hidden_dim;
+    ANECompileRequest::new(
+        bwd_ffn_dh3_mil(seq_len, dim, hidden_dim),
+        vec![in_ch * seq_len * 2],
+        vec![hidden_dim * seq_len * 2],
+    )
+    .with_weight_blob("@model_path/weights/w2t.bin", w2t)
+}
+
+/// Build a compile request for the `bwd_ffn_dx_mil` template.
+pub fn bwd_ffn_dx_compile_request(
     seq_len: usize,
     dim: usize,
     hidden_dim: usize,
     w1t: &ANEWeightBlob,
-    w2t: &ANEWeightBlob,
     w3t: &ANEWeightBlob,
 ) -> ANECompileRequest {
-    let in_ch = dim + 2 * hidden_dim;
+    let in_ch = 2 * hidden_dim;
     ANECompileRequest::new(
-        bwd_ffn_mil(seq_len, dim, hidden_dim),
+        bwd_ffn_dx_mil(seq_len, dim, hidden_dim),
         vec![in_ch * seq_len * 2],
-        vec![
-            hidden_dim * seq_len * 2,
-            hidden_dim * seq_len * 2,
-            dim * seq_len * 2,
-        ],
+        vec![dim * seq_len * 2],
     )
     .with_weight_blob("@model_path/weights/w1t.bin", w1t)
-    .with_weight_blob("@model_path/weights/w2t.bin", w2t)
     .with_weight_blob("@model_path/weights/w3t.bin", w3t)
+}
+
+/// Build a compile request for the `bwd_ffn_mil` template - DEPRECATED
+#[deprecated(
+    note = "Multi-output return not supported on ANE. Use bwd_ffn_dh1_compile_request, bwd_ffn_dh3_compile_request, bwd_ffn_dx_compile_request instead."
+)]
+pub fn bwd_ffn_compile_request(
+    _seq_len: usize,
+    _dim: usize,
+    _hidden_dim: usize,
+    _w1t: &ANEWeightBlob,
+    _w2t: &ANEWeightBlob,
+    _w3t: &ANEWeightBlob,
+) -> ANECompileRequest {
+    panic!("Deprecated - use single-output variants instead");
 }
 
 /// QKV backward pass MIL program (program 1.3 format)
 ///
 /// Ported from `gen_qkvb()` in stories_mil.h. Computes dx from packed (dq, dk, dv).
 ///
-/// Input shape: `[1, 3*DIM, 1, SEQ]` fp16 (packed: dq, dk, dv)
-/// Output shape: `[1, DIM, 1, SEQ]` fp16 (dx)
+/// Input shape: `[1, 3*DIM, 1, SEQ]` fp32 (packed: dq, dk, dv)
+/// Output shape: `[1, DIM, 1, SEQ]` fp32 (dx)
 pub fn bwd_qkv_mil(seq_len: usize, dim: usize) -> String {
     let mut mil = String::new();
     mil.push_str("program(1.3)\n");
     mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
     mil.push_str("{\n");
     mil.push_str(&format!(
-        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
         3 * dim,
         seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        3 * dim, seq_len
     ));
     mil.push_str(CONV_CONST_STR);
     mil.push_str(&format!(
@@ -621,7 +824,7 @@ pub fn bwd_qkv_mil(seq_len: usize, dim: usize) -> String {
     ));
     mil.push_str("        tensor<int32, [4]> b0 = const()[name=string(\"b0\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dq = slice_by_size(x=x,begin=b0,size=sz)[name=string(\"s0\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dq = slice_by_size(x=x16,begin=b0,size=sz)[name=string(\"s0\")];\n",
         dim, seq_len
     ));
     mil.push_str(&format!(
@@ -629,7 +832,7 @@ pub fn bwd_qkv_mil(seq_len: usize, dim: usize) -> String {
         dim
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dk = slice_by_size(x=x,begin=b1,size=sz)[name=string(\"s1\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dk = slice_by_size(x=x16,begin=b1,size=sz)[name=string(\"s1\")];\n",
         dim, seq_len
     ));
     mil.push_str(&format!(
@@ -637,7 +840,7 @@ pub fn bwd_qkv_mil(seq_len: usize, dim: usize) -> String {
         2 * dim
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dv = slice_by_size(x=x,begin=b2,size=sz)[name=string(\"s2\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dv = slice_by_size(x=x16,begin=b2,size=sz)[name=string(\"s2\")];\n",
         dim, seq_len
     ));
     mil.push_str(&format!(
@@ -672,7 +875,15 @@ pub fn bwd_qkv_mil(seq_len: usize, dim: usize) -> String {
         "        tensor<fp16, [1,{},1,{}]> dx = add(x=dxqk,y=dxv)[name=string(\"out\")];\n",
         dim, seq_len
     ));
-    mil.push_str("    } -> (dx);\n}\n");
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> dx_out = cast(dtype = to_fp32, x = dx)[name = string(\"cast_out\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("    } -> (dx_out);\n}\n");
     mil
 }
 
@@ -686,35 +897,40 @@ pub fn bwd_qkv_compile_request(
 ) -> ANECompileRequest {
     ANECompileRequest::new(
         bwd_qkv_mil(seq_len, dim),
-        vec![3 * dim * seq_len * 2],
-        vec![dim * seq_len * 2],
+        vec![3 * dim * seq_len * 4], // FP32
+        vec![dim * seq_len * 4],     // FP32
     )
     .with_weight_blob("@model_path/weights/wqt.bin", wqt)
     .with_weight_blob("@model_path/weights/wkt.bin", wkt)
     .with_weight_blob("@model_path/weights/wvt.bin", wvt)
 }
 
-/// SDPA backward part 1 + Wo^T (program 1.3 format)
+/// SDPA backward part 1 - computes dvf only (program 1.3 format)
 ///
 /// Ported from `gen_sdpa_bwd1()` in stories_mil.h. Recomputes attention probs
-/// from saved Q, K, V, then computes dV and partial dP (attention score gradient).
+/// from saved Q, K, V, then computes dV.
 ///
-/// ANE adaptation: `concat` output → multi-output (dpf, dvf, pf) alphabetical
-///
-/// Input shape: `[1, 4*DIM, 1, SEQ]` fp16 (packed: qf, kf, vf, dx2f)
-/// Output shapes: `[1, DIM, 1, SEQ]` (dvf), `[1, SCORE_CH, 1, SEQ]` (dpf, pf) fp16
-/// where SCORE_CH = HEADS * SEQ
-pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
+/// Input shape: `[1, 4*DIM, 1, SEQ]` fp32 (packed: qf, kf, vf, dx2f)
+/// Output shape: `[1, DIM, 1, SEQ]` fp32 (dvf)
+/// where DIM = heads * head_dim
+pub fn bwd_sdpa_bwd1_dvf_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
     let sc = 1.0 / (head_dim as f32).sqrt();
-    let score_ch = heads * seq_len;
     let mut mil = String::new();
     mil.push_str("program(1.3)\n");
     mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
     mil.push_str("{\n");
     mil.push_str(&format!(
-        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
         4 * dim,
         seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        4 * dim, seq_len
     ));
     mil.push_str(CONV_CONST_STR);
     // Slice params
@@ -722,19 +938,18 @@ pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         "        tensor<int32, [4]> sz = const()[name=string(\"sz\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
         dim, seq_len
     ));
-    mil.push_str("        tensor<int32, [4]> b0 = const()[name=string(\"b0\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
-    // Extract qf, kf, vf, dx2f
+    // Extract qf, kf, vf, df
     for (i, name) in ["qf", "kf", "vf", "df"].iter().enumerate() {
         mil.push_str(&format!(
             "        tensor<int32, [4]> b{i} = const()[name=string(\"b{i}\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
             i * dim
         ));
         mil.push_str(&format!(
-            "        tensor<fp16, [1,{},1,{}]> {name} = slice_by_size(x=x,begin=b{i},size=sz)[name=string(\"s{i}\")];\n",
+            "        tensor<fp16, [1,{},1,{}]> {name} = slice_by_size(x=x16,begin=b{i},size=sz)[name=string(\"s{i}\")];\n",
             dim, seq_len
         ));
     }
-    // Wot and df = conv(Wot, dx2f)
+    // Wot and da = conv(Wot, df)
     mil.push_str(&format!(
         "        tensor<fp16, [{},{},1,1]> Wot = const()[name=string(\"Wot\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/wot.bin\"), offset=uint64(64)))];\n",
         dim, dim, dim, dim
@@ -755,7 +970,7 @@ pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
             heads, head_dim, seq_len, n = name
         ));
         mil.push_str(&format!(
-            "        tensor<fp16, [1,{},{},{}]> {n} = transpose(perm=pm,x={n}r)[name=string(\"t{n}\")];\n",
+            "        tensor<fp16, [1,{},{},{}]> {n}t = transpose(perm=pm,x={n}r)[name=string(\"t{n}\")];\n",
             heads, seq_len, head_dim, n = name
         ));
     }
@@ -771,7 +986,7 @@ pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
     mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
     mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},{},{}]> sc1 = matmul(transpose_x=bF,transpose_y=bT,x=qf,y=kf)[name=string(\"mm1\")];\n",
+        "        tensor<fp16, [1,{},{},{}]> sc1 = matmul(transpose_x=bF,transpose_y=bT,x=qft,y=kft)[name=string(\"mm1\")];\n",
         heads, seq_len, seq_len
     ));
     mil.push_str(&format!(
@@ -791,19 +1006,15 @@ pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         "        tensor<fp16, [1,{},{},{}]> ms = add(x=sc2,y=cm)[name=string(\"msk\")];\n",
         heads, seq_len, seq_len
     ));
-    mil.push_str("        int32 sax = const()[name=string(\"sax\"), val=int32(-1)];\n");
+    mil.push_str("        tensor<int32, []> sax = const()[name=string(\"sax\"), val=tensor<int32, []>(-1)];\n");
     mil.push_str(&format!(
         "        tensor<fp16, [1,{},{},{}]> probs = softmax(axis=sax,x=ms)[name=string(\"sm\")];\n",
         heads, seq_len, seq_len
     ));
-    // dV = probs^T @ dAttn, dP = dAttn @ V
+    // dV = probs^T @ dAttn
     mil.push_str(&format!(
         "        tensor<fp16, [1,{},{},{}]> dv4 = matmul(transpose_x=bT,transpose_y=bF,x=probs,y=datt)[name=string(\"dv\")];\n",
         heads, seq_len, head_dim
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},{},{}]> dp4 = matmul(transpose_x=bF,transpose_y=bT,x=datt,y=vf)[name=string(\"dp\")];\n",
-        heads, seq_len, seq_len
     ));
     // Reshape dV back to [1, DIM, 1, SEQ]
     mil.push_str(&format!(
@@ -818,10 +1029,296 @@ pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         "        tensor<fp16, [1,{},1,{}]> dvf = reshape(shape=dvs,x=dvt)[name=string(\"dvf\")];\n",
         dim, seq_len
     ));
-    // Reshape probs, dp to [1, SCORE_CH, 1, SEQ]
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> dvf_out = cast(dtype = to_fp32, x = dvf)[name = string(\"cast_out\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("    } -> (dvf_out);\n}\n");
+    mil
+}
+
+/// SDPA backward part 1 - computes dpf only (program 1.3 format)
+///
+/// Ported from `gen_sdpa_bwd1()` in stories_mil.h. Recomputes attention probs
+/// from saved Q, K, V, then computes dP (attention score gradient).
+///
+/// Input shape: `[1, 4*DIM, 1, SEQ]` fp32 (packed: qf, kf, vf, dx2f)
+/// Output shape: `[1, SCORE_CH, 1, SEQ]` fp32 (dpf)
+/// where SCORE_CH = heads * SEQ
+pub fn bwd_sdpa_bwd1_dpf_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
+    let sc = 1.0 / (head_dim as f32).sqrt();
+    let score_ch = heads * seq_len;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        4 * dim,
+        seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        4 * dim, seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    // Slice params
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz = const()[name=string(\"sz\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    // Extract qf, kf, vf, df
+    for (i, name) in ["qf", "kf", "vf", "df"].iter().enumerate() {
+        mil.push_str(&format!(
+            "        tensor<int32, [4]> b{i} = const()[name=string(\"b{i}\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+            i * dim
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},1,{}]> {name} = slice_by_size(x=x16,begin=b{i},size=sz)[name=string(\"s{i}\")];\n",
+            dim, seq_len
+        ));
+    }
+    // Wot and da = conv(Wot, df)
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> Wot = const()[name=string(\"Wot\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/wot.bin\"), offset=uint64(64)))];\n",
+        dim, dim, dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> da = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wot,x=df)[name=string(\"cwo\")];\n",
+        dim, seq_len
+    ));
+    // Reshape to [HEADS, HD, SEQ], transpose to [HEADS, SEQ, HD]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> rsh = const()[name=string(\"rsh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name=string(\"pm\"), val=tensor<int32, [4]>([0,1,3,2])];\n");
+    for name in ["qf", "kf", "vf"] {
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}r = reshape(shape=rsh,x={name})[name=string(\"r{n}\")];\n",
+            heads, head_dim, seq_len, n = name
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}t = transpose(perm=pm,x={n}r)[name=string(\"t{n}\")];\n",
+            heads, seq_len, head_dim, n = name
+        ));
+    }
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dr = reshape(shape=rsh,x=da)[name=string(\"rda\")];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> datt = transpose(perm=pm,x=dr)[name=string(\"td\")];\n",
+        heads, seq_len, head_dim
+    ));
+    // Recompute forward attention: scores = Q @ K^T * scale, probs = softmax(scores + mask)
+    mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
+    mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc1 = matmul(transpose_x=bF,transpose_y=bT,x=qft,y=kft)[name=string(\"mm1\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        fp16 scv = const()[name=string(\"scv\"), val=fp16({:.6})];\n",
+        sc
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc2 = mul(x=sc1,y=scv)[name=string(\"scl\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Causal mask
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,{},{}]> cm = const()[name=string(\"cm\"), val=tensor<fp16, [1,1,{},{}]>(BLOBFILE(path=string(\"@model_path/weights/mask.bin\"), offset=uint64(64)))];\n",
+        seq_len, seq_len, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ms = add(x=sc2,y=cm)[name=string(\"msk\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str("        tensor<int32, []> sax = const()[name=string(\"sax\"), val=tensor<int32, []>(-1)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> probs = softmax(axis=sax,x=ms)[name=string(\"sm\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // dP = dAttn @ V^T
+    // datt: [1, heads, seq, hd], vft: [1, heads, seq, hd]
+    // Compute dp4 = datt @ vft^T  [1, heads, seq, seq]
+    // NOTE: ANE compiler rejects matmul->reshape pattern in standalone programs
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dp4 = matmul(transpose_x=bF,transpose_y=bT,x=datt,y=vft)[name=string(\"dp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Reshape dp to [1, SCORE_CH, 1, SEQ] where SCORE_CH = heads * seq
     mil.push_str(&format!(
         "        tensor<int32, [4]> scs = const()[name=string(\"scs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
         score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dpf = reshape(shape=scs,x=dp4)[name=string(\"dpf\")];\n",
+        score_ch, seq_len
+    ));
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> dpf_out = cast(dtype = to_fp32, x = dpf)[name = string(\"cast_out\")];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str("    } -> (dpf_out);\n}\n");
+    mil
+}
+
+/// SDPA backward part 1 - combined output (dvf + pf + dpf concatenated)
+///
+/// Ported from `gen_sdpa_bwd1()` in stories_mil.h. This version concatenates
+/// all three outputs (dvf, pf, dpf) into a single tensor, which allows the
+/// ANE compiler to accept the matmul->reshape pattern that fails in standalone dpf.
+///
+/// Input shape: `[1, 4*DIM, 1, SEQ]` fp32 (packed: qf, kf, vf, df)
+/// Output shape: `[1, DIM + 2*SCORE_CH, 1, SEQ]` fp32 (concatenated: dvf, pf, dpf)
+/// where SCORE_CH = heads * SEQ, DIM = heads * head_dim
+///
+/// Use this instead of separate bwd_sdpa_bwd1_*_mil functions if dpf is needed.
+pub fn bwd_sdpa_bwd1_combined_mil(
+    seq_len: usize,
+    dim: usize,
+    heads: usize,
+    head_dim: usize,
+) -> String {
+    let sc = 1.0 / (head_dim as f32).sqrt();
+    let score_ch = heads * seq_len;
+    let out_ch = dim + 2 * score_ch;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        4 * dim,
+        seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        4 * dim, seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    // Slice params
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz = const()[name=string(\"sz\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    // Extract qf, kf, vf, df
+    for (i, name) in ["qf", "kf", "vf", "df"].iter().enumerate() {
+        mil.push_str(&format!(
+            "        tensor<int32, [4]> b{i} = const()[name=string(\"b{i}\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+            i * dim
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},1,{}]> {name} = slice_by_size(x=x16,begin=b{i},size=sz)[name=string(\"s{i}\")];\n",
+            dim, seq_len
+        ));
+    }
+    // Wot and da = conv(Wot, df)
+    mil.push_str(&format!(
+        "        tensor<fp16, [{},{},1,1]> Wot = const()[name=string(\"Wot\"), val=tensor<fp16, [{},{},1,1]>(BLOBFILE(path=string(\"@model_path/weights/wot.bin\"), offset=uint64(64)))];\n",
+        dim, dim, dim, dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> da = conv(dilations=dl,groups=gr,pad=pd,pad_type=pt,strides=st,weight=Wot,x=df)[name=string(\"cwo\")];\n",
+        dim, seq_len
+    ));
+    // Reshape to [HEADS, HD, SEQ], transpose to [HEADS, SEQ, HD]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> rsh = const()[name=string(\"rsh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name=string(\"pm\"), val=tensor<int32, [4]>([0,1,3,2])];\n");
+    for name in ["qf", "kf", "vf"] {
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}r = reshape(shape=rsh,x={name})[name=string(\"r{n}\")];\n",
+            heads, head_dim, seq_len, n = name
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}t = transpose(perm=pm,x={n}r)[name=string(\"t{n}\")];\n",
+            heads, seq_len, head_dim, n = name
+        ));
+    }
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dr = reshape(shape=rsh,x=da)[name=string(\"rda\")];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> datt = transpose(perm=pm,x=dr)[name=string(\"td\")];\n",
+        heads, seq_len, head_dim
+    ));
+    // Recompute forward attention
+    mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
+    mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc1 = matmul(transpose_x=bF,transpose_y=bT,x=qft,y=kft)[name=string(\"mm1\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        fp16 scv = const()[name=string(\"scv\"), val=fp16({:.6})];\n",
+        sc
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc2 = mul(x=sc1,y=scv)[name=string(\"scl\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Causal mask
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,{},{}]> cm = const()[name=string(\"cm\"), val=tensor<fp16, [1,1,{},{}]>(BLOBFILE(path=string(\"@model_path/weights/mask.bin\"), offset=uint64(64)))];\n",
+        seq_len, seq_len, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ms = add(x=sc2,y=cm)[name=string(\"msk\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str("        tensor<int32, []> sax = const()[name=string(\"sax\"), val=tensor<int32, []>(-1)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> probs = softmax(axis=sax,x=ms)[name=string(\"sm\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // dvf: dV = probs @ dAttn^T
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dv4 = matmul(transpose_x=bT,transpose_y=bF,x=probs,y=datt)[name=string(\"dv\")];\n",
+        heads, seq_len, head_dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dvt = transpose(perm=pm,x=dv4)[name=string(\"dvt\")];\n",
+        heads, head_dim, seq_len
+    ));
+    // dpf: dP = dAttn @ V^T
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dp4 = matmul(transpose_x=bF,transpose_y=bT,x=datt,y=vft)[name=string(\"dp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Reshape outputs to [1, X, 1, SEQ]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> dvs = const()[name=string(\"dvs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> scs = const()[name=string(\"scs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dvf = reshape(shape=dvs,x=dvt)[name=string(\"dvf\")];\n",
+        dim, seq_len
     ));
     mil.push_str(&format!(
         "        tensor<fp16, [1,{},1,{}]> pf = reshape(shape=scs,x=probs)[name=string(\"pf\")];\n",
@@ -831,13 +1328,196 @@ pub fn bwd_sdpa_bwd1_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         "        tensor<fp16, [1,{},1,{}]> dpf = reshape(shape=scs,x=dp4)[name=string(\"dpf\")];\n",
         score_ch, seq_len
     ));
-    // Multi-output (alphabetical): dpf, dvf, pf
-    mil.push_str("    } -> (dpf, dvf, pf);\n}\n");
+    // Concatenate along axis=1: [1, DIM+2*SCORE_CH, 1, SEQ]
+    mil.push_str("        int32 cax = const()[name=string(\"cax\"), val=int32(1)];\n");
+    mil.push_str("        bool cid = const()[name=string(\"cid\"), val=bool(false)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> out = concat(axis=cax,interleave=cid,values=(dvf,pf,dpf))[name=string(\"cat\")];\n",
+        out_ch, seq_len
+    ));
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> out_fp32 = cast(dtype = to_fp32, x = out)[name = string(\"cast_out\")];\n",
+        out_ch, seq_len
+    ));
+    mil.push_str("    } -> (out_fp32);\n}\n");
     mil
 }
 
-/// Build a compile request for bwd_sdpa_bwd1_mil.
-pub fn bwd_sdpa_bwd1_compile_request(
+/// Build a compile request for bwd_sdpa_bwd1_combined_mil.
+pub fn bwd_sdpa_bwd1_combined_compile_request(
+    seq_len: usize,
+    dim: usize,
+    heads: usize,
+    head_dim: usize,
+    wot: &ANEWeightBlob,
+    mask: &ANEWeightBlob,
+) -> ANECompileRequest {
+    let score_ch = heads * seq_len;
+    let out_ch = dim + 2 * score_ch;
+    ANECompileRequest::new(
+        bwd_sdpa_bwd1_combined_mil(seq_len, dim, heads, head_dim),
+        vec![4 * dim * seq_len * 4], // FP32 input
+        vec![out_ch * seq_len * 4],  // FP32 output (concatenated)
+    )
+    .with_weight_blob("@model_path/weights/wot.bin", wot)
+    .with_weight_blob("@model_path/weights/mask.bin", mask)
+}
+
+/// SDPA backward part 1 - computes pf (probs) only (program 1.3 format)
+///
+/// Ported from `gen_sdpa_bwd1()` in stories_mil.h. Recomputes attention probs
+/// from saved Q, K, V.
+///
+/// Input shape: `[1, 4*DIM, 1, SEQ]` fp32 (packed: qf, kf, vf, dx2f)
+/// Output shape: `[1, SCORE_CH, 1, SEQ]` fp32 (pf - attention probs)
+/// where SCORE_CH = heads * SEQ
+pub fn bwd_sdpa_bwd1_pf_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
+    let sc = 1.0 / (head_dim as f32).sqrt();
+    let score_ch = heads * seq_len;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        4 * dim,
+        seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        4 * dim, seq_len
+    ));
+    mil.push_str(CONV_CONST_STR);
+    // Slice params
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz = const()[name=string(\"sz\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    // Extract qf, kf, vf (don't need df for probs computation)
+    for (i, name) in ["qf", "kf", "vf"].iter().enumerate() {
+        mil.push_str(&format!(
+            "        tensor<int32, [4]> b{i} = const()[name=string(\"b{i}\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+            i * dim
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},1,{}]> {name} = slice_by_size(x=x16,begin=b{i},size=sz)[name=string(\"s{i}\")];\n",
+            dim, seq_len
+        ));
+    }
+    // Reshape to [HEADS, HD, SEQ], transpose to [HEADS, SEQ, HD]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> rsh = const()[name=string(\"rsh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name=string(\"pm\"), val=tensor<int32, [4]>([0,1,3,2])];\n");
+    for name in ["qf", "kf", "vf"] {
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}r = reshape(shape=rsh,x={name})[name=string(\"r{n}\")];\n",
+            heads, head_dim, seq_len, n = name
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}t = transpose(perm=pm,x={n}r)[name=string(\"t{n}\")];\n",
+            heads, seq_len, head_dim, n = name
+        ));
+    }
+    // Recompute forward attention: scores = Q @ K^T * scale, probs = softmax(scores + mask)
+    mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
+    mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc1 = matmul(transpose_x=bF,transpose_y=bT,x=qft,y=kft)[name=string(\"mm1\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        fp16 scv = const()[name=string(\"scv\"), val=fp16({:.6})];\n",
+        sc
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> sc2 = mul(x=sc1,y=scv)[name=string(\"scl\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Causal mask
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,1,{},{}]> cm = const()[name=string(\"cm\"), val=tensor<fp16, [1,1,{},{}]>(BLOBFILE(path=string(\"@model_path/weights/mask.bin\"), offset=uint64(64)))];\n",
+        seq_len, seq_len, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ms = add(x=sc2,y=cm)[name=string(\"msk\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str("        tensor<int32, []> sax = const()[name=string(\"sax\"), val=tensor<int32, []>(-1)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> probs = softmax(axis=sax,x=ms)[name=string(\"sm\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Reshape probs to [1, SCORE_CH, 1, SEQ]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> scs = const()[name=string(\"scs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> pf = reshape(shape=scs,x=probs)[name=string(\"pf\")];\n",
+        score_ch, seq_len
+    ));
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> pf_out = cast(dtype = to_fp32, x = pf)[name = string(\"cast_out\")];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str("    } -> (pf_out);\n}\n");
+    mil
+}
+
+/// SDPA backward part 1 + Wo^T (program 1.3 format) - DEPRECATED
+///
+/// Ported from `gen_sdpa_bwd1()` in stories_mil.h. Recomputes attention probs
+/// from saved Q, K, V, then computes dV and partial dP (attention score gradient).
+///
+/// ANE adaptation: `concat` output → multi-output (dpf, dvf, pf) alphabetical
+///
+/// Input shape: `[1, 4*DIM, 1, SEQ]` fp16 (packed: qf, kf, vf, dx2f)
+/// Output shapes: `[1, DIM, 1, SEQ]` (dvf), `[1, SCORE_CH, 1, SEQ]` (dpf, pf) fp16
+/// where SCORE_CH = HEADS * SEQ
+///
+/// DEPRECATED: Multi-output return not supported on ANE.
+/// Use bwd_sdpa_bwd1_dvf_mil, bwd_sdpa_bwd1_dpf_mil, bwd_sdpa_bwd1_pf_mil instead.
+#[deprecated(
+    note = "Multi-output return not supported on ANE. Use bwd_sdpa_bwd1_dvf_mil, bwd_sdpa_bwd1_dpf_mil, bwd_sdpa_bwd1_pf_mil instead."
+)]
+pub fn bwd_sdpa_bwd1_mil(_seq_len: usize, _dim: usize, _heads: usize, _head_dim: usize) -> String {
+    "// DEPRECATED - Multi-output not supported on ANE\n".to_string()
+}
+
+/// Build a compile request for bwd_sdpa_bwd1_dvf_mil.
+pub fn bwd_sdpa_bwd1_dvf_compile_request(
+    seq_len: usize,
+    dim: usize,
+    heads: usize,
+    head_dim: usize,
+    wot: &ANEWeightBlob,
+    mask: &ANEWeightBlob,
+) -> ANECompileRequest {
+    ANECompileRequest::new(
+        bwd_sdpa_bwd1_dvf_mil(seq_len, dim, heads, head_dim),
+        vec![4 * dim * seq_len * 4], // FP32 input
+        vec![dim * seq_len * 4],     // FP32 output (dvf)
+    )
+    .with_weight_blob("@model_path/weights/wot.bin", wot)
+    .with_weight_blob("@model_path/weights/mask.bin", mask)
+}
+
+/// Build a compile request for bwd_sdpa_bwd1_dpf_mil.
+pub fn bwd_sdpa_bwd1_dpf_compile_request(
     seq_len: usize,
     dim: usize,
     heads: usize,
@@ -847,28 +1527,54 @@ pub fn bwd_sdpa_bwd1_compile_request(
 ) -> ANECompileRequest {
     let score_ch = heads * seq_len;
     ANECompileRequest::new(
-        bwd_sdpa_bwd1_mil(seq_len, dim, heads, head_dim),
-        vec![4 * dim * seq_len * 2],
-        vec![
-            score_ch * seq_len * 2, // dpf
-            dim * seq_len * 2,      // dvf
-            score_ch * seq_len * 2, // pf
-        ],
+        bwd_sdpa_bwd1_dpf_mil(seq_len, dim, heads, head_dim),
+        vec![4 * dim * seq_len * 4],  // FP32 input
+        vec![score_ch * seq_len * 4], // FP32 output (dpf)
     )
     .with_weight_blob("@model_path/weights/wot.bin", wot)
     .with_weight_blob("@model_path/weights/mask.bin", mask)
 }
 
-/// SDPA backward part 2 (program 1.3 format)
+/// Build a compile request for bwd_sdpa_bwd1_pf_mil.
+pub fn bwd_sdpa_bwd1_pf_compile_request(
+    seq_len: usize,
+    dim: usize,
+    heads: usize,
+    head_dim: usize,
+    mask: &ANEWeightBlob,
+) -> ANECompileRequest {
+    let score_ch = heads * seq_len;
+    ANECompileRequest::new(
+        bwd_sdpa_bwd1_pf_mil(seq_len, dim, heads, head_dim),
+        vec![4 * dim * seq_len * 4],  // FP32 input
+        vec![score_ch * seq_len * 4], // FP32 output (pf)
+    )
+    .with_weight_blob("@model_path/weights/mask.bin", mask)
+}
+
+/// Build a compile request for bwd_sdpa_bwd1_mil - DEPRECATED
+#[deprecated(
+    note = "Multi-output return not supported on ANE. Use bwd_sdpa_bwd1_dvf_compile_request, bwd_sdpa_bwd1_dpf_compile_request, bwd_sdpa_bwd1_pf_compile_request instead."
+)]
+pub fn bwd_sdpa_bwd1_compile_request(
+    _seq_len: usize,
+    _dim: usize,
+    _heads: usize,
+    _head_dim: usize,
+    _wot: &ANEWeightBlob,
+    _mask: &ANEWeightBlob,
+) -> ANECompileRequest {
+    panic!("Deprecated: Use bwd_sdpa_bwd1_dvf_compile_request, bwd_sdpa_bwd1_dpf_compile_request, bwd_sdpa_bwd1_pf_compile_request instead.");
+}
+
+/// SDPA backward part 2 - computes dqf only (program 1.3 format)
 ///
-/// Ported from `gen_sdpa_bwd2()` in stories_mil.h. Computes dQ and dK from
+/// Ported from `gen_sdpa_bwd2()` in stories_mil.h. Computes dQ from
 /// attention probs, dp (score gradient), and saved Q, K.
 ///
-/// ANE adaptations: `sub` → add+mul decomposition, `concat` → multi-output
-///
-/// Input shape: `[1, 2*SCORE_CH + 2*DIM, 1, SEQ]` fp16
-/// Output shapes: `[1, DIM, 1, SEQ]` (dkf, dqf) fp16
-pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
+/// Input shape: `[1, 2*SCORE_CH + 2*DIM, 1, SEQ]` fp32
+/// Output shape: `[1, DIM, 1, SEQ]` fp32 (dqf)
+pub fn bwd_sdpa_bwd2_dqf_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
     let sc = 1.0 / (head_dim as f32).sqrt();
     let score_ch = heads * seq_len;
     let in_ch = 2 * score_ch + 2 * dim;
@@ -877,7 +1583,15 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
     mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
     mil.push_str("{\n");
     mil.push_str(&format!(
-        "    func main<ios18>(tensor<fp16, [1, {}, 1, {}]> x) {{\n",
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        in_ch, seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
         in_ch, seq_len
     ));
     // Slice params for SCORE_CH-sized and DIM-sized chunks
@@ -887,7 +1601,7 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
     ));
     mil.push_str("        tensor<int32, [4]> b0 = const()[name=string(\"b0\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> pf = slice_by_size(x=x,begin=b0,size=sz_sc)[name=string(\"s0\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> pf = slice_by_size(x=x16,begin=b0,size=sz_sc)[name=string(\"s0\")];\n",
         score_ch, seq_len
     ));
     mil.push_str(&format!(
@@ -895,7 +1609,7 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         score_ch
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> dpf = slice_by_size(x=x,begin=b1,size=sz_sc)[name=string(\"s1\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> dpf = slice_by_size(x=x16,begin=b1,size=sz_sc)[name=string(\"s1\")];\n",
         score_ch, seq_len
     ));
     mil.push_str(&format!(
@@ -907,7 +1621,7 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         2 * score_ch
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> qf = slice_by_size(x=x,begin=b2,size=sz_d)[name=string(\"s2\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> qf = slice_by_size(x=x16,begin=b2,size=sz_d)[name=string(\"s2\")];\n",
         dim, seq_len
     ));
     mil.push_str(&format!(
@@ -915,7 +1629,7 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         2 * score_ch + dim
     ));
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},1,{}]> kf = slice_by_size(x=x,begin=b3,size=sz_d)[name=string(\"s3\")];\n",
+        "        tensor<fp16, [1,{},1,{}]> kf = slice_by_size(x=x16,begin=b3,size=sz_d)[name=string(\"s3\")];\n",
         dim, seq_len
     ));
     // Reshape probs, dp to [HEADS, SEQ, SEQ]
@@ -943,7 +1657,7 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
             heads, head_dim, seq_len, n = &name[0..1]
         ));
         mil.push_str(&format!(
-            "        tensor<fp16, [1,{},{},{}]> {name} = transpose(perm=pm,x={n}r)[name=string(\"tq{n}\")];\n",
+            "        tensor<fp16, [1,{},{},{}]> {n}t = transpose(perm=pm,x={n}r)[name=string(\"tq{n}\")];\n",
             heads, seq_len, head_dim, n = &name[0..1]
         ));
     }
@@ -958,14 +1672,9 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         "        tensor<fp16, [1,{},{},1]> spdp = reduce_sum(x=pdp,axes=rax,keep_dims=kd)[name=string(\"rs\")];\n",
         heads, seq_len
     ));
-    // sub decomposition: dps = dp - spdp → add(dp, mul(spdp, -1))
-    mil.push_str("        fp16 nm1 = const()[name=string(\"nm1\"), val=fp16(-1.0)];\n");
+    // dps = dp - spdp
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},{},{}]> sneg = mul(x=spdp,y=nm1)[name=string(\"sneg\")];\n",
-        heads, seq_len, seq_len
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},{},{}]> dps = add(x=dp,y=sneg)[name=string(\"dps\")];\n",
+        "        tensor<fp16, [1,{},{},{}]> dps = sub(x=dp,y=spdp)[name=string(\"dps\")];\n",
         heads, seq_len, seq_len
     ));
     // ds = probs * dps * scale
@@ -981,24 +1690,16 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         "        tensor<fp16, [1,{},{},{}]> ds = mul(x=ds0,y=scv)[name=string(\"ds\")];\n",
         heads, seq_len, seq_len
     ));
-    // dQ = ds @ K, dK = ds^T @ Q
+    // dQ = ds @ K
     mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
     mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
     mil.push_str(&format!(
-        "        tensor<fp16, [1,{},{},{}]> dq4 = matmul(transpose_x=bF,transpose_y=bF,x=ds,y=kf)[name=string(\"dq\")];\n",
-        heads, seq_len, head_dim
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},{},{}]> dk4 = matmul(transpose_x=bT,transpose_y=bF,x=ds,y=qf)[name=string(\"dk\")];\n",
+        "        tensor<fp16, [1,{},{},{}]> dq4 = matmul(transpose_x=bF,transpose_y=bF,x=ds,y=kt)[name=string(\"dq\")];\n",
         heads, seq_len, head_dim
     ));
     // Transpose back, reshape to [1, DIM, 1, SEQ]
     mil.push_str(&format!(
         "        tensor<fp16, [1,{},{},{}]> dqt = transpose(perm=pm,x=dq4)[name=string(\"dqt\")];\n",
-        heads, head_dim, seq_len
-    ));
-    mil.push_str(&format!(
-        "        tensor<fp16, [1,{},{},{}]> dkt = transpose(perm=pm,x=dk4)[name=string(\"dkt\")];\n",
         heads, head_dim, seq_len
     ));
     mil.push_str(&format!(
@@ -1009,27 +1710,233 @@ pub fn bwd_sdpa_bwd2_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usi
         "        tensor<fp16, [1,{},1,{}]> dqf = reshape(shape=fs,x=dqt)[name=string(\"dqf\")];\n",
         dim, seq_len
     ));
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> dqf_out = cast(dtype = to_fp32, x = dqf)[name = string(\"cast_out\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("    } -> (dqf_out);\n}\n");
+    mil
+}
+
+/// SDPA backward part 2 - computes dkf only (program 1.3 format)
+///
+/// Ported from `gen_sdpa_bwd2()` in stories_mil.h. Computes dK from
+/// attention probs, dp (score gradient), and saved Q, K.
+///
+/// Input shape: `[1, 2*SCORE_CH + 2*DIM, 1, SEQ]` fp32
+/// Output shape: `[1, DIM, 1, SEQ]` fp32 (dkf)
+pub fn bwd_sdpa_bwd2_dkf_mil(seq_len: usize, dim: usize, heads: usize, head_dim: usize) -> String {
+    let sc = 1.0 / (head_dim as f32).sqrt();
+    let score_ch = heads * seq_len;
+    let in_ch = 2 * score_ch + 2 * dim;
+    let mut mil = String::new();
+    mil.push_str("program(1.3)\n");
+    mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremltools-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
+    mil.push_str("{\n");
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        in_ch, seq_len
+    ));
+    // Cast FP32 -> FP16
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n",
+        in_ch, seq_len
+    ));
+    // Slice params for SCORE_CH-sized and DIM-sized chunks
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz_sc = const()[name=string(\"szsc\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> b0 = const()[name=string(\"b0\"), val=tensor<int32, [4]>([0,0,0,0])];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> pf = slice_by_size(x=x16,begin=b0,size=sz_sc)[name=string(\"s0\")];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b1 = const()[name=string(\"b1\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        score_ch
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> dpf = slice_by_size(x=x16,begin=b1,size=sz_sc)[name=string(\"s1\")];\n",
+        score_ch, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> sz_d = const()[name=string(\"szd\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b2 = const()[name=string(\"b2\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        2 * score_ch
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> qf = slice_by_size(x=x16,begin=b2,size=sz_d)[name=string(\"s2\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> b3 = const()[name=string(\"b3\"), val=tensor<int32, [4]>([0,{},0,0])];\n",
+        2 * score_ch + dim
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},1,{}]> kf = slice_by_size(x=x16,begin=b3,size=sz_d)[name=string(\"s3\")];\n",
+        dim, seq_len
+    ));
+    // Reshape probs, dp to [HEADS, SEQ, SEQ]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> ssh = const()[name=string(\"ssh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> probs = reshape(shape=ssh,x=pf)[name=string(\"rp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dp = reshape(shape=ssh,x=dpf)[name=string(\"rdp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // Reshape qf, kf to [HEADS, HD, SEQ], transpose to [HEADS, SEQ, HD]
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> rsh = const()[name=string(\"rsh\"), val=tensor<int32, [4]>([1,{}, {},{}])];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str("        tensor<int32, [4]> pm = const()[name=string(\"pm\"), val=tensor<int32, [4]>([0,1,3,2])];\n");
+    for name in ["qf", "kf"] {
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}r = reshape(shape=rsh,x={name})[name=string(\"rq{n}\")];\n",
+            heads, head_dim, seq_len, n = &name[0..1]
+        ));
+        mil.push_str(&format!(
+            "        tensor<fp16, [1,{},{},{}]> {n}t = transpose(perm=pm,x={n}r)[name=string(\"tq{n}\")];\n",
+            heads, seq_len, head_dim, n = &name[0..1]
+        ));
+    }
+    // Softmax backward: pdp = probs * dp, spdp = reduce_sum(pdp, -1), dps = dp - spdp
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> pdp = mul(x=probs,y=dp)[name=string(\"pdp\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str("        tensor<int32, [1]> rax = const()[name=string(\"rax\"), val=tensor<int32, [1]>([-1])];\n");
+    mil.push_str("        bool kd = const()[name=string(\"kd\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},1]> spdp = reduce_sum(x=pdp,axes=rax,keep_dims=kd)[name=string(\"rs\")];\n",
+        heads, seq_len
+    ));
+    // dps = dp - spdp
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dps = sub(x=dp,y=spdp)[name=string(\"dps\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // ds = probs * dps * scale
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ds0 = mul(x=probs,y=dps)[name=string(\"ds0\")];\n",
+        heads, seq_len, seq_len
+    ));
+    mil.push_str(&format!(
+        "        fp16 scv = const()[name=string(\"scv\"), val=fp16({:.6})];\n",
+        sc
+    ));
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> ds = mul(x=ds0,y=scv)[name=string(\"ds\")];\n",
+        heads, seq_len, seq_len
+    ));
+    // dK = ds^T @ Q
+    mil.push_str("        bool bF = const()[name=string(\"bF\"), val=bool(false)];\n");
+    mil.push_str("        bool bT = const()[name=string(\"bT\"), val=bool(true)];\n");
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dk4 = matmul(transpose_x=bT,transpose_y=bF,x=ds,y=qt)[name=string(\"dk\")];\n",
+        heads, seq_len, head_dim
+    ));
+    // Transpose back, reshape to [1, DIM, 1, SEQ]
+    mil.push_str(&format!(
+        "        tensor<fp16, [1,{},{},{}]> dkt = transpose(perm=pm,x=dk4)[name=string(\"dkt\")];\n",
+        heads, head_dim, seq_len
+    ));
+    mil.push_str(&format!(
+        "        tensor<int32, [4]> fs = const()[name=string(\"fs\"), val=tensor<int32, [4]>([1,{},1,{}])];\n",
+        dim, seq_len
+    ));
     mil.push_str(&format!(
         "        tensor<fp16, [1,{},1,{}]> dkf = reshape(shape=fs,x=dkt)[name=string(\"dkf\")];\n",
         dim, seq_len
     ));
-    // Multi-output (alphabetical): dkf, dqf
-    mil.push_str("    } -> (dkf, dqf);\n}\n");
+    // Cast FP16 -> FP32 output
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
+    mil.push_str(&format!(
+        "        tensor<fp32, [1,{},1,{}]> dkf_out = cast(dtype = to_fp32, x = dkf)[name = string(\"cast_out\")];\n",
+        dim, seq_len
+    ));
+    mil.push_str("    } -> (dkf_out);\n}\n");
     mil
 }
 
-/// Build a compile request for bwd_sdpa_bwd2_mil.
-pub fn bwd_sdpa_bwd2_compile_request(
+/// SDPA backward part 2 - DEPRECATED multi-output version
+///
+/// Ported from `gen_sdpa_bwd2()` in stories_mil.h. Computes dQ and dK from
+/// attention probs, dp (score gradient), and saved Q, K.
+///
+/// ANE adaptations: `sub` → add+mul decomposition, `concat` → multi-output
+///
+/// Input shape: `[1, 2*SCORE_CH + 2*DIM, 1, SEQ]` fp16
+/// Output shapes: `[1, DIM, 1, SEQ]` (dkf, dqf) fp16
+///
+/// DEPRECATED: Multi-output return not supported on ANE.
+/// Use bwd_sdpa_bwd2_dqf_mil, bwd_sdpa_bwd2_dkf_mil instead.
+#[deprecated(
+    note = "Multi-output return not supported on ANE. Use bwd_sdpa_bwd2_dqf_mil, bwd_sdpa_bwd2_dkf_mil instead."
+)]
+pub fn bwd_sdpa_bwd2_mil(_seq_len: usize, _dim: usize, _heads: usize, _head_dim: usize) -> String {
+    "// DEPRECATED - Multi-output not supported on ANE\n".to_string()
+}
+
+/// Build a compile request for bwd_sdpa_bwd2_dqf_mil.
+pub fn bwd_sdpa_bwd2_dqf_compile_request(
     seq_len: usize,
     dim: usize,
     heads: usize,
     head_dim: usize,
 ) -> ANECompileRequest {
+    let in_ch = 2 * heads * seq_len + 2 * dim;
     ANECompileRequest::new(
-        bwd_sdpa_bwd2_mil(seq_len, dim, heads, head_dim),
-        vec![(2 * heads * seq_len + 2 * dim) * seq_len * 2],
-        vec![dim * seq_len * 2, dim * seq_len * 2],
+        bwd_sdpa_bwd2_dqf_mil(seq_len, dim, heads, head_dim),
+        vec![in_ch * seq_len * 4], // FP32 input
+        vec![dim * seq_len * 4],   // FP32 output (dqf)
     )
+}
+
+/// Build a compile request for bwd_sdpa_bwd2_dkf_mil.
+pub fn bwd_sdpa_bwd2_dkf_compile_request(
+    seq_len: usize,
+    dim: usize,
+    heads: usize,
+    head_dim: usize,
+) -> ANECompileRequest {
+    let in_ch = 2 * heads * seq_len + 2 * dim;
+    ANECompileRequest::new(
+        bwd_sdpa_bwd2_dkf_mil(seq_len, dim, heads, head_dim),
+        vec![in_ch * seq_len * 4], // FP32 input
+        vec![dim * seq_len * 4],   // FP32 output (dkf)
+    )
+}
+
+/// Build a compile request for bwd_sdpa_bwd2_mil - DEPRECATED
+#[deprecated(
+    note = "Multi-output return not supported on ANE. Use bwd_sdpa_bwd2_dqf_compile_request, bwd_sdpa_bwd2_dkf_compile_request instead."
+)]
+pub fn bwd_sdpa_bwd2_compile_request(
+    _seq_len: usize,
+    _dim: usize,
+    _heads: usize,
+    _head_dim: usize,
+) -> ANECompileRequest {
+    panic!("Deprecated: Use bwd_sdpa_bwd2_dqf_compile_request, bwd_sdpa_bwd2_dkf_compile_request instead.");
 }
 
 #[cfg(test)]

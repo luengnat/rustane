@@ -219,7 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     init()?;
 
     // Check platform
-    let avail = rustane::ANEAvailability::check();
+    let avail = rustane::HardwareAvailability::check();
     println!("Platform: {}", avail.describe());
     println!();
 

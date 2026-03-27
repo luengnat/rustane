@@ -1,23 +1,32 @@
-//! Platform and ANE availability detection
+//! Platform and hardware accelerator availability detection
 //!
-//! This module provides utilities for detecting ANE availability and
-//! platform compatibility.
+//! This module provides utilities for detecting ANE and SME availability
+//! and platform compatibility.
 
 use std::env;
 
-/// ANE availability information
+/// Hardware accelerator availability information
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ANEAvailability {
+pub struct HardwareAvailability {
     /// Running on Apple Silicon
     pub is_apple_silicon: bool,
     /// macOS version is 15+
     pub is_macos_15_plus: bool,
     /// ANE framework is available
     pub is_ane_available: bool,
+    /// SME (Scalable Matrix Extension) is available
+    pub is_sme_available: bool,
+    /// SME vector length (0 if not available)
+    pub sme_vector_length: usize,
     /// Human-readable availability description
     pub description: String,
 }
 
+/// Deprecated: Use HardwareAvailability instead
+#[deprecated(since = "0.2.0", note = "Use HardwareAvailability instead")]
+pub type ANEAvailability = HardwareAvailability;
+
+#[allow(deprecated)]
 impl ANEAvailability {
     /// Check ANE availability at runtime
     ///
@@ -57,10 +66,12 @@ impl ANEAvailability {
             description.push_str(", ANE not available");
         }
 
-        ANEAvailability {
+        HardwareAvailability {
             is_apple_silicon,
             is_macos_15_plus,
             is_ane_available,
+            is_sme_available: is_apple_silicon && cfg!(target_arch = "aarch64"),
+            sme_vector_length: if is_apple_silicon { 512 } else { 0 },
             description,
         }
     }
@@ -153,7 +164,7 @@ mod tests {
 
     #[test]
     fn test_availability_check() {
-        let avail = ANEAvailability::check();
+        let avail = HardwareAvailability::check();
         // Just verify it runs without panic
         let _ = avail.is_available();
         let _ = avail.describe();
@@ -161,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_availability_fields() {
-        let avail = ANEAvailability::check();
+        let avail = HardwareAvailability::check();
         // Fields should be consistent
         if avail.is_apple_silicon && avail.is_macos_15_plus {
             assert!(avail.is_ane_available);

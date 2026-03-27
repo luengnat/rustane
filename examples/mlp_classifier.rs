@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Check ANE availability
-    let avail = rustane::ANEAvailability::check();
+    let avail = rustane::HardwareAvailability::check();
     println!("Platform check: {}", avail.describe());
     if !avail.is_available() {
         println!("❌ ANE is not available on this platform");

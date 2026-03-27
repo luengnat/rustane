@@ -1,11 +1,11 @@
 //! Optimized training benchmark v3: fixed CPU loss, clean comparison.
 
-use std::time::Instant;
 use rustane::mil::programs::{
     dynamic_matmul_input_bytes, dynamic_matmul_mil, dynamic_matmul_output_bytes,
     pack_dynamic_matmul_input, pack_weights_into,
 };
 use rustane::wrapper::ANECompiler;
+use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     rustane::init()?;
@@ -22,8 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_bytes = dynamic_matmul_input_bytes(dim, seq);
     let output_bytes = dynamic_matmul_output_bytes(dim, seq);
 
-    let mut exec = ANECompiler::new()
-        .compile_multi(&mil, &[], &[], &[], &[input_bytes], &[output_bytes])?;
+    let mut exec =
+        ANECompiler::new().compile_multi(&mil, &[], &[], &[], &[input_bytes], &[output_bytes])?;
 
     let total_ch = dim + dim * dim;
     let mut pack_buf_f32 = vec![0.0f32; total_ch * seq];
@@ -37,9 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input: Vec<f32> = (0..dim * seq)
         .map(|i| ((i * 3 + 7) % 200) as f32 / 1000.0 - 0.1)
         .collect();
-    let target: Vec<f32> = (0..dim * seq)
-        .map(|i| ((i % 10) as f32) * 0.01)
-        .collect();
+    let target: Vec<f32> = (0..dim * seq).map(|i| ((i % 10) as f32) * 0.01).collect();
     let n = dim * seq;
 
     // --- ANE Training ---
@@ -60,7 +58,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if step > 0 {
             pack_weights_into(&mut pack_buf_f32, &weights, dim, seq);
             let bytes = unsafe {
-                std::slice::from_raw_parts(pack_buf_f32.as_ptr() as *const u8, pack_buf_f32.len() * 4)
+                std::slice::from_raw_parts(
+                    pack_buf_f32.as_ptr() as *const u8,
+                    pack_buf_f32.len() * 4,
+                )
             };
             packed.copy_from_slice(bytes);
         }
@@ -90,7 +91,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             loss += errors[i] * errors[i];
         }
         loss /= n as f32;
-        if step == 0 { loss_first = loss; }
+        if step == 0 {
+            loss_first = loss;
+        }
         ane_loss = loss;
 
         let scale = 2.0 / n as f32;
@@ -139,7 +142,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             loss += cpu_errors[i] * cpu_errors[i];
         }
         loss /= n as f32;
-        if step == 0 { cpu_loss_first = loss; }
+        if step == 0 {
+            cpu_loss_first = loss;
+        }
         cpu_loss = loss;
 
         // Gradient + update
@@ -159,26 +164,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Results ---
     let total_us = pack_us + write_us + eval_us + read_us + grad_us;
     println!("\n=== ANE Timing Breakdown ===");
-    println!("pack:  {:.0}μs/step ({:.1}%)", pack_us as f64 / num_steps as f64, pack_us as f64 / total_us as f64 * 100.0);
-    println!("write: {:.0}μs/step ({:.1}%)", write_us as f64 / num_steps as f64, write_us as f64 / total_us as f64 * 100.0);
-    println!("eval:  {:.0}μs/step ({:.1}%)", eval_us as f64 / num_steps as f64, eval_us as f64 / total_us as f64 * 100.0);
-    println!("read:  {:.0}μs/step ({:.1}%)", read_us as f64 / num_steps as f64, read_us as f64 / total_us as f64 * 100.0);
-    println!("grad:  {:.0}μs/step ({:.1}%)", grad_us as f64 / num_steps as f64, grad_us as f64 / total_us as f64 * 100.0);
+    println!(
+        "pack:  {:.0}μs/step ({:.1}%)",
+        pack_us as f64 / num_steps as f64,
+        pack_us as f64 / total_us as f64 * 100.0
+    );
+    println!(
+        "write: {:.0}μs/step ({:.1}%)",
+        write_us as f64 / num_steps as f64,
+        write_us as f64 / total_us as f64 * 100.0
+    );
+    println!(
+        "eval:  {:.0}μs/step ({:.1}%)",
+        eval_us as f64 / num_steps as f64,
+        eval_us as f64 / total_us as f64 * 100.0
+    );
+    println!(
+        "read:  {:.0}μs/step ({:.1}%)",
+        read_us as f64 / num_steps as f64,
+        read_us as f64 / total_us as f64 * 100.0
+    );
+    println!(
+        "grad:  {:.0}μs/step ({:.1}%)",
+        grad_us as f64 / num_steps as f64,
+        grad_us as f64 / total_us as f64 * 100.0
+    );
 
     let ane_tput = num_steps as f64 / ane_elapsed.as_secs_f64();
     let cpu_tput = num_steps as f64 / cpu_elapsed.as_secs_f64();
     let speedup = cpu_elapsed.as_secs_f64() / ane_elapsed.as_secs_f64();
 
     println!("\n=== RESULTS ===");
-    println!("ANE: {:.0} steps/sec | loss: {:.6} → {:.6}", ane_tput, loss_first, ane_loss);
-    println!("CPU: {:.0} steps/sec | loss: {:.6} → {:.6}", cpu_tput, cpu_loss_first, cpu_loss);
+    println!(
+        "ANE: {:.0} steps/sec | loss: {:.6} → {:.6}",
+        ane_tput, loss_first, ane_loss
+    );
+    println!(
+        "CPU: {:.0} steps/sec | loss: {:.6} → {:.6}",
+        cpu_tput, cpu_loss_first, cpu_loss
+    );
     println!("\nSpeedup: {:.2}x", speedup);
     if speedup > 1.0 {
         println!("✅ ANE is {:.1}x faster than CPU!", speedup);
     } else {
         println!("❌ ANE is {:.1}x slower", 1.0 / speedup);
     }
-    println!("\nLosses converge similarly: ANE {:.6} vs CPU {:.6}", ane_loss, cpu_loss);
+    println!(
+        "\nLosses converge similarly: ANE {:.6} vs CPU {:.6}",
+        ane_loss, cpu_loss
+    );
 
     Ok(())
 }

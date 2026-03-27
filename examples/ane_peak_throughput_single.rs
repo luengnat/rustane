@@ -36,10 +36,15 @@ fn gen_mil(channels: usize, spatial: usize) -> String {
     mil.push_str("program(1.3)\n");
     mil.push_str("[buildInfo = dict<string, string>({{\"coremlc-component-MIL\", \"3510.2.1\"}, {\"coremlc-version\", \"3505.4.1\"}, {\"coremlc-component-milinternal\", \"\"}, {\"coremltools-version\", \"9.0\"}})]\n");
     mil.push_str("{\n");
-    mil.push_str(&format!("    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n", channels, spatial));
+    mil.push_str(&format!(
+        "    func main<ios18>(tensor<fp32, [1, {}, 1, {}]> x) {{\n",
+        channels, spatial
+    ));
 
     // Cast input to FP16
-    mil.push_str("        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n");
+    mil.push_str(
+        "        string to_fp16 = const()[name = string(\"to_fp16\"), val = string(\"fp16\")];\n",
+    );
     mil.push_str(&format!("        tensor<fp16, [1, {}, 1, {}]> x16 = cast(dtype = to_fp16, x = x)[name = string(\"cast_in\")];\n", channels, spatial));
 
     // Conv config constants
@@ -58,7 +63,9 @@ fn gen_mil(channels: usize, spatial: usize) -> String {
         channels, spatial));
 
     // Cast output back to FP32
-    mil.push_str("        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n");
+    mil.push_str(
+        "        string to_fp32 = const()[name = string(\"to_fp32\"), val = string(\"fp32\")];\n",
+    );
     mil.push_str(&format!("        tensor<fp32, [1, {}, 1, {}]> out = cast(dtype = to_fp32, x = y16)[name = string(\"cast_out\")];\n", channels, spatial));
     mil.push_str("    } -> (out);\n");
     mil.push_str("}\n");
@@ -77,7 +84,12 @@ fn benchmark(channels: usize, spatial: usize) -> Option<(f64, f64, bool)> {
     // Compile with weight blob
     let compile_start = Instant::now();
     let mut compiler = ANECompiler::new();
-    let exec = compiler.compile_single(&mil, Some(weight_blob.as_bytes()), &[input_bytes], &[output_bytes]);
+    let exec = compiler.compile_single(
+        &mil,
+        Some(weight_blob.as_bytes()),
+        &[input_bytes],
+        &[output_bytes],
+    );
     let compile_time = compile_start.elapsed();
 
     match exec {
@@ -134,20 +146,22 @@ fn main() {
 
     println!("=== ANE Peak Throughput Benchmark (Single Layer) ===\n");
     println!("Uses single large conv 1x1 (deep graphs not supported by current ANE bridge)\n");
-    println!("{:<24} {:>7} {:>9} {:>10} {:>8} {:>8}",
-             "Config", "W(MB)", "GFLOP", "ms/eval", "TFLOPS", "%peak");
+    println!(
+        "{:<24} {:>7} {:>9} {:>10} {:>8} {:>8}",
+        "Config", "W(MB)", "GFLOP", "ms/eval", "TFLOPS", "%peak"
+    );
     println!("{}", "-".repeat(75));
 
     // Test configurations - vary channels and spatial to find sweet spot
     // Keep working set under ~32 MB for SRAM residency
     let configs = [
         // Large channels, moderate spatial (maximize compute)
-        (512, 64),    // ~256 MB weights (too big for SRAM)
-        (256, 64),    // ~64 MB weights
-        (256, 32),    // ~64 MB weights, less compute
-        (128, 64),    // ~16 MB weights (fits in SRAM)
-        (128, 128),   // ~16 MB weights, more compute
-        (64, 128),    // ~4 MB weights (well within SRAM)
+        (512, 64),  // ~256 MB weights (too big for SRAM)
+        (256, 64),  // ~64 MB weights
+        (256, 32),  // ~64 MB weights, less compute
+        (128, 64),  // ~16 MB weights (fits in SRAM)
+        (128, 128), // ~16 MB weights, more compute
+        (64, 128),  // ~4 MB weights (well within SRAM)
     ];
 
     let peak_tflops = 19.0; // M4 ANE peak FP16
@@ -164,11 +178,16 @@ fn main() {
             let pct_peak = tflops / peak_tflops * 100.0;
             let ms = gflops / tflops;
             let status = if verified { "✓" } else { "✗ INVALID" };
-            println!("{:<24} {:>7.1} {:>9.2} {:>10.3} ms {:>8.2} {:>7.1}% {}",
-                     config_str, weight_mb, gflops, ms, tflops, pct_peak, status);
+            println!(
+                "{:<24} {:>7.1} {:>9.2} {:>10.3} ms {:>8.2} {:>7.1}% {}",
+                config_str, weight_mb, gflops, ms, tflops, pct_peak, status
+            );
             println!("  (Compile time: {:.1} ms)", compile_ms);
         } else {
-            println!("{:<24} {:>7.1} {:>9.2} FAILED", config_str, weight_mb, gflops);
+            println!(
+                "{:<24} {:>7.1} {:>9.2} FAILED",
+                config_str, weight_mb, gflops
+            );
         }
     }
 

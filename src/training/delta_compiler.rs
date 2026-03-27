@@ -36,6 +36,7 @@ use crate::{Error, Result};
 use std::time::{Duration, Instant};
 
 /// A single compiled ANE program with its weight file metadata.
+#[allow(dead_code)]
 struct CompiledLayer {
     /// Owned executor (owns the ANE kernel handle).
     executor: ANEExecutor,

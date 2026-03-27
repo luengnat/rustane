@@ -1,0 +1,14 @@
+// Minimal ANE MIL test - No weights, just structure
+program(1.3)
+[buildInfo = dict<string, string>(
+    {{"coremlc-component-MIL", "3510.2.1"}, 
+     {"coremlc-version", "3505.4.1"},
+     {"coremltools-component-milinternal", ""}, 
+     {"coremltools-version", "9.0"}}
+)]
+{
+    func main<ios18>(tensor<fp32, [1, 512, 1, 1024]> x) {
+        // Just identity - no weights, no conv
+        tensor<fp32, [1, 512, 1, 1024]> y = identity(x = x);
+    } -> (y);
+}

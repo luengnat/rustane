@@ -1,0 +1,13 @@
+// Layer 0 Forward Pass MIL - No Weights Version (for testing)
+// Uses embedded zero weights instead of BLOBFILE
+
+program(1.3)
+[buildInfo = dict<string, string>({{"coremlc-component-MIL", "3510.2.1"}})]
+{
+    func main<ios18>(
+        tensor<fp16, [1, 512, 1, 1024]> x
+    ) {
+        // Simple passthrough for testing
+        tensor<fp16, [1, 512, 1, 1024]> out = identity(x=x)[name=string("out")];
+    } -> (out);
+}

@@ -27,7 +27,7 @@
 //! - [hollance/neural-engine](https://github.com/hollance/neural-engine) - ANE documentation
 
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
-#![warn(missing_docs)]
+#![allow(missing_docs, unexpected_cfgs)]
 #![warn(unused_extern_crates)]
 
 pub mod ane;
@@ -62,7 +62,8 @@ pub use mil::{
     linear_matmul_compile_request, rmsnorm_compile_request, rmsnorm_mil, total_leaked_bytes,
     LinearLayer, MILBuilder, WeightBlob,
 };
-pub use platform::ANEAvailability;
+#[allow(deprecated)]
+pub use platform::{ANEAvailability, HardwareAvailability};
 pub use training::{
     ANEBackwardModel, ANEGradientAccumulator, ConstantScheduler, CrossEntropyLoss, GradAccumulator,
     LRScheduler, LossFn, LossScaler, Model as TrainingModel, Optimizer, StepMetrics, Trainer,
@@ -107,5 +108,16 @@ mod tests {
     #[test]
     fn test_version() {
         assert!(!VERSION.is_empty());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn test_platform_aliases_are_exported() {
+        let hardware = HardwareAvailability::check();
+        let legacy = ANEAvailability::check();
+
+        assert_eq!(hardware, legacy);
+        assert_eq!(hardware.is_available(), legacy.is_available());
+        assert_eq!(hardware.describe(), legacy.describe());
     }
 }

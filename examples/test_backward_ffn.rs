@@ -1,10 +1,7 @@
-//! FFN backward MIL compile + eval test.
+//! FFN backward MIL compile + eval test - single output versions.
 //!
 //! Usage: ./test_backward_ffn
-//! Tests bwd_ffn_mil() compilation and evaluation on ANE.
-//! Subprocess-isolated (standalone binary).
-
-use std::time::Instant;
+//! Tests bwd_ffn_dh1_mil, bwd_ffn_dh3_mil, bwd_ffn_dx_mil compilation and evaluation on ANE.
 
 fn main() {
     if rustane::init().is_err() {
@@ -16,27 +13,8 @@ fn main() {
     let hidden: usize = 128;
     let seq: usize = 16;
 
-    let mil = rustane::mil::bwd_ffn_mil(seq, dim, hidden);
-
-    // Verify no rejected ops
-    if mil.contains("sub(") && !mil.contains("sub = ") {
-        eprintln!("MIL contains rejected sub() op");
-        std::process::exit(1);
-    }
-    if mil.contains("concat(") {
-        eprintln!("MIL contains rejected concat() op");
-        std::process::exit(1);
-    }
-    if !mil.contains("slice_by_size") {
-        eprintln!("MIL missing slice_by_size for input unpacking");
-        std::process::exit(1);
-    }
-    if !mil.contains("-> (dh1, dh3, dx)") {
-        eprintln!("MIL missing multi-output return");
-        std::process::exit(1);
-    }
-
     // Create weight blobs: small random values to avoid fp16 overflow
+    // Weight shapes match conv expected format: [out_channels, in_channels, 1, 1]
     let w1t_data: Vec<f32> = (0..dim * hidden)
         .map(|i| ((i % 100) as f32) * 0.005)
         .collect();
@@ -47,92 +25,288 @@ fn main() {
         .map(|i| ((i % 100) as f32) * 0.005)
         .collect();
 
-    let w1t = rustane::ane::WeightBlob::from_f32(&w1t_data, dim * hidden, 1).unwrap();
-    let w2t = rustane::ane::WeightBlob::from_f32(&w2t_data, hidden * dim, 1).unwrap();
-    let w3t = rustane::ane::WeightBlob::from_f32(&w3t_data, dim * hidden, 1).unwrap();
+    let w1t = rustane::ane::WeightBlob::from_f32(&w1t_data, dim, hidden).unwrap();
+    let w2t = rustane::ane::WeightBlob::from_f32(&w2t_data, hidden, dim).unwrap();
+    let w3t = rustane::ane::WeightBlob::from_f32(&w3t_data, dim, hidden).unwrap();
 
-    let req = rustane::mil::bwd_ffn_compile_request(seq, dim, hidden, &w1t, &w2t, &w3t);
+    eprintln!(
+        "Weight blobs created: W1t={} bytes, W2t={} bytes, W3t={} bytes",
+        w1t.len(),
+        w2t.len(),
+        w3t.len()
+    );
 
-    let t0 = Instant::now();
-    let mut executor = match req.compile() {
-        Ok(ex) => ex,
-        Err(e) => {
-            eprintln!("compile failed: {e}");
-            std::process::exit(2);
-        }
-    };
-    let compile_ms = t0.elapsed().as_secs_f64() * 1000.0;
+    let mut all_ok = true;
 
-    // Create input: pack [dffn, h1, h3] as fp16
-    let in_ch = dim + 2 * hidden;
-    let input_f16: Vec<u8> = (0..in_ch * seq)
-        .map(|i| {
-            let v: f32 = ((i % 100) as f32) * 0.01;
-            half::f16::from_f32(v).to_le_bytes()
-        })
-        .flatten()
-        .collect();
+    // === Test dh1 ===
+    eprintln!("\n=== Testing dh1 computation ===");
+    {
+        let in_ch = dim + 2 * hidden;
+        let mil = rustane::mil::bwd_ffn_dh1_mil(seq, dim, hidden);
+        eprintln!("=== DH1 MIL ===");
+        eprintln!("{}", mil);
+        eprintln!("=== END MIL ===\n");
+        let input_bytes = in_ch * seq * 4; // FP32
+        let output_bytes = hidden * seq * 4; // FP32
 
-    if let Err(e) = executor.write_input(0, &input_f16) {
-        eprintln!("write_input: {e}");
-        std::process::exit(3);
-    }
-
-    let t1 = Instant::now();
-    if let Err(e) = executor.eval() {
-        eprintln!("eval: {e}");
-        std::process::exit(4);
-    }
-    let eval_ms = t1.elapsed().as_secs_f64() * 1000.0;
-
-    // Read outputs: 0=dh1, 1=dh3, 2=dx (alphabetical order)
-    let mut ok = true;
-    for (idx, name) in ["dh1", "dh3", "dx"].iter().enumerate() {
-        let expected_ch = if idx < 2 {
-            hidden * seq * 2
-        } else {
-            dim * seq * 2
-        };
-        let mut buf = vec![0u8; expected_ch];
-        if let Err(e) = executor.read_output(idx, &mut buf) {
-            eprintln!("read_output({}): {e}", name);
-            ok = false;
-            continue;
-        }
-        let fp16_vals: Vec<half::f16> = buf
-            .chunks_exact(2)
-            .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        let f32_vals: Vec<f32> = fp16_vals.iter().map(|h| h.to_f32()).collect();
-
-        let all_zero = f32_vals.iter().all(|&x| x == 0.0);
-        let has_nan = f32_vals.iter().any(|x| x.is_nan() || x.is_infinite());
-
-        if all_zero {
-            eprintln!("{}: all zeros", name);
-            ok = false;
-        } else if has_nan {
-            eprintln!("{}: nan/inf", name);
-            ok = false;
-        } else {
-            eprintln!(
-                "{}: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals)",
-                name,
-                f32_vals[0],
-                f32_vals[1],
-                f32_vals[2],
-                f32_vals[3],
-                f32_vals.len()
-            );
-        }
-    }
-
-    if ok {
-        println!(
-            "OK bwd_ffn compile={:.0}ms eval={:.1}ms dim={} hidden={} seq={}",
-            compile_ms, eval_ms, dim, hidden, seq
+        eprintln!(
+            "Input: {} bytes, Output: {} bytes",
+            input_bytes, output_bytes
         );
+
+        let mut compiler = rustane::wrapper::ANECompiler::new();
+        let exec = compiler.compile_multi(
+            &mil,
+            &["@model_path/weights/w2t.bin"],
+            &[w2t.as_bytes()],
+            &[w2t.len()],
+            &[input_bytes],
+            &[output_bytes],
+        );
+
+        match exec {
+            Ok(mut executor) => {
+                eprintln!("Compile OK");
+
+                // Create input: pack [dffn, h1, h3] as fp32
+                let input: Vec<u8> = (0..in_ch * seq)
+                    .map(|i| {
+                        let v: f32 = ((i % 100) as f32) * 0.01;
+                        v.to_le_bytes()
+                    })
+                    .flatten()
+                    .collect();
+
+                if let Err(e) = executor.write_input(0, &input) {
+                    eprintln!("write_input: {e}");
+                    all_ok = false;
+                } else {
+                    eprintln!("Input written");
+
+                    if let Err(e) = executor.eval() {
+                        eprintln!("eval FAILED: {e}");
+                        all_ok = false;
+                    } else {
+                        eprintln!("Eval OK");
+
+                        let mut buf = vec![0u8; output_bytes];
+                        if let Err(e) = executor.read_output(0, &mut buf) {
+                            eprintln!("read_output FAILED: {e}");
+                            all_ok = false;
+                        } else {
+                            eprintln!("read_output OK: {} bytes", output_bytes);
+                            // Check for valid output (FP32)
+                            let f32_vals: Vec<f32> = buf
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            let all_zero = f32_vals.iter().all(|&x| x == 0.0);
+                            let has_nan = f32_vals.iter().any(|x| x.is_nan() || x.is_infinite());
+                            if all_zero {
+                                eprintln!("dh1: all zeros (FAIL)");
+                                all_ok = false;
+                            } else if has_nan {
+                                eprintln!("dh1: nan/inf (FAIL)");
+                                all_ok = false;
+                            } else {
+                                eprintln!(
+                                    "dh1: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals)",
+                                    f32_vals[0],
+                                    f32_vals[1],
+                                    f32_vals[2],
+                                    f32_vals[3],
+                                    f32_vals.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("compile failed: {e}");
+                all_ok = false;
+            }
+        }
+    }
+
+    // === Test dh3 ===
+    eprintln!("\n=== Testing dh3 computation ===");
+    {
+        let in_ch = dim + 2 * hidden;
+        let mil = rustane::mil::bwd_ffn_dh3_mil(seq, dim, hidden);
+        let input_bytes = in_ch * seq * 4; // FP32
+        let output_bytes = hidden * seq * 4; // FP32
+
+        eprintln!(
+            "Input: {} bytes, Output: {} bytes",
+            input_bytes, output_bytes
+        );
+
+        let mut compiler = rustane::wrapper::ANECompiler::new();
+        let exec = compiler.compile_multi(
+            &mil,
+            &["@model_path/weights/w2t.bin"],
+            &[w2t.as_bytes()],
+            &[w2t.len()],
+            &[input_bytes],
+            &[output_bytes],
+        );
+
+        match exec {
+            Ok(mut executor) => {
+                eprintln!("Compile OK");
+
+                // Create input FP32
+                let input: Vec<u8> = (0..in_ch * seq)
+                    .map(|i| {
+                        let v: f32 = ((i % 100) as f32) * 0.01;
+                        v.to_le_bytes()
+                    })
+                    .flatten()
+                    .collect();
+
+                if let Err(e) = executor.write_input(0, &input) {
+                    eprintln!("write_input: {e}");
+                    all_ok = false;
+                } else {
+                    eprintln!("Input written");
+
+                    if let Err(e) = executor.eval() {
+                        eprintln!("eval FAILED: {e}");
+                        all_ok = false;
+                    } else {
+                        eprintln!("Eval OK");
+
+                        let mut buf = vec![0u8; output_bytes];
+                        if let Err(e) = executor.read_output(0, &mut buf) {
+                            eprintln!("read_output FAILED: {e}");
+                            all_ok = false;
+                        } else {
+                            eprintln!("read_output OK: {} bytes", output_bytes);
+                            let f32_vals: Vec<f32> = buf
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            let all_zero = f32_vals.iter().all(|&x| x == 0.0);
+                            let has_nan = f32_vals.iter().any(|x| x.is_nan() || x.is_infinite());
+                            if all_zero {
+                                eprintln!("dh3: all zeros (FAIL)");
+                                all_ok = false;
+                            } else if has_nan {
+                                eprintln!("dh3: nan/inf (FAIL)");
+                                all_ok = false;
+                            } else {
+                                eprintln!(
+                                    "dh3: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals)",
+                                    f32_vals[0],
+                                    f32_vals[1],
+                                    f32_vals[2],
+                                    f32_vals[3],
+                                    f32_vals.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("compile failed: {e}");
+                all_ok = false;
+            }
+        }
+    }
+
+    // === Test dx ===
+    eprintln!("\n=== Testing dx computation ===");
+    {
+        let in_ch = 2 * hidden;
+        let mil = rustane::mil::bwd_ffn_dx_mil(seq, dim, hidden);
+        let input_bytes = in_ch * seq * 4; // FP32
+        let output_bytes = dim * seq * 4; // FP32
+
+        eprintln!(
+            "Input: {} bytes, Output: {} bytes",
+            input_bytes, output_bytes
+        );
+
+        let mut compiler = rustane::wrapper::ANECompiler::new();
+        let exec = compiler.compile_multi(
+            &mil,
+            &["@model_path/weights/w1t.bin", "@model_path/weights/w3t.bin"],
+            &[w1t.as_bytes(), w3t.as_bytes()],
+            &[w1t.len(), w3t.len()],
+            &[input_bytes],
+            &[output_bytes],
+        );
+
+        match exec {
+            Ok(mut executor) => {
+                eprintln!("Compile OK");
+
+                // Input is packed [dh1, dh3] FP32
+                let input: Vec<u8> = (0..in_ch * seq)
+                    .map(|i| {
+                        let v: f32 = ((i % 100) as f32) * 0.01;
+                        v.to_le_bytes()
+                    })
+                    .flatten()
+                    .collect();
+
+                if let Err(e) = executor.write_input(0, &input) {
+                    eprintln!("write_input: {e}");
+                    all_ok = false;
+                } else {
+                    eprintln!("Input written");
+
+                    if let Err(e) = executor.eval() {
+                        eprintln!("eval FAILED: {e}");
+                        all_ok = false;
+                    } else {
+                        eprintln!("Eval OK");
+
+                        let mut buf = vec![0u8; output_bytes];
+                        if let Err(e) = executor.read_output(0, &mut buf) {
+                            eprintln!("read_output FAILED: {e}");
+                            all_ok = false;
+                        } else {
+                            eprintln!("read_output OK: {} bytes", output_bytes);
+                            let f32_vals: Vec<f32> = buf
+                                .chunks_exact(4)
+                                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                .collect();
+                            let all_zero = f32_vals.iter().all(|&x| x == 0.0);
+                            let has_nan = f32_vals.iter().any(|x| x.is_nan() || x.is_infinite());
+                            if all_zero {
+                                eprintln!("dx: all zeros (FAIL)");
+                                all_ok = false;
+                            } else if has_nan {
+                                eprintln!("dx: nan/inf (FAIL)");
+                                all_ok = false;
+                            } else {
+                                eprintln!(
+                                    "dx: [ {:.4}, {:.4}, {:.4}, {:.4} ] ({} vals)",
+                                    f32_vals[0],
+                                    f32_vals[1],
+                                    f32_vals[2],
+                                    f32_vals[3],
+                                    f32_vals.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("compile failed: {e}");
+                all_ok = false;
+            }
+        }
+    }
+
+    if all_ok {
+        println!("\nOK - All single-output FFN backward tests passed!");
     } else {
-        std::process::exit(5);
+        eprintln!("\nFAILED - Some tests failed");
+        std::process::exit(1);
     }
 }

@@ -1,0 +1,25 @@
+// Layer 0 Forward - Minimal Conv Test (no weights)
+// Tests if ANE can compile conv operations
+
+program(1.3)
+[buildInfo = dict<string, string>({{"coremlc-component-MIL", "3510.2.1"}})]
+{
+    func main<ios18>(
+        tensor<fp16, [1, 512, 1, 1024]> x
+    ) {
+        // Simple 1x1 conv test with embedded weight
+        string pt = const()[val=string("valid")];
+        tensor<int32, [2]> st = const()[val=tensor<int32, [2]>([1,1])];
+        tensor<int32, [4]> pd = const()[val=tensor<int32, [4]>([0,0,0,0])];
+        tensor<int32, [2]> dl = const()[val=tensor<int32, [2]>([1,1])];
+        int32 gr = const()[val=int32(1)];
+        
+        // Simple weight tensor (zeros)
+        tensor<fp16, [512, 512, 1, 1]> W = const()[val=fp16(0.0)];
+        
+        // 1x1 conv (3x faster than matmul!)
+        tensor<fp16, [1, 512, 1, 1024]> out = conv(
+            dilations=dl, groups=gr, pad=pd, pad_type=pt, strides=st, weight=W, x=x
+        );
+    } -> (out);
+}

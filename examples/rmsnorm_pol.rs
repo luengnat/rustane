@@ -48,6 +48,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ ANE runtime initialized\n");
 
     let mil = rmsnorm_mil(SEQ, DIM);
+    eprintln!("=== RMSNORM MIL ===");
+    eprintln!("{}", mil);
+    eprintln!("=== END MIL ===\n");
     println!("✓ MIL graph built\n");
 
     println!("Preparing input tensor and gamma weights...");

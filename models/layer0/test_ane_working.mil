@@ -1,0 +1,47 @@
+// Minimal ANE MIL test - Working format from ane-lora-training
+// Uses fp32 I/O with internal fp16 casting
+// Uses 1x1 conv only (matmul does NOT work on ANE)
+
+program(1.3)
+[buildInfo = dict<string, string>(
+    {{"coremlc-component-MIL", "3510.2.1"}, 
+     {"coremlc-version", "3505.4.1"},
+     {"coremltools-component-milinternal", ""}, 
+     {"coremltools-version", "9.0"}}
+)]
+{
+    func main<ios18>(tensor<fp32, [1, 512, 1, 1024]> x) {
+        // Conv parameters
+        string c_pad_type = const()[name = string("c_pad_type"), val = string("valid")];
+        tensor<int32, [2]> c_strides = const()[name = string("c_strides"), val = tensor<int32, [2]>([1, 1])];
+        tensor<int32, [4]> c_pad = const()[name = string("c_pad"), val = tensor<int32, [4]>([0, 0, 0, 0])];
+        tensor<int32, [2]> c_dilations = const()[name = string("c_dilations"), val = tensor<int32, [2]>([1, 1])];
+        int32 c_groups = const()[name = string("c_groups"), val = int32(1)];
+        
+        // Cast input to fp16
+        string to_fp16 = const()[name = string("to_fp16"), val = string("fp16")];
+        tensor<fp16, [1, 512, 1, 1024]> x16 = cast(dtype = to_fp16, x = x)[name = string("cast_in")];
+        
+        // Load weight from BLOBFILE (128-byte header, data starts at offset 64 in MIL, but our header is 128 bytes)
+        // Actually BLOBFILE offset should be 128 to skip our header
+        tensor<fp16, [512, 512, 1, 1]> W = const()[name = string("W"), 
+            val = tensor<fp16, [512, 512, 1, 1]>(
+                BLOBFILE(path = string("models/layer0/weights/layer0_wq.bin"), offset = uint64(128))
+            )];
+        
+        // 1x1 conv (this is the ONLY operation that works on ANE!)
+        tensor<fp16, [1, 512, 1, 1024]> y16 = conv(
+            dilations = c_dilations, 
+            groups = c_groups, 
+            pad = c_pad, 
+            pad_type = c_pad_type, 
+            strides = c_strides, 
+            weight = W, 
+            x = x16
+        )[name = string("conv")];
+        
+        // Cast output back to fp32
+        string to_fp32 = const()[name = string("to_fp32"), val = string("fp32")];
+        tensor<fp32, [1, 512, 1, 1024]> y = cast(dtype = to_fp32, x = y16)[name = string("cast_out")];
+    } -> (y);
+}

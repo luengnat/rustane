@@ -18,8 +18,8 @@ fn main() {
     let wqt = random_matrix(dim, dim, &mut rng, 0.01, 0.5);
     let wkt = random_matrix(dim, dim, &mut rng, 0.01, 0.5);
     let wvt = random_matrix(dim, dim, &mut rng, 0.01, 0.5);
-    let dq = random_matrix(dim, seq, &mut rng, 0.01, 0.5);
-    let dk = random_matrix(dim, seq, &mut rng, 0.01, 0.5);
+    let mut dq = random_matrix(dim, seq, &mut rng, 0.01, 0.5);
+    let mut dk = random_matrix(dim, seq, &mut rng, 0.01, 0.5);
     let dv = random_matrix(dim, seq, &mut rng, 0.01, 0.5);
 
     // Analytical: dx = Wqt @ dq + Wkt @ dk + Wvt @ dv

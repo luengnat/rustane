@@ -7,6 +7,7 @@
 ///
 /// Implements dynamic loss scaling to prevent gradient underflow.
 /// Scales loss up before backprop, then unscales gradients afterward.
+#[derive(Debug)]
 ///
 /// # Strategy
 ///

@@ -2,11 +2,16 @@
 //!
 //! ANECompiler compiles MIL (Model Intermediate Language) programs into
 //! executable kernels that can run on the Apple Neural Engine.
+//!
+//! ## Ownership Model
+//!
+//! After a successful compile, the kernel pointer is **transferred** to the
+//! returned `ANEExecutor`. The compiler sets its internal kernel to null so
+//! that its `Drop` does not double-free. The executor's `Drop` will free
+//! the ANE resources.
 
 use super::executor::ANEExecutor;
-use crate::sys::{
-    ane_bridge_compile, ane_bridge_compile_multi_weights, ane_bridge_free, ANEKernelHandle,
-};
+use crate::sys::{ane_bridge_compile, ane_bridge_compile_multi_weights, ANEKernelHandle};
 use crate::{Error, Result};
 use std::ffi::CString;
 use std::ptr;
@@ -14,8 +19,8 @@ use std::ptr;
 /// MIL program compiler
 ///
 /// ANECompiler compiles MIL text programs into executable kernels that can
-/// be run on the ANE. It manages the lifetime of the compiled kernel and
-/// ensures proper cleanup via RAII.
+/// be run on the ANE. On compile, kernel ownership is transferred to the
+/// returned `ANEExecutor`.
 ///
 /// # Example
 ///
@@ -30,16 +35,21 @@ use std::ptr;
 ///     }
 /// "#;
 /// let mut compiler = ANECompiler::new();
-/// let executor = compiler.compile(
+/// let mut executor = compiler.compile_single(
 ///     mil_program,
-///     None,  // no weights
-///     &[1024],  // input sizes
-///     &[512]   // output sizes
+///     None,
+///     &[1024],
+///     &[512]
 /// )?;
+///
+/// // executor now owns the kernel — compiler can be dropped safely
+/// drop(compiler);
+/// executor.eval()?;
 /// # Ok(())
 /// # }
 /// ```
 pub struct ANECompiler {
+    /// Kernel pointer — always null after a successful compile (ownership transferred)
     kernel: *mut ANEKernelHandle,
     input_sizes: Vec<usize>,
     output_sizes: Vec<usize>,
@@ -104,9 +114,10 @@ impl ANECompiler {
         input_sizes: &[usize],
         output_sizes: &[usize],
     ) -> Result<ANEExecutor> {
-        // Free any previous kernel
+        // Free any previous kernel that wasn't transferred
         if !self.kernel.is_null() {
-            unsafe { ane_bridge_free(self.kernel) };
+            // This shouldn't happen in normal usage (kernel is nulled after transfer),
+            // but handle it defensively
             self.kernel = ptr::null_mut();
         }
 
@@ -121,10 +132,6 @@ impl ANECompiler {
         };
 
         // Compile
-        // SAFETY: ane_bridge_compile is safe when:
-        // - mil_text is valid UTF-8 (ensured by CString)
-        // - weight_data is valid for its lifetime (ensured by &[u8])
-        // - Sizes arrays are valid (ensured by &[usize])
         let kernel = unsafe {
             ane_bridge_compile(
                 mil_cstring.as_ptr(),
@@ -144,13 +151,17 @@ impl ANECompiler {
             ));
         }
 
-        // Store sizes for validation
-        self.kernel = kernel;
+        // Store sizes (for num_inputs/num_outputs queries)
         self.input_sizes = input_sizes.to_vec();
         self.output_sizes = output_sizes.to_vec();
 
-        // Create executor
-        Ok(ANEExecutor::new(kernel, input_sizes, output_sizes))
+        // Create executor — kernel ownership is transferred here
+        let executor = ANEExecutor::new(kernel, input_sizes, output_sizes)?;
+
+        // Compiler no longer owns the kernel
+        self.kernel = ptr::null_mut();
+
+        Ok(executor)
     }
 
     /// Compile with multiple named weight files
@@ -211,9 +222,8 @@ impl ANECompiler {
             ));
         }
 
-        // Free any previous kernel
+        // Free any previous kernel that wasn't transferred
         if !self.kernel.is_null() {
-            unsafe { ane_bridge_free(self.kernel) };
             self.kernel = ptr::null_mut();
         }
 
@@ -260,12 +270,16 @@ impl ANECompiler {
         }
 
         // Store sizes
-        self.kernel = kernel;
         self.input_sizes = input_sizes.to_vec();
         self.output_sizes = output_sizes.to_vec();
 
-        // Create executor
-        Ok(ANEExecutor::new(kernel, input_sizes, output_sizes))
+        // Create executor — kernel ownership is transferred here
+        let executor = ANEExecutor::new(kernel, input_sizes, output_sizes)?;
+
+        // Compiler no longer owns the kernel
+        self.kernel = ptr::null_mut();
+
+        Ok(executor)
     }
 
     /// Get the number of inputs for the compiled kernel
@@ -297,19 +311,15 @@ impl Default for ANECompiler {
 
 impl Drop for ANECompiler {
     fn drop(&mut self) {
-        if !self.kernel.is_null() {
-            unsafe {
-                ane_bridge_free(self.kernel);
-            }
-            self.kernel = ptr::null_mut();
-        }
+        // Kernel ownership was transferred to ANEExecutor after compile.
+        // self.kernel should always be null here.
+        // If it's not (defensive), we still don't free — the executor owns it.
+        self.kernel = ptr::null_mut();
     }
 }
 
-// ANECompiler is not thread-safe (manages raw pointer)
+// ANECompiler is Send but NOT Sync — it's a compile-only tool
 unsafe impl Send for ANECompiler {}
-// ANECompiler is not thread-safe for shared access
-unsafe impl Sync for ANECompiler {}
 
 #[cfg(test)]
 mod tests {

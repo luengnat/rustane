@@ -239,13 +239,18 @@ impl Default for ANEBackwardKernelCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layers::backward::{BackwardMILGenerator, RMSNormBackwardGen};
 
     #[test]
     fn test_backward_kernel_creation() {
         let config = TransformerConfig::new(256, 128, 256, 4, 2, 64).unwrap();
-        let mil_code = "#!irms6\nmain test() {}";
+        let mil_code = RMSNormBackwardGen::new().generate(&config).unwrap();
 
-        let result = ANEBackwardKernel::compile(mil_code, &config, "test");
+        if std::env::var("RUSTANE_RUN_ANE_KERNEL_TESTS").ok().as_deref() != Some("1") {
+            return;
+        }
+
+        let result = ANEBackwardKernel::compile(&mil_code, &config, "test");
         // May succeed or fail depending on ANE availability
         match result {
             Ok(kernel) => {

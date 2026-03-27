@@ -254,6 +254,45 @@ fn analyze_error(error: &ANEError) -> (ErrorCategory, String, Vec<String>, bool,
             false,
             None,
         ),
+
+        ANEError::HWXNotFound(msg) => (
+            ErrorCategory::Resource,
+            format!("HWX file not found: {}", msg),
+            vec![
+                "Verify HWX files exist in search paths".to_string(),
+                "Run PyTorch→CoreML conversion script".to_string(),
+                "Check file permissions".to_string(),
+                "Use MIL compilation as fallback".to_string(),
+            ],
+            false,
+            None,
+        ),
+
+        ANEError::InvalidHWX(msg) => (
+            ErrorCategory::Data,
+            format!("Invalid HWX file format: {}", msg),
+            vec![
+                "Verify HWX file is not corrupted".to_string(),
+                "Check HWX matches target architecture (H16G for M4)".to_string(),
+                "Re-extract HWX from CoreML model".to_string(),
+                "Use MIL compilation as fallback".to_string(),
+            ],
+            false,
+            None,
+        ),
+
+        ANEError::IOError(msg) => (
+            ErrorCategory::Resource,
+            format!("I/O error: {}", msg),
+            vec![
+                "Check file permissions".to_string(),
+                "Verify disk space available".to_string(),
+                "Check file path is valid".to_string(),
+                "Retry operation".to_string(),
+            ],
+            true,
+            None,
+        ),
     }
 }
 
