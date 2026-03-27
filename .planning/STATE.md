@@ -5,15 +5,15 @@
 See: .planning/PROJECT.md (updated 2026-03-26)
 
 **Core value:** Fused ANE programs that train transformers faster than CPU
-**Current focus:** Dynamic weight research (post-M2)
+**Current focus:** Backward correctness verified, training benchmarks complete
 
 ## Current Position
 
 **Milestone:** M2: Fused Training — COMPLETE
-**Phase:** Post-M2 — ANE training feasibility analysis COMPLETE
+**Phase:** Post-M2 — Backward correctness verified and attention forward bug fixed
 **Plan:** N/A (investigation concluded)
-**Status:** Full transformer training benchmarked — 1.33-1.44x speedup
-**Last activity:** 2026-03-27 — Cleaned up backward_cpu: removed dead code, pre-allocated buffers, 12L total 1.21x→1.44x
+**Status:** Backward verified via numerical gradient checking; attention mm→mm_abt fix applied
+**Last activity:** 2026-03-27 — Fixed attention forward bug (mm→mm_abt), verified backward correctness, benchmarked up to D=2048
 
 ## Progress
 
@@ -64,6 +64,29 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 - ANE vs CPU throughput benchmark with timing breakdown
 - Multi-config benchmark: (32,16) to (768,256) DIM/SEQ sweep
 
+### Backward Verification Results (2026-03-27)
+
+**Root cause bug found:** `cpu_attention` used `mm(&attn, sp, sp, v, d)` which BLAS interprets V with stride `d` instead of `sp`. When `d ≠ sp`, this computes a scrambled matrix multiply instead of `attn @ V^T`. Fixed with `mm_abt(&attn, sp, sp, v, d)`.
+
+**Verification suite** (`examples/verify_backward.rs`):
+- Pure f64 reference: all rel errors < 5e-8 (math proven correct)
+- Linear W@x → MSE: ✅ (rel ~1e-2)
+- W@x + x (residual) → MSE: ✅ (rel ~2e-3)
+- Attention-only (dWq/dWk/dWv/dWo): ✅ (rel ~7e-4)
+- FFN-only (dWg/dWu/dWd): ✅ (rel ~1e-8, near-perfect)
+- Full transformer layer (7 weights + dx): ✅ (rel ~3e-3)
+- Gradient descent sanity check: ✅ (loss decreases)
+
+**Training benchmarks after fix:**
+
+| Config | Layers | Params | Fwd Speedup | Total Speedup |
+|--------|--------|--------|-------------|---------------|
+| D=512 6L | 6 | 25.2M | 2.08x | 1.28x |
+| D=768 12L | 12 | 113.2M | 3.99x | 1.36x |
+| D=1024 6L | 6 | 100.7M | 3.84x | 1.15x |
+| D=1024 12L | 12 | 201.3M | 3.98x | 1.22x |
+| D=2048 6L | 6 | 402.7M | 3.12x | 1.45x |
+
 ### Carried Blockers
 
 - **HIGH**: Inference errors on newly-compiled ops — need larger tensor sizes (DIM≥768, SEQ≥256)
@@ -104,6 +127,7 @@ See: .planning/PROJECT.md (updated 2026-03-26)
 | 2026-03-26 | Phase 7 complete: multi-config benchmark | M2 COMPLETE |
 | 2026-03-26 | Dynamic weights research: fixed reload, discovered dynamic input approach | Dynamic mul 2x faster than CPU |
 | 2026-03-26 | Fixed dynamic matmul (const order + sw1 size bug), benchmarked training | ANE compute 3x faster, step at parity |
+| 2026-03-27 | Backward correctness verified: found+fixed attention mm→mm_abt bug | All tests pass, benchmarks up to D=2048 |
 
 ## Session Continuity
 
