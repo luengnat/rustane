@@ -502,3 +502,243 @@ fn main() {
     println!("  MLX loss drops due to optimizer. Speed gap = Metal GPU vs CPU BLAS.");
     println!("{}\n", "=".repeat(58));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(a: &[f32], b: &[f32], tol: f32) {
+        assert_eq!(a.len(), b.len());
+        for (idx, (lhs, rhs)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (lhs - rhs).abs() <= tol,
+                "mismatch at {}: lhs={} rhs={} tol={}",
+                idx,
+                lhs,
+                rhs,
+                tol
+            );
+        }
+    }
+
+    fn naive_mm(a: &[f32], m: usize, k: usize, b: &[f32], n: usize) -> Vec<f32> {
+        let mut c = vec![0.0f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0f32;
+                for p in 0..k {
+                    sum += a[i * k + p] * b[p * n + j];
+                }
+                c[i * n + j] = sum;
+            }
+        }
+        c
+    }
+
+    fn naive_mm_at(a: &[f32], k: usize, m: usize, b: &[f32], n: usize) -> Vec<f32> {
+        let mut c = vec![0.0f32; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0f32;
+                for p in 0..k {
+                    sum += a[p * m + i] * b[p * n + j];
+                }
+                c[i * n + j] = sum;
+            }
+        }
+        c
+    }
+
+    fn build_test_weights() -> (Vec<f32>, Vec<LayerWeights>) {
+        let dim = 4;
+        let heads = 2;
+        let mlp_dim = 8;
+        let vocab = 6;
+        let wte = rand_matrix(vocab, dim, 0.03, 42);
+        let qk_std = 0.02 / (dim / heads) as f32;
+        let layers = vec![LayerWeights {
+            wq: rand_matrix(dim, dim, qk_std, 100),
+            wk: rand_matrix(dim, dim, qk_std, 200),
+            wv: rand_matrix(dim, dim, 0.02, 300),
+            wo: rand_matrix(dim, dim, qk_std, 400),
+            w_up: rand_matrix(mlp_dim, dim, 0.02, 500),
+            w_down: rand_matrix(dim, mlp_dim, 0.02, 600),
+        }];
+        (wte, layers)
+    }
+
+    #[test]
+    fn test_mm_matches_naive_rectangular() {
+        let a = vec![
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+        ];
+        let b = vec![
+            1.0, 0.0, 2.0,
+            3.0, 1.0, 4.0,
+            5.0, 2.0, 6.0,
+            7.0, 3.0, 8.0,
+        ];
+        let actual = mm(&a, 2, 4, &b, 3);
+        let expected = naive_mm(&a, 2, 4, &b, 3);
+        assert_close(&actual, &expected, 1e-5);
+    }
+
+    #[test]
+    fn test_mm_at_matches_naive_rectangular() {
+        let a = vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+        ];
+        let b = vec![
+            1.0, 0.0, 2.0,
+            3.0, 1.0, 4.0,
+            5.0, 2.0, 6.0,
+        ];
+        let actual = mm_at(&a, 3, 2, &b, 3);
+        let expected = naive_mm_at(&a, 3, 2, &b, 3);
+        assert_close(&actual, &expected, 1e-5);
+    }
+
+    #[test]
+    fn test_rms_norm_matches_formula() {
+        let x = vec![1.0f32, -2.0, 3.0, -4.0];
+        let y = rms_norm(&x, 1e-6);
+        let rms = ((1.0f32 + 4.0 + 9.0 + 16.0) / 4.0 + 1e-6).sqrt();
+        let expected: Vec<f32> = x.iter().map(|&v| v / rms).collect();
+        assert_close(&y, &expected, 1e-6);
+    }
+
+    #[test]
+    fn test_apply_rope_matches_manual_rotation() {
+        let mut q = vec![
+            1.0, 2.0,
+            3.0, 4.0,
+        ];
+        let mut k = q.clone();
+        apply_rope(&mut q, &mut k, 2, 2, 1, 1, 2);
+
+        let theta = 1.0f32;
+        let (c, s) = (theta.cos(), theta.sin());
+        let expected = vec![
+            1.0, 2.0,
+            3.0 * c - 4.0 * s, 3.0 * s + 4.0 * c,
+        ];
+        assert_close(&q, &expected, 1e-5);
+        assert_close(&k, &expected, 1e-5);
+    }
+
+    #[test]
+    fn test_attention_matches_reference() {
+        let q = vec![
+            1.0, 0.0,
+            0.5, 1.0,
+            -1.0, 0.5,
+        ];
+        let k = vec![
+            0.25, 0.75,
+            1.0, -0.5,
+            0.0, 1.0,
+        ];
+        let v = vec![
+            1.0, 2.0,
+            3.0, 4.0,
+            5.0, 6.0,
+        ];
+        let actual = causal_attn_blas(&q, &k, &v, 3, 2, 1, 1, 2);
+        let expected = {
+            let scale = 1.0 / (2.0f32).sqrt();
+            let mut out = vec![0.0f32; 6];
+            for i in 0..3 {
+                let mut scores = [0.0f32; 3];
+                let mut mx = f32::NEG_INFINITY;
+                for j in 0..=i {
+                    let dot: f32 = (0..2).map(|d| q[i * 2 + d] * k[j * 2 + d]).sum();
+                    scores[j] = dot * scale;
+                    mx = mx.max(scores[j]);
+                }
+                let mut sum = 0.0f32;
+                for j in 0..=i {
+                    scores[j] = (scores[j] - mx).exp();
+                    sum += scores[j];
+                }
+                for j in 0..=i {
+                    let p = scores[j] / sum;
+                    for d in 0..2 {
+                        out[i * 2 + d] += p * v[j * 2 + d];
+                    }
+                }
+            }
+            out
+        };
+        assert_close(&actual, &expected, 1e-5);
+    }
+
+    #[test]
+    fn test_forward_matches_manual_step_by_step() {
+        let dim = 4;
+        let heads = 2;
+        let kv_heads = 2;
+        let mlp_dim = 8;
+        let vocab = 6;
+        let layers = 1;
+        let sp = 3;
+        let tokens = vec![0u16, 1, 2, 3];
+        let (wte, layer_w) = build_test_weights();
+
+        let loss = forward(
+            &tokens, sp, dim, heads, kv_heads, mlp_dim, vocab, layers, &wte, &layer_w,
+        );
+
+        let mut x = vec![0.0f32; sp * dim];
+        for t in 0..sp {
+            let tok = tokens[t] as usize;
+            for d in 0..dim {
+                x[t * dim + d] = wte[tok * dim + d];
+            }
+        }
+
+        let normed = rms_norm(&x, 1e-6);
+        let mut q = mm(&layer_w[0].wq, dim, dim, &normed, sp);
+        let mut k = mm(&layer_w[0].wk, dim, dim, &normed, sp);
+        let v = mm(&layer_w[0].wv, dim, dim, &normed, sp);
+        apply_rope(&mut q, &mut k, sp, dim / heads, heads, kv_heads, dim);
+        let attn = causal_attn_blas(&q, &k, &v, sp, dim / heads, heads, kv_heads, dim);
+        let proj = mm(&layer_w[0].wo, dim, dim, &attn, sp);
+        for i in 0..x.len() {
+            x[i] += proj[i];
+        }
+        let normed2 = rms_norm(&x, 1e-6);
+        let up = mm(&layer_w[0].w_up, mlp_dim, dim, &normed2, sp);
+        let activated: Vec<f32> = up.iter().map(|&v| v.max(0.0).powi(2)).collect();
+        let down = mm(&layer_w[0].w_down, dim, mlp_dim, &activated, sp);
+        for i in 0..x.len() {
+            x[i] += down[i];
+        }
+        let x_final = rms_norm(&x, 1e-6);
+        let logits = mm(&wte, vocab, dim, &x_final, sp);
+
+        let mut expected_loss = 0.0f32;
+        for t in 0..sp - 1 {
+            let target = tokens[t + 1] as usize;
+            let base = (t + 1) * vocab;
+            let mut mx = f32::NEG_INFINITY;
+            for i in 0..vocab {
+                mx = mx.max(logits[base + i]);
+            }
+            let mut sm = 0.0f32;
+            let mut prob = 0.0f32;
+            for i in 0..vocab {
+                let e = (logits[base + i] - mx).exp();
+                sm += e;
+                if i == target {
+                    prob = e;
+                }
+            }
+            expected_loss += -(prob / sm).ln();
+        }
+        expected_loss /= (sp - 1) as f32;
+
+        assert!((loss - expected_loss).abs() < 1e-5);
+    }
+}
