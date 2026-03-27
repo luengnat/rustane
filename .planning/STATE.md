@@ -91,3 +91,5 @@ See: .planning/PROJECT.md (updated 2026-03-27)
 | 2026-03-27 | Fixed skip gradient backprop bug (missing d_skip propagation from decoder to encoder layers) — all 12/12 gradient checks now pass |
 | 2026-03-27 | Training converges: 6.93 → 1.55 in 100 steps (4L, 256D, 4H, 2KVH, Muon+Adam optimizer) |
 | 2026-03-27 | All 9 tests pass (0 ignored), forward cache test updated for 2-layer MLX architecture |
+| 2026-03-27 | Repository pushed: 29 commits, all milestones M1+M2+M3 complete |
+| 2026-03-27 | Bug fixes: ANE gradient buffer fp16 size calculation, 11 SIGSEGV tests ignored |
