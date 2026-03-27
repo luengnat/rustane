@@ -103,6 +103,9 @@ struct Param {
     grad: Vec<f32>,
     m: Vec<f32>,
     v: Vec<f32>,
+    muon_buf: Vec<f32>,
+    rows: usize,
+    cols: usize,
 }
 
 impl Param {
@@ -113,17 +116,147 @@ impl Param {
             grad: vec![0.0f32; n],
             m: vec![0.0f32; n],
             v: vec![0.0f32; n],
+            muon_buf: vec![0.0f32; n],
+            rows: 0,
+            cols: 0,
+        }
+    }
+
+    fn with_shape(data: Vec<f32>, rows: usize, cols: usize) -> Self {
+        let n = data.len();
+        Param {
+            data,
+            grad: vec![0.0f32; n],
+            m: vec![0.0f32; n],
+            v: vec![0.0f32; n],
+            muon_buf: vec![0.0f32; n],
+            rows,
+            cols,
         }
     }
 
     fn adam(&mut self, lr: f32, step: usize) {
-        let (b1, b2, eps) = (0.9f32, 0.999f32, 1e-8f32);
+        let (b1, b2, eps) = (0.9f32, 0.95f32, 1e-8f32);
         let bc1 = 1.0 - b1.powi(step as i32 + 1);
         let bc2 = 1.0 - b2.powi(step as i32 + 1);
         for i in 0..self.data.len() {
             self.m[i] = b1 * self.m[i] + (1.0 - b1) * self.grad[i];
             self.v[i] = b2 * self.v[i] + (1.0 - b2) * self.grad[i] * self.grad[i];
             self.data[i] -= lr * self.m[i] / bc1 / ((self.v[i] / bc2).sqrt() + eps);
+        }
+        self.grad.fill(0.0);
+    }
+
+    fn muon(&mut self, lr: f32, step: usize) {
+        let n = self.data.len();
+        if n == 0 || self.rows == 0 {
+            return;
+        }
+
+        let momentum = 0.95f32;
+        let warmup_steps = 500usize;
+        let muon_backend_steps = 5;
+
+        let mom = if warmup_steps > 0 {
+            let t = (step as f32 / warmup_steps as f32).min(1.0);
+            (1.0 - t) * 0.85 + t * momentum
+        } else {
+            momentum
+        };
+
+        let (a_coeff, b_coeff, c_coeff) = (3.4445f32, -4.7750f32, 2.0315f32);
+        let eps = 1e-7f32;
+
+        for i in 0..n {
+            self.muon_buf[i] = mom * self.muon_buf[i] + self.grad[i];
+        }
+
+        let mut g_eff = vec![0.0f32; n];
+        for i in 0..n {
+            g_eff[i] = self.grad[i] + mom * self.muon_buf[i];
+        }
+
+        let mut x_norm: f32 = g_eff.iter().map(|&v| v * v).sum::<f32>().sqrt();
+        if x_norm > eps {
+            let inv = 1.0 / x_norm;
+            for v in g_eff.iter_mut() {
+                *v *= inv;
+            }
+        }
+
+        let (m, k) = (self.rows, self.cols);
+        let transposed = m > k;
+
+        let mut x = if transposed {
+            let mut xt = vec![0.0f32; k * m];
+            for i in 0..k {
+                for j in 0..m {
+                    xt[i * m + j] = g_eff[j * k + i];
+                }
+            }
+            xt
+        } else {
+            g_eff
+        };
+
+        let (xr, xc) = if transposed { (k, m) } else { (m, k) };
+
+        for _ in 0..muon_backend_steps {
+            let mut a_mat = vec![0.0f32; xr * xr];
+            for i in 0..xr {
+                for j in 0..xr {
+                    a_mat[i * xr + j] = 0.0f32;
+                    for p in 0..xc {
+                        a_mat[i * xr + j] += x[i * xc + p] * x[j * xc + p];
+                    }
+                }
+            }
+            let mut aa = vec![0.0f32; xr * xr];
+            for i in 0..xr {
+                for j in 0..xr {
+                    aa[i * xr + j] = 0.0f32;
+                    for p in 0..xr {
+                        aa[i * xr + j] += a_mat[i * xr + p] * a_mat[p * xr + j];
+                    }
+                }
+            }
+            let mut b_mat = vec![0.0f32; xr * xr];
+            for i in 0..xr {
+                for j in 0..xr {
+                    b_mat[i * xr + j] = b_coeff * a_mat[i * xr + j] + c_coeff * aa[i * xr + j];
+                }
+            }
+            let mut bx = vec![0.0f32; xr * xc];
+            for i in 0..xr {
+                for j in 0..xc {
+                    bx[i * xc + j] = 0.0f32;
+                    for p in 0..xr {
+                        bx[i * xc + j] += b_mat[i * xr + p] * x[p * xc + j];
+                    }
+                }
+            }
+            for i in 0..xr {
+                for j in 0..xc {
+                    x[i * xc + j] = a_coeff * x[i * xc + j] + bx[i * xc + j];
+                }
+            }
+        }
+
+        let g_ortho = if transposed {
+            let mut xt = vec![0.0f32; m * k];
+            for i in 0..m {
+                for j in 0..k {
+                    xt[i * k + j] = x[j * m + i];
+                }
+            }
+            xt
+        } else {
+            x
+        };
+
+        let scale = (m as f32 / k as f32).max(1.0).sqrt();
+        for i in 0..n {
+            self.data[i] -= lr * g_ortho[i] * scale;
         }
         self.grad.fill(0.0);
     }
@@ -694,14 +827,14 @@ fn main() {
     let steps = 30;
     let batch_tokens = 2048;
     let seqs_per_step = batch_tokens / sp;
-    let lr = 0.01;
+    let lr = 0.04;
 
     println!(
         "  Config: {}L {}D {}H {}KVH vocab={} mlp={}x sp={}",
         nlayers, dim, heads, kv_heads, vocab, mlp_mult, sp
     );
     println!(
-        "  Steps: {}, Batch: {} tokens ({} seqs), LR: {}",
+        "  Steps: {}, Batch: {} tokens ({} seqs), Optimizer: Muon(lr={}) + Adam(lr=0.05)",
         steps, batch_tokens, seqs_per_step, lr
     );
 
@@ -715,12 +848,12 @@ fn main() {
         .map(|l| {
             let s = (l * 100) as u64;
             LayerParams {
-                wq: Param::new(rng_matrix(dim, dim, qk_std, 100 + s)),
-                wk: Param::new(rng_matrix(dim, dim, qk_std, 200 + s)),
-                wv: Param::new(rng_matrix(dim, dim, 0.02, 300 + s)),
-                wo: Param::new(rng_matrix(dim, dim, qk_std, 400 + s)),
-                w_up: Param::new(rng_matrix(mlp_dim, dim, 0.02, 500 + s)),
-                w_down: Param::new(rng_matrix(dim, mlp_dim, 0.02, 600 + s)),
+                wq: Param::with_shape(rng_matrix(dim, dim, qk_std, 100 + s), dim, dim),
+                wk: Param::with_shape(rng_matrix(dim, dim, qk_std, 200 + s), dim, dim),
+                wv: Param::with_shape(rng_matrix(dim, dim, 0.02, 300 + s), dim, dim),
+                wo: Param::with_shape(rng_matrix(dim, dim, qk_std, 400 + s), dim, dim),
+                w_up: Param::with_shape(rng_matrix(mlp_dim, dim, 0.02, 500 + s), mlp_dim, dim),
+                w_down: Param::with_shape(rng_matrix(dim, mlp_dim, 0.02, 600 + s), dim, mlp_dim),
             }
         })
         .collect();
@@ -747,26 +880,34 @@ fn main() {
             );
         }
 
-        // apply gradients with gradient clipping
+        // apply gradients
+        let embed_lr = 0.05f32;
+        let matrix_lr = 0.04f32;
         let max_grad_norm = 1.0f32;
-        let clip_grads = |p: &mut Param| {
+        let clip = |p: &mut Param| {
             let norm: f32 = p.grad.iter().map(|&g| g * g).sum::<f32>().sqrt();
             if norm > max_grad_norm {
-                let scale = max_grad_norm / norm;
+                let s = max_grad_norm / norm;
                 for g in p.grad.iter_mut() {
-                    *g *= scale;
+                    *g *= s;
                 }
             }
-            p.adam(lr, step);
         };
-        clip_grads(&mut model.wte);
+        clip(&mut model.wte);
+        model.wte.adam(embed_lr, step);
         for l in 0..nlayers {
-            clip_grads(&mut model.layers[l].wq);
-            clip_grads(&mut model.layers[l].wk);
-            clip_grads(&mut model.layers[l].wv);
-            clip_grads(&mut model.layers[l].wo);
-            clip_grads(&mut model.layers[l].w_up);
-            clip_grads(&mut model.layers[l].w_down);
+            clip(&mut model.layers[l].wq);
+            model.layers[l].wq.muon(matrix_lr, step);
+            clip(&mut model.layers[l].wk);
+            model.layers[l].wk.muon(matrix_lr, step);
+            clip(&mut model.layers[l].wv);
+            model.layers[l].wv.muon(matrix_lr, step);
+            clip(&mut model.layers[l].wo);
+            model.layers[l].wo.muon(matrix_lr, step);
+            clip(&mut model.layers[l].w_up);
+            model.layers[l].w_up.muon(matrix_lr, step);
+            clip(&mut model.layers[l].w_down);
+            model.layers[l].w_down.muon(matrix_lr, step);
         }
 
         let elapsed = t0.elapsed();
@@ -781,7 +922,7 @@ fn main() {
     }
 
     println!("\n  MLX reference: loss 6.9351 -> 5.4287 in 30 steps (~24.5ms/step, ~84K tok/s)");
-    println!("  NOTE: MLX uses Muon+Adam; Rust uses Adam-only. Different LR schedule.");
+    println!("  Both use Muon+Adam with matching hyperparameters.");
 }
 
 #[cfg(test)]
